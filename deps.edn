@@ -5,12 +5,9 @@
         ch.qos.logback/logback-classic {:mvn/version "1.5.12"}
         cheshire/cheshire {:mvn/version "5.13.0"}
         aero/aero {:mvn/version "1.1.6"}
-        ;; clj-harness — git dep (pinned to v2.0.0)
-        ;; For dev, uncomment local/root and comment the git block:
-        ;; clj-harness/clj-harness {:local/root "../clj-harness"}
-        clj-harness/clj-harness {:git/url "file:///Users/sn/Projects/clj-harness"
-                                 :git/tag "v2.0.0"
-                                 :git/sha "0c74944b338f36e4ace9d66a31393b4a2edc6af7"}}
+        ;; clj-harness — local/root for DEV (fast iteration)
+        ;; Switch to git block for deployment
+        clj-harness/clj-harness {:local/root "../clj-harness"}}
  :aliases
  {:run     {:main-opts ["-m" "tapalakbot.core"]}
   :bot     {:main-opts ["-m" "tapalakbot.server"]}
