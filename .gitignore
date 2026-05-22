@@ -1,0 +1,32 @@
+# Dependencies
+.clj-kondo/.cache/
+.cpcache/
+.lsp/.cache/
+node_modules/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# PI
+.pi/
+
+# OS
+.DS_Store
+
+# Build
+target/
+classes/
+
+# Env (local only)
+.env
+.env.local
+.clj-kondo/imports/
+uv.lock
+qa_*.py
+cycle_tuner.py
+.clj-kondo/imports/
+uv.lock
+qa_*.py
+cycle_tuner.py

@@ -8,7 +8,6 @@
             [clj-harness.telegram.format :as fmt]
             [clj-harness.core :as hc]
             [clj-harness.stream :as stream]
-            [clj-harness.heap :as heap]
             [clojure.core.async :refer [chan <!! >!!]]
             [clojure.string :as str]
             [clojure.tools.logging :as log]))
@@ -78,7 +77,20 @@
   "Stream agent response to Telegram with progressive edits."
   (let [uid (str "tg-" user-id)
         bot @t/tapalakbot
-        tools t/tools
+        search-done? (atom false)
+        ;; Category tree is already injected by pre-hook. Hiding browse_categories
+        ;; prevents visible/slow "let me try another category" loops in Telegram.
+        tools (->> t/tools
+                   (remove #(= "browse_categories" (:name %)))
+                   (map (fn [tool]
+                          (if (= "search_lalafo" (:name tool))
+                            (update tool :execute
+                                    (fn [execute]
+                                      (fn [args]
+                                        (let [result (execute args)]
+                                          (reset! search-done? true)
+                                          result))))
+                            tool))))
         tool-map (into {} (map (fn [t] [(:name t) t]) tools))
         tool-schemas (mapv (fn [t]
                              {"type" "function"
@@ -103,16 +115,16 @@
                        (log/error e :edit-thread-error)))))
             (str "tg-edit-" user-id)))
 
-          (let [stream-cb (fn [text] (>!! edit-ch {:delta text}))]
+          ;; Stream only after the required marketplace search has completed.
+          ;; This preserves live final-answer streaming while suppressing
+          ;; pre-tool planning chatter like "попробую категорию...".
+          (let [stream-cb (fn [delta]
+                            (when @search-done?
+                              (>!! edit-ch {:delta delta})))]
             (try
               ;; Build session + run streaming agent
               (let [session (hc/get-or-create-session bot uid)
                     _ (hc/session-add! session "user" text)
-                    ;; Session-scoped heap for tool result storage
-                    session-heap (or (get-in @session ["data" "heap"])
-                                     (let [h (heap/create-heap)]
-                                       (swap! session assoc-in ["data" "heap"] h)
-                                       h))
                     extra-context (when-let [hook (:pre-hook bot)]
                                     (hook uid text session))
                     base-prompt (str (-> bot :config :prompt)
@@ -136,9 +148,9 @@
                             :tool-schemas tool-schemas
                             :stream-cb stream-cb
                             :provider :deepseek
-                            :max-turns 8
+                            :max-turns 5
                             :max-tokens 8000
-                            :heap session-heap)
+                            :nudges (:nudges bot))
                     result (or result "⚠️ Не удалось получить ответ.")]
 
                 ;; Signal done
@@ -146,7 +158,7 @@
                 (Thread/sleep 500) ;; let consumer finish
 
                 ;; Final HTML edit
-                (let [safe-text (str/replace (str buf) #"👉 Смотреть\b" "🔗")
+                (let [safe-text (str/replace (str result) #"👉 Смотреть\b" "🔗")
                       html (fmt/md->html safe-text)]
                   (try
                     (tg/edit-message chat-id msg-id html :parse-mode "HTML")
@@ -157,9 +169,7 @@
                 ;; Save to session
                 (hc/session-add! session "assistant" result)
                 (when-let [save-fn (:on-save bot)]
-                  (save-fn uid session))
-                ;; GC expired heap entries
-                (heap/gc! session-heap))
+                  (save-fn uid session)))
 
               (catch Exception e
                 (log/error e :stream-handler-error {:user-id uid})

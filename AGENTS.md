@@ -1,4 +1,4 @@
-<!-- Updated: 2026-05-18 -->
+<!-- Updated: 2026-05-21 -->
 # tapalakbot-v2
 
 > Clojure Telegram bot for Lalafo.kg marketplace search. DeepSeek LLM + Python lalafo-client via shell tools. Progressive streaming, HTML formatting, anti-table safety net, 60 QA cycles.
@@ -32,7 +32,7 @@ Most Telegram/format/streaming logic lives in `clj-harness`. Tapalakbot files ar
 
 - **DeepSeek** (`:deepseek-v4` → API model `deepseek-chat`) — 10× cheaper than Claude, adequate Russian + tool calling. Token from `pass deepseek-api/token`. Config: `resources/config.edn` models map.
 - **Python CLI, not rewrite** — Lalafo client stays in Python. Called via `uv run python` from tapalakbot dir.
-- **clj-harness middleware stack** — core-agent → wrap-tools → wrap-retry → wrap-logging
+- **clj-harness middleware stack** — core-agent → wrap-tools → wrap-retry → wrap-logging. `:nudges` is configured to require `search_lalafo` before final answers, so marketplace turns cannot answer from stale session memory.
 - **HTML parse_mode** — `tg/format.clj` converts LLM markdown to HTML, sent with `parse_mode="HTML"`. Telegram handles entities natively.
 - **Thinking indicator** — typing → "🧠 Думаю..." → LLM → edit-message. Falls back to delete+send for multi-chunk responses.
 - **Sessions on atoms** — Per-user dialog history. Follow-up context preserved. Lost on restart (no SQLite — tracked as P0 gap).
@@ -42,7 +42,7 @@ Most Telegram/format/streaming logic lives in `clj-harness`. Tapalakbot files ar
 
 Key rules from 3-cycle test-fix loop + 60 auto-tune queries:
 
-1. **Search aggressively** — If query has price, brand, OR feature → search NOW.
+1. **Search always for marketplace turns** — Prompt says search aggressively, and `:nudges {:required-steps ["search_lalafo"]}` now enforces a current-turn `search_lalafo` call before final answers.
 2. **NEVER tables** — `| --- |` breaks on Telegram mobile. 3 anti-table rules in prompt + safety net in `format.clj`.
 3. **Search by MODEL NAMES** — "Samsung S6 Lite S Pen" not "планшет стилус". Lalafo keyword search is noisy.
 4. **Response format** — Price tiers (🔥 💰 💎), 5-8 listings, lalafo.kg link for EVERY item, 3500 chars max.
@@ -50,7 +50,7 @@ Key rules from 3-cycle test-fix loop + 60 auto-tune queries:
 
 ## Tools
 
-1. **search_lalafo** — Multi-query parallel search. Returns 30-40 items, LLM curates 5-8.
+1. **search_lalafo** — Multi-query parallel search. Required by `:nudges` before final agent answers; returns relevant items, LLM curates best listings.
 2. **browse_categories** — Live category tree with Russian hints.
 3. **research_topic** — Exa web search for factual questions.
 
@@ -122,6 +122,6 @@ Currently both are mixed in `session-state` atom → cross-contamination. Split 
 - **Session lost on restart** — SQLite persistence exists in clj-harness, not yet wired in tapalakbot.
 - **clj-harness pinned to v2.0.0** — git dep with SHA in deps.edn. Use `:local/root` for dev edits, switch back to git tag for deploy.
 - **Reset command** — `/reset` clears session via `h/reset-session!`. Keyboard button "🔄 Новый диалог" on responses.
-- **Session context contamination** — Search results from previous queries accumulate and LLM reuses them for new topics. Fix: scope search results per-query, clear on next user message.
+- **Session context contamination** — Search results from previous queries accumulate and LLM reuses them for new topics. Current mitigation: clj-harness `:nudges` requires fresh `search_lalafo` before final answers. Longer-term fix: scope search results per-query, clear on next user message.
 - **Warmup needed after startup** — First 1-2 queries after restart get 0 links (JVM + category tree loading). `cycle_tuner.py` has warmup fix.
 - **Lalafo page titles** — HTML `<h1>` shows breadcrumbs ("Ультрабук, Б/у, Intel Core i5"), not the actual listing title. Use `og:title` meta tag for the real title.

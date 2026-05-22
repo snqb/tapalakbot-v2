@@ -1,0 +1,11 @@
+{:openrouter-key #or [#env OPENROUTER_API_KEY "placeholder"]
+ :models {:claude-sonnet "anthropic/claude-sonnet-4"
+          :claude-opus  "anthropic/claude-opus-4-5"
+          :gemini-flash "google/gemini-2.5-flash"
+          :gpt-4o       "openai/gpt-4o"
+          :deepseek-v4  "deepseek-chat"}
+ :agent {:max-turns 8
+         :max-tool-output 12000
+         :compact-threshold 40000
+         :keep-recent 8}
+ :tapalakbot {:cli-path "./lalafo_cli.py"}}

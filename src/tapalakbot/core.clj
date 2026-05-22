@@ -55,8 +55,9 @@ You DON'T blindly search whenever someone writes something. You THINK first:
 5. **Follow-up with new specifics** → call search_lalafo using conversation context.
    «а сяоми есть?» after router search → search «xiaomi роутер»
    «до 15000» after washing machine search → search with price filter
+   «а получше есть?» after a budget search → ALWAYS call search_lalafo again; search higher-tier models, raise/relax the budget slightly, and use premium model names in the SAME tool call. NEVER answer follow-up product results from memory/history.
 
-6. **After showing results** → organize by price tier (🔥 Best / 💰 Budget / 💎 Premium), show 5-8 variants, suggest alternatives, ask if they want to refine
+6. **After showing results** → organize by price tier (🔥 Best / 💰 Budget / 💎 Premium), show 7-10 variants when many exist, suggest alternatives, ask if they want to refine
 
 ## 🔴 URL FORMAT — MOST IMPORTANT RULE (READ FIRST)
 
@@ -90,7 +91,8 @@ RULES:
 - EVERY listing has 🔗 followed by the ACTUAL lalafo.kg URL from search results
 - NEVER write \"👉 Смотреть\", \"👉 тык\", \"👉 клик\" — these are NOT real links
 - Copy the URL verbatim from the search tool output
-- Show 5-8 listings organized by price tier: 🔥 Best / 💰 Budget / 💎 Premium
+- Show 7-10 listings when the tool found many relevant options; show 5-8 only when the market is thin
+- Organize by price tier: 🔥 Best / 💰 Budget / 💎 Premium
 
 Example of a correct response:
 ```
@@ -114,6 +116,9 @@ Example of a correct response:
    return junk. Search by EXACT MODEL NAMES instead:
 
    For tablets with stylus → queries: [\"Samsung S6 Lite S Pen\" \"Redmi Pad Smart Pen\" \"Wacom\"]
+   For iPad under a budget → queries: [\"iPad 9\" \"iPad 10\" \"iPad Air\" \"iPad Pro\" \"планшет Apple\"], category_id 1341
+   When listing iPads, include older/budget actual iPads too (iPad 7, iPad Air 2) with a caveat — don't omit them just because premium options exist.
+   For better iPad follow-ups (\"получше\") → queries: [\"iPad Air M1\" \"iPad Air M2\" \"iPad Air 5\" \"iPad Pro 11\" \"iPad 10\"], price_max = previous budget + 10000 if needed
    For tablet+laptop combos → [\"Surface Pro\" \"iPad Pro\" \"Lenovo Yoga\"]
    For WiFi 6 routers → [\"Xiaomi AX3000T\" \"Tenda TX3000\" \"TP-Link Archer\"]
 
@@ -131,27 +136,32 @@ Example of a correct response:
 search_lalafo now:
 - Scans 3 pages × 200 items per query automatically
 - Quality-filters junk (no price, no photo, spam titles)
-- LLM-relevance-filters (removes chargers, accessories, unrelated items)
-- Returns ONLY relevant listings for you to curate
+- Sends up to 250 candidates into LLM-relevance filtering (removes chargers, accessories, unrelated items)
+- Returns relevant listings for you to curate
 
-You MUST include `user_query` with the user's verbatim message — this powers relevance filtering.
+You MUST include `user_query` with the user's message PLUS resolved conversation context — this powers relevance filtering.
 Example: {\"queries\": [\"роутер\", \"WiFi роутер\"], \"user_query\": \"роутер до 4000\", \"price_max\": 4000}
+Follow-up example: user says \"а получше есть?\" after iPad search → `user_query`: \"iPad получше до 50000, не аксессуары\".
+For marketplace result replies, start with a short confidence line: \"Проверил N объявлений, отсеял аксессуары — вот лучшие варианты:\" using the scan stats from the tool output.
+Never narrate search planning or category attempts to the user. Do NOT write \"попробую\", \"давай уточню\", \"категория не подходит\", or similar internal search chatter. Make the tool call silently, then answer from tool results.
 
 ## Speed rules
 - Don't call research_topic + search_lalafo in the same turn (too slow)
 - Call search_lalafo AT MOST ONCE per response. Put ALL synonyms in one call's `queries` list.
   BAD: two separate search_lalafo calls — TOO SLOW!
   GOOD: search_lalafo with queries=[\"rtx 4060\", \"rtx 4070\", \"видеокарта nvidia\"] — ONE call!
-- If the user gives enough info to search → search immediately, don't ask more questions
+- If the user gives enough info to search → call search_lalafo immediately with no preamble, no category guessing narration, no intermediate text
+- If the user asks for \"ещё\", \"другие\", \"получше\", \"подешевле\" after results → this is a new search_lalafo call, not an advice-only answer
 - NEVER use Markdown tables — they break on mobile. Always use structured lists.
-- Show 5-8 best results organized by price tier when possible
+- HARD COUNT RULE: if tool output says 7+ relevant candidates, you MUST show 7-10 listings. Do not stop at 5-6.
+- Never silently show only 2-6 listings after a broad search. If you show fewer than 7, explicitly say why: \"реально годных нашёл только N; остальное аксессуары/старьё/мусор\".
 - Use clear formatting: 🔥 Best deal, 💰 Бюджет, 💎 Премиум
 - Include 🔗 + real lalafo.kg URL for every listing shown
 - Responses can be up to 3500 chars — be thorough, Telegram handles it
 
 ## Rules
 - Never search without understanding what the user wants
-- Share your knowledge about products BEFORE searching
+- Share product advice only in the final answer after search results, not before/during tool calls
 - Flag suspiciously cheap listings (likely scams)
 - Use emoji sparingly, be concise
 - Respond in Russian
@@ -219,6 +229,7 @@ which listings are ACTUALLY the product the user wants — not accessories,
 chargers, cases, parts, services, or unrelated items.
 
 Rules:
+- Judge title AND description. Lalafo titles are often generic or wrong; the description may reveal the real product.
 - Accessories (chargers, cables, cases, stylus-only) → NOT relevant
 - Boxes, packaging, parts → NOT relevant
 - Different product category entirely → NOT relevant
@@ -227,46 +238,59 @@ Rules:
 - If user asked for router: chargers, antennas, modems → NOT relevant (unless they ARE routers)
 - If user asked for phone: cases, screen protectors, chargers, boxes → NOT relevant
 - If user asked for laptop: RAM sticks, chargers, bags, stickers → NOT relevant
+- If user asked for iPad: ONLY actual Apple iPad tablets are relevant. Android tablets, graphic tablets, children tablets, keyboards, Apple Pencil/stylus-only, cases, glass, cables, hubs, monitors, phones → NOT relevant unless the description clearly says an actual Apple iPad tablet is included
+- If user asked for generic tablet: actual tablets are relevant; accessories, graphic tablets, cases, cables, stylus-only → NOT relevant
 
 Return ONLY a JSON array of relevant listing IDs. Nothing else.
 Example: [113171780, 112908144, 111226783]")
 
+(defn- parse-id-array
+  "Parse a JSON ID array even if the model wraps it in text/fences."
+  [content]
+  (let [clean (str/replace (or content "[]") #"```json|```" "")
+        array-text (or (second (re-find #"(?s)(\[[^\]]*\])" clean)) "[]")]
+    (try
+      (json/parse-string (str/trim array-text) false)
+      (catch Exception _ []))))
+
 (defn- relevance-filter
   "LLM pass 1: filter listings by relevance to user query.
-   Returns vector of relevant items (max 40)."
+   Returns vector of relevant items (max 60)."
   [items user-query]
-  (if (<= (count items) 30)
-    ;; Few items — no need for relevance pass
+  (if (<= (count items) 12)
+    ;; Very few items — no need for relevance pass
     items
-    (let [items-text (str/join "\n"
-                               (map-indexed
-                                (fn [i item]
-                                  (str (inc i) ". [#" (get item "id") "] "
-                                       (get item "title" "") " — "
-                                       (when-let [p (get item "price")]
-                                         (str (format "%,.0f" (double p)) " KGS"))))
-                                items))
-          messages [{"role" "system" "content" relevance-system-prompt}
-                    {"role" "user"
-                     "content" (str "User is looking for: " user-query "\n\nListings:\n" items-text
-                                    "\n\nReturn JSON array of relevant listing IDs.")}]]
-      (try
-        (let [resp (llm/llm :deepseek-chat messages [] :provider :deepseek :max-tokens 500)
-              content (get-in resp ["choices" 0 "message" "content"])
-              ;; Parse JSON array from response
-              clean (str/replace (or content "[]") #"```json|```" "")
-              ids (try (json/parse-string (str/trim clean) false)
-                       (catch Exception _ []))
-              id-set (set (if (vector? ids) ids []))
-              relevant (filter #(contains? id-set (get % "id")) items)]
-          (if (pos? (count relevant))
-            (do
-              (println (str "  [relevance] " (count items) " → " (count relevant) " items"))
-              (take 40 relevant))
-            items))
-        (catch Exception e
-          (println "[relevance] LLM call failed:" (.getMessage e) "— keeping all items")
-          items)))))
+    (let [format-item (fn [i item]
+                        (let [desc (get item "desc" "")]
+                          (str (inc i) ". [#" (get item "id") "] "
+                               (get item "title" "") " — "
+                               (when-let [p (get item "price")]
+                                 (str (format "%,.0f" (double p)) " KGS"))
+                               (when (not (str/blank? desc))
+                                 (str " — " desc)))))
+          score-chunk (fn [chunk]
+                        (let [items-text (str/join "\n" (map-indexed format-item chunk))
+                              messages [{"role" "system" "content" relevance-system-prompt}
+                                        {"role" "user"
+                                         "content" (str "User is looking for: " user-query "\n\nListings:\n" items-text
+                                                        "\n\nReturn JSON array of relevant listing IDs.")}]]
+                          (try
+                            (let [resp (llm/llm :deepseek-chat messages [] :provider :deepseek :max-tokens 1000)
+                                  content (get-in resp ["choices" 0 "message" "content"])
+                                  id-set (set (parse-id-array content))]
+                              (filter #(contains? id-set (get % "id")) chunk))
+                            (catch Exception e
+                              (println "[relevance] LLM chunk failed:" (.getMessage e))
+                              []))))
+          chunks (partition-all 80 items)
+          relevant (doall (mapcat score-chunk chunks))]
+      (if (pos? (count relevant))
+        (do
+          (println (str "  [relevance] " (count items) " → " (count relevant) " items"))
+          (take 60 relevant))
+        (do
+          (println "[relevance] no parseable relevant IDs — showing first 60 candidates")
+          (take 60 items))))))
 
 (defn- format-search-results [result-json & {:keys [user-query] :or {user-query ""}}]
   "Format JSON search result into readable text for LLM.
@@ -285,14 +309,17 @@ Example: [113171780, 112908144, 111226783]")
               truncated (get data "truncated" false)
               items (get data "items" [])
               ;; Apply relevance filter if we have many items
-              relevant (if (and user-query (not (str/blank? user-query)) (> (count items) 30))
+              relevant (if (and user-query (not (str/blank? user-query)) (> (count items) 12))
                          (relevance-filter items user-query)
                          items)]
           (if (zero? found)
             (get data "message" "Nothing found.")
-            (str "🔍 Scanned " (count relevant) " relevant listings"
-                 (str " (from " raw " raw across " pages " pages)")
+            (str "🔍 Showing " (count relevant) " relevant candidates"
+                 (str " (from " raw " raw listings across " pages " pages)")
                  (when truncated " [truncated]")
+                 (if (>= (count relevant) 7)
+                   "\nSTRICT: show 7-10 listings from these candidates in the final answer. Do not show only 5-6. Include older/budget actual items with caveats if needed."
+                   (str "\nNOTE: Only " (count relevant) " relevant candidates remained after filtering; tell the user the market is thin instead of pretending there are many."))
                  ":\n"
                  (str/join "\n"
                            (for [item relevant]
@@ -326,16 +353,18 @@ Example: [113171780, 112908144, 111226783]")
 
 (def tools
   [{:name "search_lalafo"
-    :description "Search Lalafo.kg. Scans 3 pages × 200 items, quality-filters junk, then LLM-relevance-filters. Returns pre-filtered relevant listings. CRITICAL: search by EXACT MODEL NAMES. Use synonyms. Show user 5-8 best results organized by price tier."
+    :description "Search Lalafo.kg. Scans 3 pages × 200 items, quality-filters junk, then LLM-relevance-filters up to 250 candidates. Returns pre-filtered relevant listings. CRITICAL: search by EXACT MODEL NAMES. Use 4-6 synonyms/model names for broad coverage. For many matches, show user 7-10 best results organized by price tier."
     :schema {"type" "object"
              "properties"
              {"queries" {"type" "array" "items" {"type" "string"}
-                         "description" "2-3 search query variants (synonyms) for broader coverage"}
-              "user_query" {"type" "string" "description" "The user's original question — used for relevance filtering. Copy the user's message verbatim."}
+                         "description" "4-6 search query variants (exact models/synonyms) for broad coverage"}
+              "user_query" {"type" "string" "description" "The user's request plus resolved conversation context for relevance filtering. For follow-ups, include the product/category from the previous turn, e.g. 'iPad получше до 50000, не аксессуары'."}
               "category_id" {"type" "integer" "description" "Lalafo category ID (leaf category, can be null)"}
               "price_max" {"type" "integer" "description" "Maximum price in KGS"}
               "price_min" {"type" "integer" "description" "Minimum price in KGS"}
-              "city_id" {"type" "integer" "description" "City ID (103184=Bishkek, 103244=Osh), default Bishkek"}}
+              "city_id" {"type" "integer" "description" "City ID (103184=Bishkek, 103244=Osh), default Bishkek"}
+              "max_pages" {"type" "integer" "description" "Pages per query; default 3. Use 4-5 only for broad expensive follow-ups."}
+              "per_page" {"type" "integer" "description" "Items per page; default 200."}}
              "required" ["queries" "user_query"]}
     :execute (fn [args]
                (let [user-query (get args "user_query" "")
@@ -388,6 +417,8 @@ Example: [113171780, 112908144, 111226783]")
       :model :deepseek-v4
       :provider :deepseek
       :max-turns 8
+      :nudges {:required-steps ["search_lalafo"]
+               :recover-tool-errors? true}
       :pre-hook pre-hook
       :persistence (sess/create "/tmp/tapalakbot-sessions.db")})))
 
