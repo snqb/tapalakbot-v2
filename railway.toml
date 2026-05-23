@@ -1,8 +1,12 @@
 [build]
-  builder = "docker"
-  dockerfilePath = "./Dockerfile"
+  builder = "nixpacks"
+  [build.nixpacks]
+    providers = ["clojure", "python"]
+    [build.nixpacks.config]
+      pythonPkgs = ["."]
 
 [deploy]
   numReplicas = 1
+  startCommand = "clojure -M:bot"
   healthcheckPath = "/"
   restartPolicyType = "always"
