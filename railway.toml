@@ -1,8 +1,4 @@
-[build]
-  builder = "docker"
-  dockerfilePath = "./Dockerfile"
-
 [deploy]
   numReplicas = 1
   healthcheckPath = "/"
-  restartPolicyType = "always"
+  restartPolicyType = "ALWAYS"
