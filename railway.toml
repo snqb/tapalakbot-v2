@@ -1,6 +1,10 @@
 [build]
   builder = "nixpacks"
-  configPath = "./nixpacks.toml"
+  buildCommand = "clojure -P && pip3 install --break-system-packages 'httpx[http2]' pydantic tenacity"
+  [build.nixpacks]
+    providers = ["clojure", "python"]
+    [build.nixpacks.config]
+      extraPackages = ["clojure"]
 
 [deploy]
   numReplicas = 1
