@@ -1,8 +1,13 @@
 [build]
-  builder = "docker"
-  dockerfilePath = "./Dockerfile"
+  builder = "nixpacks"
+  buildCommand = "clojure -P && pip3 install --break-system-packages 'httpx[http2]' pydantic tenacity"
+  [build.nixpacks]
+    providers = ["clojure", "python"]
+    [build.nixpacks.config]
+      pythonPkgs = ["."]
 
 [deploy]
   numReplicas = 1
+  startCommand = "clojure -M:bot"
   healthcheckPath = "/"
   restartPolicyType = "always"

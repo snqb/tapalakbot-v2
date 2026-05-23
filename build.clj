@@ -1,6 +1,4 @@
-;; Minimal tools.build config — triggers nixpacks to install Clojure CLI.
-;; No actual uberjar needed — Railway just runs deps.edn directly.
 (ns build)
-
-(defn uberjar [_]
-  (println "Skipping uberjar — TapalakBot runs via deps.edn"))
+;; No-op — nixpacks detects this and installs Clojure CLI.
+;; No uberjar needed; start command uses deps.edn directly.
+(defn uberjar [_])
