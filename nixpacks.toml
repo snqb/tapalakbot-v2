@@ -1,8 +1,0 @@
-[phases.setup]
-nixPkgs = ["clojure", "python3", "python3Packages.pip"]
-
-[phases.build]
-cmds = ["clojure -P && pip3 install --break-system-packages 'httpx[http2]' pydantic tenacity"]
-
-[start]
-cmd = "clojure -M:bot"
