@@ -1,4 +1,8 @@
+[build]
+  builder = "NIXPACKS"
+
 [deploy]
   numReplicas = 1
+  startCommand = "clojure -M:bot"
   healthcheckPath = "/"
   restartPolicyType = "ALWAYS"
