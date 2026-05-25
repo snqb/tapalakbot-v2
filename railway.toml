@@ -1,5 +1,6 @@
 [build]
   builder = "NIXPACKS"
+  buildCommand = "clojure -P && pip3 install --break-system-packages 'httpx[http2]' pydantic tenacity"
 
 [deploy]
   numReplicas = 1
