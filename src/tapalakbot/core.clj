@@ -1,16 +1,16 @@
 (ns tapalakbot.core
   "TapalakBot v2 — Conversational Lalafo.kg search assistant.
-   Uses clj-harness with Python lalafo-client via shell tools.
+   Uses clj-harness with direct Lalafo HTTP client (Clojure) + Python tools.
 
    Architecture:
-     Agent (Clojure harness) → shell-tool → lalafo_cli.py → LalafoClient (Python)
-                                → search_lalafo (multi-query)
-                                → browse_categories
-                                → research_topic (Exa)"
+     Agent (Clojure harness) → tapalakbot.lalafo/search (direct HTTP)
+                                → browse_categories (shell-out)
+                                → research_topic (shell-out)"
   (:require
    [clj-harness.core :as h]
    [clj-harness.llm :as llm]
    [clj-harness.session.sqlite :as sess]
+   [tapalakbot.lalafo :as lalafo]
    [cheshire.core :as json]
    [clojure.string :as str]
    [clojure.tools.logging :as log]))
@@ -149,7 +149,8 @@ For marketplace result replies, start with a short confidence line: \"Прове
 Never narrate search planning or category attempts to the user. Do NOT write \"попробую\", \"давай уточню\", \"категория не подходит\", or similar internal search chatter. Make the tool call silently, then answer from tool results.
 
 ## Speed rules
-- Don't call research_topic + search_lalafo in the same turn (too slow)
+- **Research→Search pipeline**: For niche/uncertain product categories, call research_topic FIRST to discover model names, THEN search with those exact models. For common products (iPhone, Samsung, MacBook) → skip research, search immediately.
+- Don't call research_topic + search_lalafo in the same turn (too slow). Call research in one turn, search in the next turn.
 - Call search_lalafo AT MOST ONCE per response. Put ALL synonyms in one call's `queries` list.
   BAD: two separate search_lalafo calls — TOO SLOW!
   GOOD: search_lalafo with queries=[\"rtx 4060\", \"rtx 4070\", \"видеокарта nvidia\"] — ONE call!
@@ -378,7 +379,17 @@ Example: [113171780, 112908144, 111226783]")
              "required" ["queries" "user_query"]}
     :execute (fn [args]
                (let [user-query (get args "user_query" "")
-                     result (run-cli "search" (dissoc args "user_query"))]
+                     ;; Convert LLM args (string keys) to snake_case for lalafo/search
+                     search-args {"queries" (get args "queries")
+                                  "category_id" (get args "category_id")
+                                  "price_min" (get args "price_min")
+                                  "price_max" (get args "price_max")
+                                  "city_id" (get args "city_id")
+                                  "max_pages" (get args "max_pages")
+                                  "per_page" (get args "per_page")
+                                  "candidate_limit" 250}
+                     result (lalafo/search search-args)]
+                 (log/info :search-clojure :result-len (count result))
                  (format-search-results result :user-query user-query)))}
 
    {:name "browse_categories"

@@ -2,6 +2,7 @@
   "Entry point — starts TapalakBot with HTTP API + Telegram polling."
   (:require [tapalakbot.core :as t]
             [tapalakbot.bot :as bot]
+            [tapalakbot.lalafo :as lalafo]
             [clj-harness.telegram :as tg]
             [clojure.string :as str]
             [clojure.tools.logging :as log]))
@@ -12,6 +13,12 @@
     (log/info :tapalakbot-start)
     @t/tapalakbot
     (log/info :bot-ready)
+
+    ;; Healthcheck — smoke test Lalafo API
+    (let [hc (lalafo/smoke-test)]
+      (if (:ok? hc)
+        (log/info :healthcheck-pass :found (:found hc))
+        (log/warn :healthcheck-fail (or (:error hc) "unknown"))))
 
     (if (str/blank? token)
       (log/warn :no-bot-token "Set BOT_TOKEN env var to start Telegram bot.")
