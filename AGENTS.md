@@ -8,22 +8,24 @@
 ```
 User → Telegram → bot.clj → core.clj → clj-harness v2.0.0 → DeepSeek API
                          │         │
-                    clj-harness   └─ shell-tool
-                    (telegram,         │
-                     streaming,   lalafo_cli.py → LalafoClient
-                     format)
+                    clj-harness   ├─ tapalakbot.lalafo (direct HTTP)
+                    (telegram,    │    └─ search → Lalafo API
+                     streaming,   └─ shell-tool
+                     format)           ├─ lalafo_cli.py → categories, research
+                                      └─ (search REMOVED — now Clojure)
 ```
 
 Most Telegram/format/streaming logic lives in `clj-harness`. Tapalakbot files are thin app-layer wires.
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `core.clj` | ~386 | Agent: system prompt, 3 tools, shell-tool, pre-hook, REPL |
+| `core.clj` | ~540 | Agent: system prompt, 3 tools, pre-hook, REPL |
+| `lalafo.clj` | ~230 | Direct Lalafo.kg HTTP client (search, categories, smoke test) |
 | `bot.clj` | ~74 | Telegram bot: polling loop, handler, `/start` `/help` `/reset` |
-| `server.clj` | ~32 | Entry point: bot + REPL |
+| `server.clj` | ~43 | Entry point: bot + REPL + healthcheck |
 | `tg/format.clj` | ~17 | Thin wrapper → `clj-harness.telegram.format` |
 | `tg/channel.clj` | ~17 | Thin wrapper → `clj-harness.telegram` |
-| `lalafo_cli.py` | ~140 | Python CLI: search, categories, research |
+| `lalafo_cli.py` | ~140 | Python CLI: categories, research (search ported to Clojure) |
 | `cycle_tuner.py` | ~380 | Automated QA: send queries, score responses, apply prompt fixes |
 
 **Deleted** (v2): `tg/streaming.clj` — streaming now in clj-harness.telegram.streaming.
@@ -31,7 +33,8 @@ Most Telegram/format/streaming logic lives in `clj-harness`. Tapalakbot files ar
 ## Key Decisions
 
 - **DeepSeek** (`:deepseek-v4` → API model `deepseek-chat`) — 10× cheaper than Claude, adequate Russian + tool calling. Token from `pass deepseek-api/token`. Config: `resources/config.edn` models map.
-- **Python CLI, not rewrite** — Lalafo client stays in Python. Called via `uv run python` from tapalakbot dir.
+- **Direct Clojure search** — `tapalakbot.lalafo/search` calls Lalafo API directly via Java HttpClient. No Python shell-out, no subprocess deadlocks, no uv startup cost. Only categories & research remain as shell tools.
+- **Python CLI, not rewrite** → **CHANGED**: Search ported to Clojure (May 2026). Python retained for categories & research.
 - **clj-harness middleware stack** — core-agent → wrap-tools → wrap-retry → wrap-logging. `:nudges` is configured to require `search_lalafo` before final answers, so marketplace turns cannot answer from stale session memory.
 - **HTML parse_mode** — `tg/format.clj` converts LLM markdown to HTML, sent with `parse_mode="HTML"`. Telegram handles entities natively.
 - **Thinking indicator** — typing → "🧠 Думаю..." → LLM → edit-message. Falls back to delete+send for multi-chunk responses.
