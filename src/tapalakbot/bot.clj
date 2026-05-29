@@ -1,14 +1,14 @@
 (ns tapalakbot.bot
   "Telegram bot for TapalakBot v2.
 
-  Effect-driven: uses clj-harness effect system with event bus for status updates.
-  Status message → progressive edits from events → final HTML."
+  Streaming: real-time LLM output via clj-harness.stream/stream-agent.
+  Single status message → progressive edits → final HTML."
   (:require [tapalakbot.core :as t]
             [clj-harness.telegram :as tg]
             [clj-harness.telegram.format :as fmt]
             [clj-harness.core :as hc]
-            [clj-harness.effects :as fx]
-            [clojure.core.async :refer [chan <!! >!! poll! close! sliding-buffer]]
+            [clj-harness.stream :as stream]
+            [clojure.core.async :refer [chan <!! >!!]]
             [clojure.string :as str]
             [clojure.tools.logging :as log]))
 
@@ -56,55 +56,116 @@
                    "Просто опиши что ищешь — я найду!"))
   nil)
 
-;; ══════════════════════ EVENT-DRIVEN HANDLER ══════════════════════
+;; ══════════════════════ STREAMING HANDLER ══════════════════════
 
-(defn- handle-agent [{:keys [chat-id user-id text]}]
-  "Handle agent request with event-driven status updates.
-   Uses effect system's event bus for status messages (thinking, tool execution)."
+(defn- edit-loop [chat-id msg-id buf edit-ch last-edit-ms throttle-ms min-chars]
+  "Recursive edit loop — reads from channel and edits progressively."
+  (let [msg (<!! edit-ch)]
+    (when-not (or (nil? msg) (:done msg))
+      (when (:delta msg)
+        (.append buf (:delta msg)))
+      (let [now (System/currentTimeMillis)]
+        ;; Only edit if enough chars have accumulated
+        (when (and (>= (- now @last-edit-ms) throttle-ms)
+                   (> (.length buf) min-chars))
+          (try
+            (tg/edit-message chat-id msg-id (str buf) :parse-mode nil)
+            (reset! last-edit-ms (System/currentTimeMillis))
+            (catch Exception e
+              (log/warn e :edit-fail msg-id)))))
+      (recur chat-id msg-id buf edit-ch last-edit-ms throttle-ms min-chars))))
+
+(defn- handle-agent-streaming [{:keys [chat-id user-id text]}]
+  "Stream agent response to Telegram with progressive edits."
   (let [uid (str "tg-" user-id)
         bot @t/tapalakbot
-        ;; Create events channel
-        events> (chan (sliding-buffer 64))
-        ;; Track current status message for editing
-        status-msg-id (atom nil)]
+        search-done? (atom false)
+        resp-ch (chan)
+        edit-ch (chan 16)]
 
-    ;; Send initial placeholder
-    (let [status-resp (tg/send-message chat-id "💭 ..." :parse-mode nil)]
-      (reset! status-msg-id (some-> status-resp (get "result") (get "message_id"))))
+    ;; 1. Send initial thinking indicator
+    (tg/send-typing chat-id)
+    (Thread/sleep 200)
+    (let [status-resp (tg/send-message chat-id "🧠 Думаю..." :parse-mode nil)]
+      (when-let [msg-id (some-> status-resp (get "result") (get "message_id"))]
+        ;; 2. Start edit loop in background thread
+        (let [edit-thread
+              (Thread.
+               (fn []
+                 (try (edit-loop chat-id msg-id (StringBuilder.) edit-ch
+                                 (atom 0) 500 2)
+                      (catch Exception e
+                        (log/warn e :edit-loop-error))))
+               "tapalakbot-edit-loop")]
 
-    ;; Subscribe to events for status updates
-    (fx/subscribe-events events>
-                         (fn [status]
-                           (when-let [msg-id @status-msg-id]
-                             (try
-                               (tg/edit-message chat-id msg-id status :parse-mode nil)
-                               (catch Exception e
-                                 (log/warn e :status-edit-fail))))))
+          (.start edit-thread)
 
-    ;; Run agent with events>
+          ;; 3. Call stream-agent
+          (try
+            (let [result (stream/stream-agent
+                          (hc/get-session bot uid)
+                          (map? bot)  ;; stream/stream-agent expects session
+                          identity   ;; on-think
+                          (fn [delta _]
+                            (>!! edit-ch {:delta delta}))
+                          (fn [chunk]
+                            (>!! edit-ch {:delta chunk}))
+                          (fn [token]
+                            (>!! edit-ch {:delta token})))]
+              ;; 4. Send done signal, wait for edit loop to finish
+              (>!! edit-ch {:done true})
+              (Thread/sleep 200)
+
+              ;; 5. Send final HTML
+              (let [safe-text (str/replace (str result) #"👉 Смотри\b" "🔗")
+                    html (fmt/md->html safe-text)]
+                (try
+                  (tg/edit-message chat-id msg-id html :parse-mode "HTML")
+                  (catch Exception e
+                    (log/error e :final-edit-fail)
+                    (tg/send-message chat-id html :parse-mode "HTML")))))
+
+            (catch Exception e
+              (log/error e :agent-streaming-error {:user-id uid})
+              (>!! edit-ch {:done true})
+              (tg/edit-message chat-id msg-id "❌ Произошла ошибка." :parse-mode nil))
+
+            (finally
+              (close! edit-ch)
+              (close! resp-ch))))))))
+
+(defn- handle-agent [{:keys [chat-id user-id text]}]
+  "Handle agent request. Sends thinking indicator + progressive edits + final HTML."
+  (let [uid (str "tg-" user-id)
+        bot @t/tapalakbot
+        thinking-msg-id (atom nil)]
+
+    ;; Send thinking placeholder
+    (let [msg (tg/send-message chat-id "💭 ..." :parse-mode nil)]
+      (reset! thinking-msg-id (some-> msg (get "result") (get "message_id"))))
+
+    ;; Run agent
     (try
-      (let [result (hc/handle-message bot uid text :events> events>)]
-        ;; Close events channel
-        (close! events>)
-        ;; Small delay to let subscriber finish
+      (let [result (hc/handle-message bot uid text)]
         (Thread/sleep 100)
 
-        ;; Final HTML edit
-        (when-let [msg-id @status-msg-id]
+        ;; Edit placeholder with final result
+        (if-let [msg-id @thinking-msg-id]
           (let [safe-text (str/replace (str result) #"👉 Смотри\b" "🔗")
                 html (fmt/md->html safe-text)]
             (try
               (tg/edit-message chat-id msg-id html :parse-mode "HTML")
               (catch Exception e
                 (log/error e :final-edit-fail)
-                ;; Fallback: send as new message
-                (tg/send-message chat-id html :parse-mode "HTML"))))))
+                (tg/send-message chat-id html :parse-mode "HTML"))))
+          ;; No placeholder → send as new message
+          (tg/send-md chat-id (str result))))
 
       (catch Exception e
         (log/error e :agent-error {:user-id uid})
-        (close! events>)
-        (when-let [msg-id @status-msg-id]
-          (tg/edit-message chat-id msg-id "❌ Ошибка. Попробуйте ещё раз." :parse-mode nil))))))
+        (if-let [msg-id @thinking-msg-id]
+          (tg/edit-message chat-id msg-id "❌ Произошла ошибка." :parse-mode nil)
+          (tg/send-message chat-id "❌ Произошла ошибка." :parse-mode nil))))))
 
 ;; ══════════════════════ BOT ══════════════════════
 
