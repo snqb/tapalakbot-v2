@@ -231,7 +231,7 @@ Example: [113171780, 112908144, 111226783]")
                                          "content" (str "User is looking for: " user-query "\n\nListings:\n" items-text
                                                         "\n\nReturn JSON array of relevant listing IDs.")}]]
                           (try
-                            (let [resp (llm/llm :deepseek-chat messages [] :provider :deepseek :max-tokens 1000)
+                            (let [resp (llm/llm :deepseek-v4-pro messages [] :provider :deepseek :max-tokens 1000)
                                   content (get-in resp ["choices" 0 "message" "content"])
                                   id-set (set (parse-id-array content))]
                               (filter #(contains? id-set (get % "id")) chunk))

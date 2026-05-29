@@ -8,6 +8,10 @@ node_modules/
 __pycache__/
 *.pyc
 .venv/
+lalafo_cli.py
+packages/
+pyproject.toml
+uv.lock
 
 # PI
 .pi/
