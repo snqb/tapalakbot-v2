@@ -1,7 +1,7 @@
-<!-- Updated: 2026-05-21 -->
+<!-- Updated: 2026-05-29 -->
 # tapalakbot-v2
 
-> Clojure Telegram bot for Lalafo.kg marketplace search. DeepSeek LLM + Python lalafo-client via shell tools. Progressive streaming, HTML formatting, anti-table safety net, 60 QA cycles.
+> Clojure Telegram bot for Lalafo.kg marketplace search. DeepSeek LLM + Python lalafo-client via shell tools. Progressive streaming, HTML formatting, anti-table safety net, 60 QA cycles. **Deployed: NixOS VPS 85.239.40.192 (systemd).** See [docs/deployment.md](docs/deployment.md).
 
 ## Architecture
 
@@ -60,18 +60,18 @@ Lalafo keyword search is noisy. Only model-specific queries return relevant resu
 - Tablets with stylus: "Samsung S6 Lite S Pen", "Wacom", "Redmi Pad Smart Pen"
 - Generic "планшет стилус" → junk (Samsung phones, car parts)
 
-## Running
+## Running (local/dev)
+
+⚠️ Production runs on VPS — stop VPS service first (only ONE process per token).
 
 ```bash
 cd /Users/sn/Projects/tapalakbot-v2
 
-# Telegram bot (tmux) — uses absolute path (no $HOME expansion issues)
-tmux new-session -d -s tapalakbot-v2 -c ~/Projects/tapalakbot-v2
-tmux send-keys -t tapalakbot-v2 \
-  "BOT_TOKEN='...' TAPALAKBOT_BASE_DIR=\"\\\$HOME/Projects/tapalakbot\" clojure -M:bot 2>&1 | tee /tmp/tapalakbot-v2.log" Enter
-
-# Terminal test
+# Terminal test (one-shot, no Telegram)
 TAPALAKBOT_BASE_DIR=$HOME/Projects/tapalakbot clojure -M:run "роутер до 4000"
+
+# Telegram bot locally
+BOT_TOKEN='...' TAPALAKBOT_BASE_DIR=$HOME/Projects/tapalakbot clojure -M:bot
 ```
 
 ## QA
@@ -113,15 +113,23 @@ Currently both are mixed in `session-state` atom → cross-contamination. Split 
 
 ## Gotchas
 
-- **`$HOME` in tmux requires double quotes** — `TAPALAKBOT_BASE_DIR='$HOME/...'` blocks shell expansion; Java's `System/getenv` receives literal `$HOME`. Must use escaped double quotes in tmux send-keys: `TAPALAKBOT_BASE_DIR=\"\\$HOME/Projects/tapalakbot\"`.
-- **Only ONE process per bot token** — If another process polls the same token, both break.
+### Deployment (NixOS VPS)
+
+- **Telegram blocked in Russia** — Most `api.telegram.org` IPs blocked. Only `149.154.167.220` works. NixOS: `networking.extraHosts = "149.154.167.220 api.telegram.org";`
+- **proxychains useless with Java** — Java NIO bypasses LD_PRELOAD. Use /etc/hosts or ProxySelector.
+- **uv sync --all-packages** — Plain `uv sync` skips workspace members. Must `--all-packages`.
+- **packages symlink** — `lalafo_cli.py` resolves from `_basedir/packages/`. VPS: `/opt/tapalakbot-v2/packages → /opt/tapalakbot/packages`
+
+### General
+
+- **Only ONE process per bot token** — Two pollers = 409 Conflict. VPS ↔ local conflict.
 - **TAPALAKBOT_BASE_DIR** must point to Python tapalakbot project for `uv run`.
 - **Lalafo `totalCount` in `_meta`** — Not in response root.
-- **String quoting** — `"` inside Clojure strings must be escaped as `\"`. Check with `clojure -M -e` after every prompt edit.
-- **Table stripping safety net** — `format.clj` regex-strips `| --- |` even if LLM ignores anti-table rules.
-- **Session lost on restart** — SQLite persistence exists in clj-harness, not yet wired in tapalakbot.
-- **clj-harness pinned to v2.0.0** — git dep with SHA in deps.edn. Use `:local/root` for dev edits, switch back to git tag for deploy.
-- **Reset command** — `/reset` clears session via `h/reset-session!`. Keyboard button "🔄 Новый диалог" on responses.
-- **Session context contamination** — Search results from previous queries accumulate and LLM reuses them for new topics. Current mitigation: clj-harness `:nudges` requires fresh `search_lalafo` before final answers. Longer-term fix: scope search results per-query, clear on next user message.
-- **Warmup needed after startup** — First 1-2 queries after restart get 0 links (JVM + category tree loading). `cycle_tuner.py` has warmup fix.
-- **Lalafo page titles** — HTML `<h1>` shows breadcrumbs ("Ультрабук, Б/у, Intel Core i5"), not the actual listing title. Use `og:title` meta tag for the real title.
+- **String quoting** — `"` inside Clojure strings must be escaped as `\"`. Check with `clojure -M -e`.
+- **Table stripping safety net** — `format.clj` regex-strips `| --- |` even if LLM ignores rules.
+- **Session lost on restart** — SQLite persistence in clj-harness, not wired in tapalakbot yet.
+- **clj-harness pinned** — git dep SHA in deps.edn. `:local/root` for dev, git tag for deploy.
+- **Reset command** — `/reset` via `h/reset-session!`. Keyboard button "🔄 Новый диалог".
+- **Session context contamination** — Old search results leak across queries. `:nudges` requires fresh `search_lalafo`. Fix: per-query scope.
+- **Warmup needed** — First 1-2 queries after restart get 0 links (JVM + categories).
+- **Lalafo page titles** — HTML `<h1>` shows breadcrumbs, use `og:title` for real title.
