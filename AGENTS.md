@@ -1,45 +1,43 @@
 <!-- Updated: 2026-05-29 -->
 # tapalakbot-v2
 
-> Clojure Telegram bot for Lalafo.kg marketplace search. DeepSeek LLM + Python lalafo-client via shell tools. Progressive streaming, HTML formatting, anti-table safety net, 60 QA cycles. **Deployed: NixOS VPS 85.239.40.192 (systemd).** See [docs/deployment.md](docs/deployment.md).
+> Clojure Telegram bot for Lalafo.kg marketplace search. DeepSeek LLM + native Clojure HTTP client. Progressive streaming, HTML formatting, anti-table safety net, 60 QA cycles. **Deployed: NixOS VPS 85.239.40.192 (systemd).** See [docs/deployment.md](docs/deployment.md).
 
 ## Architecture
 
 ```
 User → Telegram → bot.clj → core.clj → clj-harness v2.0.0 → DeepSeek API
                          │         │
-                    clj-harness   ├─ tapalakbot.lalafo (direct HTTP)
-                    (telegram,    │    └─ search → Lalafo API
-                     streaming,   └─ shell-tool
-                     format)           ├─ lalafo_cli.py → categories, research
-                                      └─ (search REMOVED — now Clojure)
+                    clj-harness   └─ tapalakbot.lalafo (direct HTTP)
+                    (telegram,         ├─ search → Lalafo API
+                     streaming,        ├─ categories → Lalafo API
+                     format)           └─ exa-research → Exa API
 ```
 
 Most Telegram/format/streaming logic lives in `clj-harness`. Tapalakbot files are thin app-layer wires.
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `core.clj` | ~540 | Agent: system prompt, 3 tools, pre-hook, REPL |
-| `lalafo.clj` | ~230 | Direct Lalafo.kg HTTP client (search, categories, smoke test) |
-| `bot.clj` | ~74 | Telegram bot: polling loop, handler, `/start` `/help` `/reset` |
-| `server.clj` | ~43 | Entry point: bot + REPL + healthcheck |
+| `core.clj` | ~450 | Agent: system prompt, 3 tools, pre-hook, REPL |
+| `lalafo.clj` | ~380 | Direct Lalafo.kg HTTP client + Exa research + healthcheck |
+| `bot.clj` | ~70 | Telegram bot: handler, `/start` `/help` `/reset`, thinking indicator |
+| `server.clj` | ~45 | Entry point: bot + REPL + healthcheck |
 | `tg/format.clj` | ~17 | Thin wrapper → `clj-harness.telegram.format` |
 | `tg/channel.clj` | ~17 | Thin wrapper → `clj-harness.telegram` |
-| `lalafo_cli.py` | ~140 | Python CLI: categories, research (search ported to Clojure) |
-| `cycle_tuner.py` | ~380 | Automated QA: send queries, score responses, apply prompt fixes |
+| `cycle_tuner.py` | ~380 | QA tool: send queries, score responses (references external Python packages) |
 
-**Deleted** (v2): `tg/streaming.clj` — streaming now in clj-harness.telegram.streaming.
+**Deleted** (v3): `lalafo_cli.py`, `packages/`, `pyproject.toml`, `tg/streaming.clj` — all Python shell-out removed, everything is native Clojure.
 
 ## Key Decisions
 
 - **DeepSeek** (`:deepseek-v4` → API model `deepseek-chat`) — 10× cheaper than Claude, adequate Russian + tool calling. Token from `pass deepseek-api/token`. Config: `resources/config.edn` models map.
-- **Direct Clojure search** — `tapalakbot.lalafo/search` calls Lalafo API directly via Java HttpClient. No Python shell-out, no subprocess deadlocks, no uv startup cost. Only categories & research remain as shell tools.
-- **Python CLI, not rewrite** → **CHANGED**: Search ported to Clojure (May 2026). Python retained for categories & research.
+- **Direct Clojure search + categories + research** — All tools use Java HttpClient directly. Zero Python shell-outs, no subprocess deadlocks, no uv startup cost. Exa research via POST /search.
+- **Native Clojure, not Python** — All bot logic (search, categories, research, formatting) in Clojure. Python files deleted May 2026.
 - **clj-harness middleware stack** — core-agent → wrap-tools → wrap-retry → wrap-logging. `:nudges` is configured to require `search_lalafo` before final answers, so marketplace turns cannot answer from stale session memory.
 - **HTML parse_mode** — `tg/format.clj` converts LLM markdown to HTML, sent with `parse_mode="HTML"`. Telegram handles entities natively.
 - **Thinking indicator** — typing → "🧠 Думаю..." → LLM → edit-message. Falls back to delete+send for multi-chunk responses.
 - **Sessions on atoms** — Per-user dialog history. Follow-up context preserved. Lost on restart (no SQLite — tracked as P0 gap).
-- **Category pre-hook** — Live category tree injected into system prompt before each message.
+- **Category pre-hook** — Categories cached in `delay`, fetched once from Lalafo API on first access. Injected into system prompt.
 
 ## Prompt Tuning (v3, settled)
 
@@ -71,10 +69,10 @@ Lalafo keyword search is noisy. Only model-specific queries return relevant resu
 cd /Users/sn/Projects/tapalakbot-v2
 
 # Terminal test (one-shot, no Telegram)
-TAPALAKBOT_BASE_DIR=$HOME/Projects/tapalakbot clojure -M:run "роутер до 4000"
+clojure -M:run "роутер до 4000"
 
 # Telegram bot locally
-BOT_TOKEN='...' TAPALAKBOT_BASE_DIR=$HOME/Projects/tapalakbot clojure -M:bot
+BOT_TOKEN='...' clojure -M:bot
 ```
 
 ## QA
@@ -120,13 +118,13 @@ Currently both are mixed in `session-state` atom → cross-contamination. Split 
 
 - **Telegram blocked in Russia** — Most `api.telegram.org` IPs blocked. Only `149.154.167.220` works. NixOS: `networking.extraHosts = "149.154.167.220 api.telegram.org";`
 - **proxychains useless with Java** — Java NIO bypasses LD_PRELOAD. Use /etc/hosts or ProxySelector.
-- **uv sync --all-packages** — Plain `uv sync` skips workspace members. Must `--all-packages`.
-- **packages symlink** — `lalafo_cli.py` resolves from `_basedir/packages/`. VPS: `/opt/tapalakbot-v2/packages → /opt/tapalakbot/packages`
 
 ### General
 
+- **Healthcheck at startup** — Bot runs `lalafo/smoke-test` on boot. Logs `:healthcheck-pass` or `:healthcheck-fail`. Check journalctl if search breaks.
+- **No Python deps** — All tools use Java HttpClient directly. `uv`, `python3`, `lalafo_cli.py` not needed for runtime.
+- **Local dev deps.edn** — Uses `:local/root` for clj-harness. Don't commit this — git SHA in committed tree.
 - **Only ONE process per bot token** — Two pollers = 409 Conflict. VPS ↔ local conflict.
-- **TAPALAKBOT_BASE_DIR** must point to Python tapalakbot project for `uv run`.
 - **Lalafo `totalCount` in `_meta`** — Not in response root.
 - **String quoting** — `"` inside Clojure strings must be escaped as `\"`. Check with `clojure -M -e`.
 - **Table stripping safety net** — `format.clj` regex-strips `| --- |` even if LLM ignores rules.
