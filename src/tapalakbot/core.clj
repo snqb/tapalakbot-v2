@@ -200,7 +200,6 @@ Never narrate search planning or category attempts to the user. Do NOT write \"�
         ;; Run from tapalakbot dir, stderr → /dev/null
         cmd (str "cd " cli-base-dir " && uv run python "
                  cli-path " " command " '" escaped-args "' 2>/dev/null")
-        _ (log/info :cli-call (str command " (" (count args-str) " chars)"))
         result (try
                  (let [proc (.exec (Runtime/getRuntime)
                                    (into-array String ["bash" "-c" cmd])
@@ -222,10 +221,8 @@ Never narrate search planning or category attempts to the user. Do NOT write \"�
                  (catch Exception e
                    (str "CLI exception: " (.getMessage e))))]
     (if (string? result)
-      (do (log/info :cli-result :type "string" :len (count result) :preview (subs result 0 (min 80 (count result))))
-          result)
-      (do (log/info :cli-result :type "map" :keys (count result) :items (count (get result "items" [])))
-          (json/generate-string result {:pretty true})))))
+      result
+      (json/generate-string result {:pretty true}))))
 
 ;; ══════════════════════ TWO-PASS LLM ══════════════════════
 
@@ -306,8 +303,7 @@ Example: [113171780, 112908144, 111226783]")
    Main LLM does curation (pass 2)."
   (let [data (if (string? result-json)
                (try (json/parse-string result-json false) (catch Exception _ nil))
-               result-json)
-        _ (log/info :format-search :map? (map? data) :has-error? (boolean (get data "error")) :found (get data "found" 0) :items (count (get data "items" [])))]
+               result-json)]
     (if (not (map? data))
       (str result-json)
       (if-let [err (get data "error")]
@@ -317,8 +313,6 @@ Example: [113171780, 112908144, 111226783]")
               pages (get-in data ["stats" "pages"] 0)
               truncated (get data "truncated" false)
               items (get data "items" [])
-              _ (when (> (count items) 12)
-                  (log/info :relevance-filter :candidates (count items) :query-preview (subs user-query 0 (min 50 (count user-query)))))
               ;; Apply relevance filter if we have many items
               relevant (if (and user-query (not (str/blank? user-query)) (> (count items) 12))
                          (relevance-filter items user-query)
