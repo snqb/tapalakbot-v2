@@ -175,55 +175,6 @@ Never narrate search planning or category attempts to the user. Do NOT write \"�
 
 ;; ══════════════════════ TOOLS ══════════════════════
 
-(def cli-dir
-  "Directory where lalafo_cli.py lives and uv can resolve deps."
-  (or (System/getenv "TAPALAKBOT_DIR")
-      (str (System/getProperty "user.dir"))))
-
-(def cli-path
-  "Path to Python CLI wrapper."
-  (str cli-dir "/lalafo_cli.py"))
-
-(def cli-base-dir
-  "Base tapalakbot project dir for uv resolution."
-  (or (System/getenv "TAPALAKBOT_BASE_DIR")
-      (System/getProperty "user.dir")
-      (str (System/getProperty "user.home") "/Projects/tapalakbot")))
-
-(defn- run-cli [command args]
-  "Execute lalafo_cli.py from tapalakbot project directory (where uv can resolve all deps).
-   Returns parsed JSON or error string.
-
-   Redirects stderr to /dev/null to avoid deadlock when Python process fills stderr buffer."
-  (let [args-str (if (string? args) args (json/generate-string args))
-        escaped-args (str/replace args-str "'" "'\\''")
-        ;; Run from tapalakbot dir, stderr → /dev/null
-        cmd (str "cd " cli-base-dir " && uv run python "
-                 cli-path " " command " '" escaped-args "' 2>/dev/null")
-        result (try
-                 (let [proc (.exec (Runtime/getRuntime)
-                                   (into-array String ["bash" "-c" cmd])
-                                   nil (java.io.File. cli-base-dir))
-                       out (slurp (.getInputStream proc))
-                       exit (.waitFor proc)]
-                   (if (= 0 exit)
-                     (let [trimmed (str/trim out)]
-                       ;; First non-empty line is JSON; rest may be uv noise
-                       (try (json/parse-string trimmed false)
-                            (catch Exception _
-                              (let [lines (str/split-lines trimmed)
-                                    json-line (first (filter #(str/starts-with? (str/trim %) "{") lines))]
-                                (if json-line
-                                  (try (json/parse-string json-line false)
-                                       (catch Exception _ trimmed))
-                                  trimmed)))))
-                     (str "CLI error (exit " exit "): " (str/trim out))))
-                 (catch Exception e
-                   (str "CLI exception: " (.getMessage e))))]
-    (if (string? result)
-      result
-      (json/generate-string result {:pretty true}))))
-
 ;; ══════════════════════ TWO-PASS LLM ══════════════════════
 
 (def ^:private relevance-system-prompt
@@ -393,11 +344,11 @@ Example: [113171780, 112908144, 111226783]")
              {"search_term" {"type" "string" "description" "Term to search categories by, e.g. 'headphones', 'bicycle'. Leave empty for full tree."}}
              "required" []}
     :execute (fn [args]
-               (let [term (get args "search_term")
-                     result (if (str/blank? term)
-                              (run-cli "categories" "")
-                              (run-cli "categories" term))]
-                 (if (string? result) result result)))}
+               (let [term (get args "search_term")]
+                 (if (str/blank? term)
+                   (let [raw (lalafo/fetch-categories-raw)]
+                     (lalafo/format-categories-prompt raw))
+                   (lalafo/search-categories term))))}
 
    {:name "research_topic"
     :description "Research a topic online — product info, market prices, specs, reviews. Use BEFORE searching when user asks factual questions you're unsure about. Do NOT use for common-knowledge advice questions."
@@ -406,19 +357,21 @@ Example: [113171780, 112908144, 111226783]")
              {"query" {"type" "string" "description" "What to research, e.g. 'iPad Air 3 specs release date'"}}
              "required" ["query"]}
     :execute (fn [args]
-               (let [result (run-cli "research" args)]
+               (let [result (lalafo/exa-research (get args "query"))]
                  (format-research-results result)))}])
 
 ;; ══════════════════════ PRE-HOOK ══════════════════════
+
+;; Cached category tree — fetched once, reused across sessions
+(def ^:private categories-cache
+  (delay (lalafo/format-categories-prompt (lalafo/fetch-categories-raw))))
 
 (defn pre-hook
   "Called before each message. Adds category info to system prompt."
   [user-id text session]
   (try
-    (let [categories (run-cli "categories" "")]
-      (if (string? categories)
-        categories
-        (str "Lalafo categories (use leaf IDs for search_lalafo):\n" categories)))
+    (let [categories @categories-cache]
+      categories)
     (catch Exception _ nil)))
 
 ;; ══════════════════════ BOT FACTORY ══════════════════════
@@ -435,7 +388,8 @@ Example: [113171780, 112908144, 111226783]")
       :nudges {:required-steps ["search_lalafo"]
                :recover-tool-errors? true}
       :pre-hook pre-hook
-      :persistence (sess/create "/tmp/tapalakbot-sessions.db")})))
+      :persistence (sess/create "/tmp/tapalakbot-sessions.db")
+      :effects? true})))
 
 (defn ask
   "Ask TapalakBot a question. Returns response string."
@@ -463,8 +417,8 @@ Example: [113171780, 112908144, 111226783]")
   (print "Loading categories... ")
   (flush)
   (try
-    (let [cats (run-cli "categories" "")]
-      (println (if (string? cats) (str (count cats) " chars") "ok")))
+    (let [cats @categories-cache]
+      (println (str (count cats) " chars")))
     (catch Exception e (println "skip:" (.getMessage e))))
 
   (loop []
@@ -504,11 +458,11 @@ Example: [113171780, 112908144, 111226783]")
   (t/ask "macbook m1")
   (t/ask "айфон 13 про макс")
 
-  ;; Test raw CLI
-  (require '[tapalakbot.core :refer [run-cli]])
-  (run-cli "search" {"queries" ["router" "роутер"] "price_max" 4000})
-  (run-cli "categories" "headphones")
-  (run-cli "research" {"query" "iPad Air 3 release date"})
+  ;; Test raw search/categories/research (all native Clojure now)
+  (require '[tapalakbot.lalafo :as l])
+  (println (l/search {"queries" ["router" "роутер"] "price_max" 4000}))
+  (println (l/search-categories "headphones"))
+  (println (l/exa-research "iPad Air 3 release date"))
 
   ;; Inspect sessions
   @(:sessions @tapalakbot))
