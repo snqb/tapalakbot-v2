@@ -121,6 +121,9 @@ Example of a correct response:
    For better iPad follow-ups (\"получше\") → queries: [\"iPad Air M1\" \"iPad Air M2\" \"iPad Air 5\" \"iPad Pro 11\" \"iPad 10\"], price_max = previous budget + 10000 if needed
    For tablet+laptop combos → [\"Surface Pro\" \"iPad Pro\" \"Lenovo Yoga\"]
    For WiFi 6 routers → [\"Xiaomi AX3000T\" \"Tenda TX3000\" \"TP-Link Archer\"]
+   For IQOS/electronic cigarettes → queries: [\"IQOS Iluma\" \"IQOS 3 Duo\" \"IQOS Originals\" \"айкос оригинал\"], category_id 1639
+     ⛔ NEVER search just \"iqos\" or \"айкос\" — gets 800+ junk (cases, lighters, accessories).
+     ⛔ Cases, holders, chargers, lighters are NOT devices — filter them out.
 
    Known models that include stylus:
    - Samsung Galaxy Tab S6 Lite, S7 FE, S8, S9 (S Pen in box)
@@ -239,6 +242,7 @@ Rules:
 - If user asked for phone: cases, screen protectors, chargers, boxes → NOT relevant
 - If user asked for laptop: RAM sticks, chargers, bags, stickers → NOT relevant
 - If user asked for iPad: ONLY actual Apple iPad tablets are relevant. Android tablets, graphic tablets, children tablets, keyboards, Apple Pencil/stylus-only, cases, glass, cables, hubs, monitors, phones → NOT relevant unless the description clearly says an actual Apple iPad tablet is included
+- If user asked for IQOS/айкос/electronic cigarette: ONLY actual heating devices (Iluma, 3 Duo, Originals, IQOS device) are relevant. Cases, holders, chargers, lighters, power banks, cigarette cases, accessories → NOT relevant
 - If user asked for generic tablet: actual tablets are relevant; accessories, graphic tablets, cases, cables, stylus-only → NOT relevant
 
 Return ONLY a JSON array of relevant listing IDs. Nothing else.
