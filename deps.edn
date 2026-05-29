@@ -5,7 +5,8 @@
         ch.qos.logback/logback-classic {:mvn/version "1.5.12"}
         cheshire/cheshire {:mvn/version "5.13.0"}
         aero/aero {:mvn/version "1.1.6"}
-        clj-harness/clj-harness {:local/root "/Users/sn/Projects/clj-harness"}}
+        clj-harness/clj-harness {:git/url "https://github.com/snqb/clj-harness.git"
+                                :git/sha "c1c18539c515dc3ba5189c66ff0abd89b395a285"}}
  :aliases
  {:run     {:main-opts ["-m" "tapalakbot.core"]}
   :bot     {:main-opts ["-m" "tapalakbot.server"]}
