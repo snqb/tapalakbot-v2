@@ -177,20 +177,33 @@ Example: [113171780, 112908144, 111226783]")
   [user-want]
   (let [messages [{:role "system" :content query-gen-system-prompt}
                   {:role "user" :content (str "User wants to buy: " user-want)}]]
-    (try
-      (let [resp (llm/llm :deepseek-v4-pro messages [] :provider :deepseek :max-tokens 500)
-            content (get-in resp ["choices" 0 "message" "content"])
-            json-str (or (re-find #"(?s)\{.*\}" content) "{}")
-            parsed (try (json/parse-string json-str true)
-                        (catch Exception _ {}))]
-        {:queries (vec (:queries parsed))
-         :price-min (:price_min parsed)
-         :price-max (:price_max parsed)
-         :needs-research (:needs_research parsed false)
-         :research-query (:research_query parsed)})
-      (catch Exception e
-        (log/warn e :query-gen-failed)
-        {:queries [user-want]}))))
+    (loop [attempts 0]
+      (when (>= attempts 3)
+        (log/warn :query-gen-all-attempts-failed :user-want user-want))
+      (let [result
+            (try
+              (let [resp (llm/llm :deepseek-v4-pro messages [] :provider :deepseek :max-tokens 500)
+                    content (get-in resp ["choices" 0 "message" "content"])]
+                (if (or (nil? content) (str/blank? content))
+                  (do (log/warn :query-gen-empty-content :attempt attempts)
+                      nil)
+                  (let [json-str (or (re-find #"(?s)\{.*\}" content) "{}")
+                        parsed (try (json/parse-string json-str true)
+                                    (catch Exception _ {}))]
+                    (when (seq (:queries parsed))
+                      {:queries (vec (:queries parsed))
+                       :price-min (:price_min parsed)
+                       :price-max (:price_max parsed)
+                       :needs-research (:needs_research parsed false)
+                       :research-query (:research_query parsed)}))))
+              (catch Exception e
+                (log/warn e :query-gen-failed :attempt attempts)
+                nil))]
+        (if result
+          result
+          (if (< attempts 2)
+            (recur (inc attempts))
+            {:queries [user-want]}))))))
 
 (defn- do-research
   "Quick research to find model names for niche products."
