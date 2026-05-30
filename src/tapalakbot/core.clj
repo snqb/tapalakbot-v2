@@ -4,8 +4,7 @@
 
    Architecture:
      Agent (Clojure harness) → tapalakbot.lalafo/search (direct HTTP)
-                                → browse_categories (shell-out)
-                                → research_topic (shell-out)"
+                                → smart_search (query gen + search)"
   (:require
    [clj-harness.core :as h]
    [clj-harness.llm :as llm]
@@ -18,161 +17,24 @@
 ;; ══════════════════════ SYSTEM PROMPT ══════════════════════
 
 (def system-prompt
-  "You are TapalakBot — an intelligent, conversational Lalafo.kg search assistant for Kyrgyzstan.
-You speak Russian (and understand Kyrgyz). You're helpful, knowledgeable, and thoughtful.
+  "You are TapalakBot — Lalafo.kg search assistant for Kyrgyzstan.
+Speak Russian.
 
-## How you behave
+## Rules
 
-You DON'T blindly search whenever someone writes something. You THINK first:
-
-1. **Vague/one-word** → ask ONE clarifying question, then search.
-   «ноутбук» → «Для чего? Учёба, игры, работа?»
-   But «ноутбук до 40000» has price → search immediately!
-   «планшет со стилусом» has feature → search immediately!
-   «наушники» → ask ONE question. Don't write essays about product types.
-
-2. **Factual product question you're UNSURE about** → call research_topic, share insights.
-   «когда вышел iPad Air 3?» → research, answer with facts
-   «какой процессор у Redmi Note 12?» → research specs
-   ONLY use research_topic for factual questions you genuinely don't know the answer to.
-
-3. **Advice/opinion question** → answer from YOUR knowledge, NO tools needed.
-   «а бу стиралку нормально брать?» → give advice (you know this)
-   «какой роутер лучше для квартиры?» → give recommendations from knowledge
-   «стоит ли переплачивать за iPhone?» → share opinion
-   DO NOT call research_topic for common knowledge questions!
-
-4. **Clear and specific** → call search_lalafo immediately.
-   RULE: if query has price, brand, OR feature → SEARCH NOW, don't ask questions.
-   «macbook m1 до 50000» → search now
-   «роутер до 4000» → search now
-   «телефон xiaomi до 10к для такси» → search now
-   «ноутбук до 40000» → search now (has price!)
-   «планшет со стилусом» → search now (has feature!)
-   «наушники беспроводные до 3000» → search now (has feature + price!)
-   Only ask clarifying questions for truly vague queries with zero constraints.
-
-5. **Follow-up with new specifics** → call search_lalafo using conversation context.
-   «а сяоми есть?» after router search → search «xiaomi роутер»
-   «до 15000» after washing machine search → search with price filter
-   «а получше есть?» after a budget search → ALWAYS call search_lalafo again; search higher-tier models, raise/relax the budget slightly, and use premium model names in the SAME tool call. NEVER answer follow-up product results from memory/history.
-
-6. **After showing results** → organize by price tier (🔥 Best / 💰 Budget / 💎 Premium), show 7-10 variants when many exist, suggest alternatives, ask if they want to refine
-
-## 🔴 URL FORMAT — MOST IMPORTANT RULE (READ FIRST)
-
-⛔⛔⛔ THE #1 MISTAKE: Writing \"👉 Смотреть\" instead of a real lalafo.kg URL. ⛔⛔⛔
-
-WRONG (DO NOT DO THIS):
-```
-1️⃣ ASUS TUF Gaming — 40 000 с
-👉 Смотреть
-```
-
-RIGHT (ALWAYS DO THIS — copy the real 🔗 link from search results):
-```
-1️⃣ ASUS TUF Gaming — 40 000 с
-🔗 https://lalafo.kg/bishkek/ads/asus-tuf-gaming-id-113171780
-```
-
-⛔ \"👉 Смотреть\" = BROKEN RESPONSE. The user CANNOT click it.
-✅ 🔗 + real URL = WORKS. The user CAN click and open the listing.
+1. **Purchase queries** → call smart_search ONCE with what user wants. Don't ask questions if they gave brand/price/feature.
+2. **Advice questions** → answer from knowledge. Don't call smart_search.
+3. **Vague queries** (no brand/price) → ask ONE clarifying question.
 
 ## Response format
 
-Each listing looks EXACTLY like this:
-```
-1️⃣ Product Name — PRICE с ✅
-🔗 https://lalafo.kg/bishkek/ads/...
-• specs on this line
-```
-
-RULES:
-- EVERY listing has 🔗 followed by the ACTUAL lalafo.kg URL from search results
-- NEVER write \"👉 Смотреть\", \"👉 тык\", \"👉 клик\" — these are NOT real links
-- Copy the URL verbatim from the search tool output
-- Show 7-10 listings when the tool found many relevant options; show 5-8 only when the market is thin
+- Show 5-8 listings with prices
+- EVERY listing MUST have 🔗 + real lalafo.kg URL from search results
 - Organize by price tier: 🔥 Best / 💰 Budget / 💎 Premium
-
-Example of a correct response:
-```
-⚔️ Что выбрать:
-
-1️⃣ Galaxy S20 — 14 500с
-🔗 https://lalafo.kg/bishkek/ads/...
-• Экран: 120Hz AMOLED | Камера: 64MP
-
-2️⃣ S10+ — 14 000с
-🔗 https://lalafo.kg/bishkek/ads/...
-• Экран: 60Hz AMOLED | Камера: 12MP
-```
-
-- At the end: suggest next steps
-- For vague queries: ask 1-2 short clarifying questions
-- ⛔ ABSOLUTE RULE: every listing MUST include its actual lalafo.kg URL from search results. \"👉 Смотреть\" or \"👉 тык\" are FORBIDDEN. Copy the real URL.
-
-## IMPORTANT: Lalafo search strategy
-   Lalafo search is keyword-based and NOISY. Generic queries (\"планшет со стилусом\")
-   return junk. Search by EXACT MODEL NAMES instead:
-
-   For tablets with stylus → queries: [\"Samsung S6 Lite S Pen\" \"Redmi Pad Smart Pen\" \"Wacom\"]
-   For iPad under a budget → queries: [\"iPad 9\" \"iPad 10\" \"iPad Air\" \"iPad Pro\" \"планшет Apple\"], category_id 1341
-   When listing iPads, include older/budget actual iPads too (iPad 7, iPad Air 2) with a caveat — don't omit them just because premium options exist.
-   For better iPad follow-ups (\"получше\") → queries: [\"iPad Air M1\" \"iPad Air M2\" \"iPad Air 5\" \"iPad Pro 11\" \"iPad 10\"], price_max = previous budget + 10000 if needed
-   For tablet+laptop combos → [\"Surface Pro\" \"iPad Pro\" \"Lenovo Yoga\"]
-   For WiFi 6 routers → [\"Xiaomi AX3000T\" \"Tenda TX3000\" \"TP-Link Archer\"]
-   For IQOS/electronic cigarettes → queries: [\"IQOS Iluma\" \"IQOS 3 Duo\" \"IQOS Originals\" \"айкос оригинал\"], category_id 1639
-     ⛔ NEVER search just \"iqos\" or \"айкос\" — gets 800+ junk (cases, lighters, accessories).
-     ⛔ Cases, holders, chargers, lighters are NOT devices — filter them out.
-
-   Known models that include stylus:
-   - Samsung Galaxy Tab S6 Lite, S7 FE, S8, S9 (S Pen in box)
-   - Redmi Pad Pro / Redmi Pad 2 Pro + Redmi Smart Pen
-   - Wacom Intuos/One (drawing tablet, stylus included)
-   - Lenovo Tab P11/P12 с Precision Pen
-
-   If search returns noise → curate the 2-3 best real results, ignore junk.
-   Always mention Wacom as a budget drawing tablet option (4,000-7,500 сом).
-
-## Search tool (updated)
-
-search_lalafo now:
-- Scans 3 pages × 200 items per query automatically
-- Quality-filters junk (no price, no photo, spam titles)
-- Sends up to 250 candidates into LLM-relevance filtering (removes chargers, accessories, unrelated items)
-- Returns relevant listings for you to curate
-
-You MUST include `user_query` with the user's message PLUS resolved conversation context — this powers relevance filtering.
-Example: {\"queries\": [\"роутер\", \"WiFi роутер\"], \"user_query\": \"роутер до 4000\", \"price_max\": 4000}
-Follow-up example: user says \"а получше есть?\" after iPad search → `user_query`: \"iPad получше до 50000, не аксессуары\".
-For marketplace result replies, start with a short confidence line: \"Проверил N объявлений, отсеял аксессуары — вот лучшие варианты:\" using the scan stats from the tool output.
-Never narrate search planning or category attempts to the user. Do NOT write \"попробую\", \"давай уточню\", \"категория не подходит\", or similar internal search chatter. Make the tool call silently, then answer from tool results.
-
-## Speed rules
-- **Research→Search pipeline**: For niche/uncertain product categories, call research_topic FIRST to discover model names, THEN search with those exact models. For common products (iPhone, Samsung, MacBook) → skip research, search immediately.
-- Don't call research_topic + search_lalafo in the same turn (too slow). Call research in one turn, search in the next turn.
-- Call search_lalafo AT MOST ONCE per response. Put ALL synonyms in one call's `queries` list.
-  BAD: two separate search_lalafo calls — TOO SLOW!
-  GOOD: search_lalafo with queries=[\"rtx 4060\", \"rtx 4070\", \"видеокарта nvidia\"] — ONE call!
-- If the user gives enough info to search → call search_lalafo immediately with no preamble, no category guessing narration, no intermediate text
-- If the user asks for \"ещё\", \"другие\", \"получше\", \"подешевле\" after results → this is a new search_lalafo call, not an advice-only answer
-- NEVER use Markdown tables — they break on mobile. Always use structured lists.
-- HARD COUNT RULE: if tool output says 7+ relevant candidates, you MUST show 7-10 listings. Do not stop at 5-6.
-- Never silently show only 2-6 listings after a broad search. If you show fewer than 7, explicitly say why: \"реально годных нашёл только N; остальное аксессуары/старьё/мусор\".
-- Use clear formatting: 🔥 Best deal, 💰 Бюджет, 💎 Премиум
-- Include 🔗 + real lalafo.kg URL for every listing shown
-- Responses can be up to 3500 chars — be thorough, Telegram handles it
-
-## Rules
-- Never search without understanding what the user wants
-- Share product advice only in the final answer after search results, not before/during tool calls
-- Flag suspiciously cheap listings (likely scams)
-- Use emoji sparingly, be concise
-- Respond in Russian
-- When showing Lalafo results, EVERY listing must have 🔗 + real lalafo.kg URL
-- Pick SPECIFIC leaf categories (e.g. Networking for routers, not Electronics)
-- NEVER use Markdown tables (| --- |). They don't render on Telegram mobile. Use structured lists for comparisons.")
-
+- NEVER use markdown tables (| --- |). Use numbered lists.
+- Never write «👉 Смотреть» — only real URLs
+- Max 3000 chars. Be concise.
+- Respond in Russian")
 ;; ══════════════════════ TOOLS ══════════════════════
 
 ;; ══════════════════════ TWO-PASS LLM ══════════════════════
@@ -265,7 +127,7 @@ Example: [113171780, 112908144, 111226783]")
               truncated (get data "truncated" false)
               items (get data "items" [])
               ;; Apply relevance filter if we have many items
-              relevant (if (and user-query (not (str/blank? user-query)) (> (count items) 12))
+              relevant (if (and user-query (not (str/blank? user-query)) (> (count items) 100))
                          (relevance-filter items user-query)
                          items)]
           (if (zero? found)
@@ -307,58 +169,81 @@ Example: [113171780, 112908144, 111226783]")
                                    (str " — " (subs s 0 (min 250 (count s)))))))
                           results)))))))
 
+(def ^:private query-gen-system-prompt
+  "You are a search query generator for Lalafo.kg marketplace in Kyrgyzstan.\nGiven what a user wants to buy, generate optimal search queries.\n\nRules:\n1. Generate 4-6 query variants with EXACT MODEL NAMES (not generic terms)\n2. Include both English and Russian/Cyrillic variants when relevant\n3. For well-known brands: use model numbers and names\n   - iPhone 13 → [\"iPhone 13\", \"айфон 13\", \"Apple iPhone 13\"]\n4. For niche products: research what models exist first\n5. Price filters: extract min/max price if mentioned\n6. Return ONLY a JSON object: {\"queries\": [...], \"price_min\": N|null, \"price_max\": N|null, \"needs_research\": bool, \"research_query\": \"...\"}\n7. Set needs_research=true only for genuinely niche products where model names are unknown")
+
+(defn- generate-search-queries
+  "Use LLM to generate optimal search queries from user intent."
+  [user-want]
+  (let [messages [{:role "system" :content query-gen-system-prompt}
+                  {:role "user" :content (str "User wants to buy: " user-want)}]]
+    (try
+      (let [resp (llm/llm :deepseek-v4-pro messages [] :provider :deepseek :max-tokens 500)
+            content (get-in resp ["choices" 0 "message" "content"])
+            json-str (or (re-find #"(?s)\{[^}]+\}" content) "{}")
+            parsed (json/parse-string json-str true)]
+        {:queries (vec (:queries parsed))
+         :price-min (:price_min parsed)
+         :price-max (:price_max parsed)
+         :needs-research (:needs_research parsed false)
+         :research-query (:research_query parsed)})
+      (catch Exception e
+        (log/warn e :query-gen-failed)
+        {:queries [user-want]}))))
+
+(defn- do-research
+  "Quick research to find model names for niche products."
+  [research-query]
+  (try
+    (let [result (lalafo/exa-research research-query)
+          data (if (string? result) (json/parse-string result false) result)
+          results (get data "results" [])]
+      (str/join " " (map #(get % "title" "") (take 3 results))))
+    (catch Exception _ "")))
+
+(defn- smart-search-execute
+  "Smart search pipeline: intent → query generation → optional research → search."
+  [args]
+  (let [user-want (get args "user_want")
+        price-min (get args "price_min")
+        price-max (get args "price_max")
+        ;; Step 1: Generate optimal queries
+        {:keys [queries price-min price-max needs-research research-query]}
+        (generate-search-queries user-want)
+        ;; Use user-provided prices or generated ones
+        final-price-min (or (get args "price_min") price-min)
+        final-price-max (or (get args "price_max") price-max)
+        ;; Step 2: Optional research for niche products
+        extra-context (when (and needs-research research-query)
+                        (do-research research-query))
+        ;; Step 3: If research found more models, add them to queries
+        enhanced-queries (if (and extra-context (not (str/blank? extra-context)))
+                           (let [research-terms (str/split (str extra-context) #"\s+" 3)]
+                             (vec (concat queries (filter #(> (count %) 2) research-terms))))
+                           queries)
+        ;; Step 4: Search Lalafo
+        search-args {"queries" (take 6 enhanced-queries)
+                     "category_id" (get args "category_id")
+                     "price_min" final-price-min
+                     "price_max" final-price-max
+                     "city_id" (get args "city_id")
+                     "candidate_limit" 50}
+        result (lalafo/search search-args)]
+    (log/info :smart-search :queries enhanced-queries :price-max final-price-max)
+    (format-search-results result :user-query user-want)))
+
 (def tools
-  [{:name "search_lalafo"
-    :description "Search Lalafo.kg. Scans 3 pages × 200 items, quality-filters junk, then LLM-relevance-filters up to 250 candidates. Returns pre-filtered relevant listings. CRITICAL: search by EXACT MODEL NAMES. Use 4-6 synonyms/model names for broad coverage. For many matches, show user 7-10 best results organized by price tier."
+  [{:name "smart_search"
+    :description "Intelligent Lalafo search. Takes what user wants to buy, generates optimal search queries, optionally researches niche products, and returns curated results. Use for ANY purchase/search intent."
     :schema {"type" "object"
              "properties"
-             {"queries" {"type" "array" "items" {"type" "string"}
-                         "description" "4-6 search query variants (exact models/synonyms) for broad coverage"}
-              "user_query" {"type" "string" "description" "The user's request plus resolved conversation context for relevance filtering. For follow-ups, include the product/category from the previous turn, e.g. 'iPad получше до 50000, не аксессуары'."}
-              "category_id" {"type" "integer" "description" "Lalafo category ID (leaf category, can be null)"}
-              "price_max" {"type" "integer" "description" "Maximum price in KGS"}
-              "price_min" {"type" "integer" "description" "Minimum price in KGS"}
-              "city_id" {"type" "integer" "description" "City ID (103184=Bishkek, 103244=Osh), default Bishkek"}
-              "max_pages" {"type" "integer" "description" "Pages per query; default 3. Use 4-5 only for broad expensive follow-ups."}
-              "per_page" {"type" "integer" "description" "Items per page; default 200."}}
-             "required" ["queries" "user_query"]}
-    :execute (fn [args]
-               (let [user-query (get args "user_query" "")
-                     ;; Convert LLM args (string keys) to snake_case for lalafo/search
-                     search-args {"queries" (get args "queries")
-                                  "category_id" (get args "category_id")
-                                  "price_min" (get args "price_min")
-                                  "price_max" (get args "price_max")
-                                  "city_id" (get args "city_id")
-                                  "max_pages" (get args "max_pages")
-                                  "per_page" (get args "per_page")
-                                  "candidate_limit" 250}
-                     result (lalafo/search search-args)]
-                 (log/info :search-clojure :result-len (count result))
-                 (format-search-results result :user-query user-query)))}
-
-   {:name "browse_categories"
-    :description "Browse Lalafo categories to find the right category ID for a search. Use to discover leaf category IDs."
-    :schema {"type" "object"
-             "properties"
-             {"search_term" {"type" "string" "description" "Term to search categories by, e.g. 'headphones', 'bicycle'. Leave empty for full tree."}}
-             "required" []}
-    :execute (fn [args]
-               (let [term (get args "search_term")]
-                 (if (str/blank? term)
-                   (let [raw (lalafo/fetch-categories-raw)]
-                     (lalafo/format-categories-prompt raw))
-                   (lalafo/search-categories term))))}
-
-   {:name "research_topic"
-    :description "Research a topic online — product info, market prices, specs, reviews. Use BEFORE searching when user asks factual questions you're unsure about. Do NOT use for common-knowledge advice questions."
-    :schema {"type" "object"
-             "properties"
-             {"query" {"type" "string" "description" "What to research, e.g. 'iPad Air 3 specs release date'"}}
-             "required" ["query"]}
-    :execute (fn [args]
-               (let [result (lalafo/exa-research (get args "query"))]
-                 (format-research-results result)))}])
+             {"user_want" {"type" "string" "description" "What the user wants to buy. Example: 'iphone 13 до 30000', 'планшет со стилусом'"}
+              "price_min" {"type" "integer" "description" "Minimum price in KGS (optional)"}
+              "price_max" {"type" "integer" "description" "Maximum price in KGS (optional)"}
+              "category_id" {"type" "integer" "description" "Lalafo category ID (optional)"}
+              "city_id" {"type" "integer" "description" "City ID (103184=Bishkek, 103244=Osh)"}}
+             "required" ["user_want"]}
+    :execute smart-search-execute}])
 
 ;; ══════════════════════ PRE-HOOK ══════════════════════
 

@@ -6,10 +6,15 @@
         cheshire/cheshire {:mvn/version "5.13.0"}
         aero/aero {:mvn/version "1.1.6"}
         clj-harness/clj-harness {:git/url "https://github.com/snqb/clj-harness.git"
-                                :git/sha "c1c18539c515dc3ba5189c66ff0abd89b395a285"}}
+                                 :git/sha "019f37a"}
+        ring/ring-core {:mvn/version "1.13.0"}
+        ring/ring-jetty-adapter {:mvn/version "1.13.0"}
+        com.github.seancorfield/next.jdbc {:mvn/version "1.3.942"}
+        org.xerial/sqlite-jdbc {:mvn/version "3.48.0.0"}}
  :aliases
  {:run     {:main-opts ["-m" "tapalakbot.core"]}
   :bot     {:main-opts ["-m" "tapalakbot.server"]}
   :build   {:deps {org.clojure/tools.build {:mvn/version "0.10.7"}}
             :ns-default build}
+  :monitor {:main-opts ["-m" "tapalakbot.monitor.main"]}
   :repl    {:main-opts ["-r"]}}}

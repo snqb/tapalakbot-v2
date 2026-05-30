@@ -1,9 +1,12 @@
 (ns tapalakbot.bot
-  "Telegram bot for TapalakBot v2. Simple: thinking indicator → agent → edit."
+  "Telegram bot for TapalakBot v2.
+  Uses effect system event bus for live status updates."
   (:require [tapalakbot.core :as t]
             [clj-harness.telegram :as tg]
             [clj-harness.telegram.format :as fmt]
             [clj-harness.core :as hc]
+            [clj-harness.effects :as fx]
+            [clojure.core.async :refer [chan sliding-buffer close!]]
             [clojure.string :as str]
             [clojure.tools.logging :as log]))
 
@@ -28,16 +31,31 @@
 (defn- handle-agent [{:keys [chat-id user-id text]}]
   (let [uid (str "tg-" user-id)
         bot @t/tapalakbot
-        thinking-msg-id (atom nil)]
+        thinking-msg-id (atom nil)
+        ;; Create events channel for live status updates
+        events> (chan (sliding-buffer 64))]
     ;; Send thinking placeholder
     (let [msg (tg/send-message chat-id "💭 ..." :parse-mode nil)]
       (reset! thinking-msg-id (some-> msg (get "result") (get "message_id"))))
-    ;; Run agent
+    ;; Subscribe to events — edit the placeholder with status updates
+    (fx/subscribe-events events>
+                         (fn [status]
+                           (when-let [msg-id @thinking-msg-id]
+                             (try
+                               (tg/edit-message chat-id msg-id status :parse-mode nil)
+                               (catch Exception _)))))
+    ;; Run agent with events>
     (try
-      (let [result (hc/handle-message bot uid text)]
-        (Thread/sleep 100)
+      (let [result (hc/handle-message bot uid text :events> events>)]
+        (close! events>)
+        (Thread/sleep 100) ;; let subscriber finish
         (if-let [msg-id @thinking-msg-id]
-          (let [safe-text (str/replace (str result) #"👉 Смотри\b" "🔗")
+          (let [safe-text (-> (str result)
+                              (str/replace #"👉 Смотри\b" "🔗")
+                              ;; Strip markdown tables — they break on Telegram
+                              (str/replace #"\|[-:| ]+\|" "")
+                              (str/replace #"\|[^
+]*\|" ""))
                 html (fmt/md->html safe-text)]
             (try
               (tg/edit-message chat-id msg-id html :parse-mode "HTML")
@@ -47,6 +65,7 @@
           (tg/send-md chat-id (str result))))
       (catch Exception e
         (log/error e :agent-error {:user-id uid})
+        (close! events>)
         (if-let [msg-id @thinking-msg-id]
           (tg/edit-message chat-id msg-id "❌ Ошибка. Попробуйте ещё раз." :parse-mode nil)
           (tg/send-message chat-id "❌ Ошибка. Попробуйте ещё раз." :parse-mode nil))))))
