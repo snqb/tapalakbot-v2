@@ -271,7 +271,7 @@ Example: [113171780, 112908144, 111226783]")
       :model :deepseek-v4
       :provider :deepseek
       :max-turns 8
-      :nudges {:required-steps ["search_lalafo"]
+      :nudges {:required-steps ["smart_search"]
                :recover-tool-errors? true}
       :pre-hook pre-hook
       :persistence (sess/create "/tmp/tapalakbot-sessions.db")

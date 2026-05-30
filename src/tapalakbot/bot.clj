@@ -49,7 +49,6 @@
   (let [parts (str/split text #"\s+" 2)
         query (when (> (count parts) 1) (str/trim (second parts)))]
     (if (str/blank? query)
-      ;; Show category overview
       (let [cats (monitor/fetch-categories)
             stats (:categories cats)]
         (if (seq stats)
@@ -63,55 +62,54 @@
                             stats))]
             (tg/send-md chat-id (str/join "\n" lines)))
           (tg/send-md chat-id "⚠️ Мониторинг пока не запущен.")))
-      ;; Search specific item
       (let [results (monitor/search-items query)]
         (if (and results (pos? (:count results)))
           (tg/send-md chat-id (monitor/format-search-results results))
           (tg/send-md chat-id (str "🔍 Ничего не найдено по запросу «" query "»")))))))
 
+(defn- strip-tables
+  "Strip markdown tables from text."
+  [text]
+  (-> text
+      (str/replace #"\|[-:| ]+\|" "")
+      (str/replace (re-pattern "\\|[^\\n]*\\|") "")))
+
 (defn- handle-agent [{:keys [chat-id user-id text]}]
   (let [uid (str "tg-" user-id)
         bot @t/tapalakbot
         thinking-msg-id (atom nil)
-        ;; Accumulated text buffer for streaming
         buf (StringBuilder.)
-        ;; Debounce: track last edit time
         last-edit (atom 0)]
     ;; Send thinking placeholder
     (let [msg (tg/send-message chat-id "💭 ..." :parse-mode nil)]
       (reset! thinking-msg-id (some-> msg (get "result") (get "message_id"))))
     ;; Run agent with streaming
     (try
-      (let [result (hc/handle-message-stream!
-                    bot uid text
-                    ;; stream-cb: called with each text delta
-                    (fn [delta]
-                      (.append buf delta)
-                      ;; Debounce edits: max once per 800ms
-                      (let [now (System/currentTimeMillis)
-                            elapsed (- now @last-edit)]
-                        (when (and (> elapsed 800)
-                                   (> (.length buf) 20))
-                          (reset! last-edit now)
-                          (when-let [msg-id @thinking-msg-id]
-                            (try
-                              (let [preview (-> (.toString buf)
-                                                (str/replace #"\|[-:| ]+\|" "")
-                                                (str/replace #"\|[^\n]*\|" ""))
-                                    html (fmt/md->html preview)]
-                                (tg/edit-message chat-id msg-id html :parse-mode "HTML"))
-                              (catch Exception _))))))
-                    ;; status-cb: called for phase changes
-                    :status-cb (fn [status]
-                                 (when-let [msg-id @thinking-msg-id]
-                                   (try
-                                     (tg/edit-message chat-id msg-id status :parse-mode nil)
-                                     (catch Exception _)))))]
+      (let [stream-cb (fn [delta]
+                        (.append buf delta)
+                        (log/info :stream-delta :len (count delta) :total (.length buf))
+                        (let [now (System/currentTimeMillis)
+                              elapsed (- now @last-edit)]
+                          (when (and (> elapsed 800)
+                                     (> (.length buf) 20))
+                            (reset! last-edit now)
+                            (when-let [msg-id @thinking-msg-id]
+                              (try
+                                (let [html (fmt/md->html (strip-tables (.toString buf)))]
+                                  (tg/edit-message chat-id msg-id html :parse-mode "HTML"))
+                                (catch Exception e
+                                  (log/warn e :stream-edit-fail)))))))
+            status-cb (fn [status]
+                        (when-let [msg-id @thinking-msg-id]
+                          (try
+                            (tg/edit-message chat-id msg-id status :parse-mode nil)
+                            (catch Exception e
+                              (log/warn e :status-edit-fail)))))
+            result (hc/handle-message-stream! bot uid text stream-cb :status-cb status-cb)]
         (if-let [msg-id @thinking-msg-id]
           (let [safe-text (-> (str result)
                               (str/replace #"👉 Смотри\b" "🔗")
-                              (str/replace #"\|[-:| ]+\|" "")
-                              (str/replace #"\|[^\n]*\|" ""))
+                              strip-tables)
                 html (fmt/md->html safe-text)]
             (try
               (tg/edit-message chat-id msg-id html :parse-mode "HTML")
