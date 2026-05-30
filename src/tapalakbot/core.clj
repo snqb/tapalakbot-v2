@@ -180,8 +180,9 @@ Example: [113171780, 112908144, 111226783]")
     (try
       (let [resp (llm/llm :deepseek-v4-pro messages [] :provider :deepseek :max-tokens 500)
             content (get-in resp ["choices" 0 "message" "content"])
-            json-str (or (re-find #"(?s)\{[^}]+\}" content) "{}")
-            parsed (json/parse-string json-str true)]
+            json-str (or (re-find #"(?s)\{.*\}" content) "{}")
+            parsed (try (json/parse-string json-str true)
+                        (catch Exception _ {}))]
         {:queries (vec (:queries parsed))
          :price-min (:price_min parsed)
          :price-max (:price_max parsed)
@@ -227,7 +228,7 @@ Example: [113171780, 112908144, 111226783]")
                      "price_min" final-price-min
                      "price_max" final-price-max
                      "city_id" (get args "city_id")
-                     "candidate_limit" 50}
+                     "candidate_limit" 100}
         result (lalafo/search search-args)]
     (log/info :smart-search :queries enhanced-queries :price-max final-price-max)
     (format-search-results result :user-query user-want)))

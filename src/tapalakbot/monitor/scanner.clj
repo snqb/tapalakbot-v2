@@ -37,14 +37,15 @@
         all-items (atom {})]
     (doseq [q qs]
       (try
-        (let [{:keys [items]} (#'lalafo/search-all-pages client q
-                                                         :city-id city_id
-                                                         :max-pages 1
-                                                         :per-page items-per-query)]
+        (let [result (#'lalafo/search-all-pages client q
+                                               :city-id city_id
+                                               :max-pages 1
+                                               :per-page items-per-query)
+              items (second result)]
           (doseq [item items]
             (let [item-id (get item "id")
                   price (get item "price")]
-              (when (and price (> price 50))
+              (when (and price (> price 50) (< price 500000))
                 (swap! all-items assoc item-id item)))))
         (catch Exception e
           (log/warn :scan-query-error :category name :query q :error (.getMessage e)))))
@@ -104,15 +105,15 @@
   (when @scan-thread
     (log/warn :scanner-already-running))
   (let [t (Thread.
-            (fn []
-              (loop []
-                (try
-                  (scan-all!)
-                  (catch Exception e
-                    (log/error :scan-error (.getMessage e))))
-                (Thread/sleep scan-interval-ms)
-                (recur)))
-            "monitor-scanner")]
+           (fn []
+             (loop []
+               (try
+                 (scan-all!)
+                 (catch Exception e
+                   (log/error :scan-error (.getMessage e))))
+               (Thread/sleep scan-interval-ms)
+               (recur)))
+           "monitor-scanner")]
     (.setDaemon t true)
     (.start t)
     (reset! scan-thread t)

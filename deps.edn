@@ -5,12 +5,13 @@
         ch.qos.logback/logback-classic {:mvn/version "1.5.12"}
         cheshire/cheshire {:mvn/version "5.13.0"}
         aero/aero {:mvn/version "1.1.6"}
-        clj-harness/clj-harness {:git/url "https://github.com/snqb/clj-harness.git"
-                                 :git/sha "019f37a"}
+        clj-harness/clj-harness {:local/root "/Users/sn/Projects/clj-harness"}
         ring/ring-core {:mvn/version "1.13.0"}
         ring/ring-jetty-adapter {:mvn/version "1.13.0"}
-        com.github.seancorfield/next.jdbc {:mvn/version "1.3.942"}
+        ring/ring-json {:mvn/version "0.5.1"}
+        com.github.seancorfield/next.jdbc {:mvn/version "1.3.1093"}
         org.xerial/sqlite-jdbc {:mvn/version "3.48.0.0"}}
+ :mvn/repos {"clojars" {:url "https://repo.clojars.org"}}
  :aliases
  {:run     {:main-opts ["-m" "tapalakbot.core"]}
   :bot     {:main-opts ["-m" "tapalakbot.server"]}
