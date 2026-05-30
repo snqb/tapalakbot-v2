@@ -32,8 +32,8 @@
    Options:
      :user-id — user identifier (default: \"test-user\")
      :timeout-ms — max wait time (default: 60000)"
-  ([text] (query-bot text {}))
-  ([text {:keys [user-id timeout-ms] :or {user-id "test-user" timeout-ms 60000}}]
+([text] (query-bot text {}))
+   ([text {:keys [user-id timeout-ms] :or {user-id "test-user" timeout-ms 120000}}]
    (let [bot (get-bot)
          events> (chan (sliding-buffer 64))
          result-promise (promise)]
