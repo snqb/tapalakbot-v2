@@ -1,14 +1,15 @@
 (ns tapalakbot.bot
   "Telegram bot for TapalakBot v2.
-  Uses effect system event bus for live status updates."
+  Uses progressive streaming for real-time text display."
   (:require [tapalakbot.core :as t]
+            [tapalakbot.monitor.client :as monitor]
             [clj-harness.telegram :as tg]
             [clj-harness.telegram.format :as fmt]
             [clj-harness.core :as hc]
-            [clj-harness.effects :as fx]
-            [clojure.core.async :refer [chan sliding-buffer close!]]
             [clojure.string :as str]
             [clojure.tools.logging :as log]))
+
+;; ════════════════════════════ RESPONSES ════════════════════════════
 
 (def ^:private greeting-resp
   "👋 Салам! Я TapalakBot — умный помощник по Lalafo.kg\n\nРасскажите что ищете, и я помогу:\n• Разберусь в товаре\n• Найду лучшие варианты на Lalafo\n• Проверю рыночные цены\n\nПросто напишите, что вам нужно 🔍")
@@ -20,42 +21,97 @@
    "спс"      "Пожалуйста! 😊" "thanks" "You're welcome! 😊"
    "ок"       "👌" "окей" "👌" "ладно" "👌" "понял" "👌"})
 
+;; ════════════════════════════ HANDLERS ════════════════════════════
+
 (defn- handle-start [{:keys [chat-id first-name]}]
-  (tg/send-md chat-id (str "🔍 Привет, " first-name "!\n\nЯ **TapalakBot** — ищу товары на Lalafo.kg и помогаю с выбором.\n\nПросто напиши что хочешь найти."))
+  (let [base-greeting (str "👋 Салам, " first-name "!\n\n"
+                           "Я **TapalakBot** — ищу товары на Lalafo.kg и помогаю с выбором.\n\n"
+                           "Просто напиши что хочешь найти. 🔍")
+        digest (monitor/fetch-start-digest)
+        msg (if (:text digest)
+              (str base-greeting "\n\n" (:text digest))
+              base-greeting)]
+    (tg/send-md chat-id msg))
   nil)
 
 (defn- handle-help [{:keys [chat-id]}]
-  (tg/send-md chat-id "**TapalakBot** — поиск на Lalafo.kg\n\n🔍 Поиск товаров\n💡 Консультации\n⚠️ Предупреждения о подозрительных объявлениях\n📊 Сравнение моделей\n\nПросто опиши что ищешь!")
+  (tg/send-md chat-id (str "**TapalakBot** — поиск на Lalafo.kg\n\n"
+                           "🔍 Поиск товаров\n"
+                           "📊 Рыночные цены (/prices)\n"
+                           "💡 Консультации\n"
+                           "⚠️ Предупреждения о подозрительных объявлениях\n\n"
+                           "Просто опиши что ищешь!"))
   nil)
+
+(defn- handle-prices
+  "Handle /prices command — show market overview or search."
+  [{:keys [chat-id text]}]
+  (let [parts (str/split text #"\s+" 2)
+        query (when (> (count parts) 1) (str/trim (second parts)))]
+    (if (str/blank? query)
+      ;; Show category overview
+      (let [cats (monitor/fetch-categories)
+            stats (:categories cats)]
+        (if (seq stats)
+          (let [lines (concat
+                       ["📊 *Рынок Lalafo.kg*\n"]
+                       (map (fn [c]
+                              (str "• *" (:name c) "* — "
+                                   (:item_count c) " объявлений, "
+                                   (when-let [p (:avg_price c)]
+                                     (str "ср. " (format "%,.0f" (double p)) " сом"))))
+                            stats))]
+            (tg/send-md chat-id (str/join "\n" lines)))
+          (tg/send-md chat-id "⚠️ Мониторинг пока не запущен.")))
+      ;; Search specific item
+      (let [results (monitor/search-items query)]
+        (if (and results (pos? (:count results)))
+          (tg/send-md chat-id (monitor/format-search-results results))
+          (tg/send-md chat-id (str "🔍 Ничего не найдено по запросу «" query "»")))))))
 
 (defn- handle-agent [{:keys [chat-id user-id text]}]
   (let [uid (str "tg-" user-id)
         bot @t/tapalakbot
         thinking-msg-id (atom nil)
-        ;; Create events channel for live status updates
-        events> (chan (sliding-buffer 64))]
+        ;; Accumulated text buffer for streaming
+        buf (StringBuilder.)
+        ;; Debounce: track last edit time
+        last-edit (atom 0)]
     ;; Send thinking placeholder
     (let [msg (tg/send-message chat-id "💭 ..." :parse-mode nil)]
       (reset! thinking-msg-id (some-> msg (get "result") (get "message_id"))))
-    ;; Subscribe to events — edit the placeholder with status updates
-    (fx/subscribe-events events>
-                         (fn [status]
-                           (when-let [msg-id @thinking-msg-id]
-                             (try
-                               (tg/edit-message chat-id msg-id status :parse-mode nil)
-                               (catch Exception _)))))
-    ;; Run agent with events>
+    ;; Run agent with streaming
     (try
-      (let [result (hc/handle-message bot uid text :events> events>)]
-        (close! events>)
-        (Thread/sleep 100) ;; let subscriber finish
+      (let [result (hc/handle-message-stream!
+                    bot uid text
+                    ;; stream-cb: called with each text delta
+                    (fn [delta]
+                      (.append buf delta)
+                      ;; Debounce edits: max once per 800ms
+                      (let [now (System/currentTimeMillis)
+                            elapsed (- now @last-edit)]
+                        (when (and (> elapsed 800)
+                                   (> (.length buf) 20))
+                          (reset! last-edit now)
+                          (when-let [msg-id @thinking-msg-id]
+                            (try
+                              (let [preview (-> (.toString buf)
+                                                (str/replace #"\|[-:| ]+\|" "")
+                                                (str/replace #"\|[^\n]*\|" ""))
+                                    html (fmt/md->html preview)]
+                                (tg/edit-message chat-id msg-id html :parse-mode "HTML"))
+                              (catch Exception _))))))
+                    ;; status-cb: called for phase changes
+                    :status-cb (fn [status]
+                                 (when-let [msg-id @thinking-msg-id]
+                                   (try
+                                     (tg/edit-message chat-id msg-id status :parse-mode nil)
+                                     (catch Exception _)))))]
         (if-let [msg-id @thinking-msg-id]
           (let [safe-text (-> (str result)
                               (str/replace #"👉 Смотри\b" "🔗")
-                              ;; Strip markdown tables — they break on Telegram
                               (str/replace #"\|[-:| ]+\|" "")
-                              (str/replace #"\|[^
-]*\|" ""))
+                              (str/replace #"\|[^\n]*\|" ""))
                 html (fmt/md->html safe-text)]
             (try
               (tg/edit-message chat-id msg-id html :parse-mode "HTML")
@@ -65,14 +121,17 @@
           (tg/send-md chat-id (str result))))
       (catch Exception e
         (log/error e :agent-error {:user-id uid})
-        (close! events>)
         (if-let [msg-id @thinking-msg-id]
           (tg/edit-message chat-id msg-id "❌ Ошибка. Попробуйте ещё раз." :parse-mode nil)
           (tg/send-message chat-id "❌ Ошибка. Попробуйте ещё раз." :parse-mode nil))))))
 
+;; ════════════════════════════ ROUTER ════════════════════════════
+
 (def handler
   (let [std-handler (tg/make-handler
-                     {:commands {"/start" #'handle-start "/help" #'handle-help}
+                     {:commands {"/start" #'handle-start
+                                 "/help" #'handle-help
+                                 "/prices" #'handle-prices}
                       :fast-path fast-responses})]
     (fn [msg]
       (let [text (str/trim (:text msg))]

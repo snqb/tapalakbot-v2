@@ -3,9 +3,29 @@
   (:require [tapalakbot.core :as t]
             [tapalakbot.bot :as bot]
             [tapalakbot.lalafo :as lalafo]
+            [tapalakbot.monitor.client :as monitor]
             [clj-harness.telegram :as tg]
             [clojure.string :as str]
             [clojure.tools.logging :as log]))
+
+(defn- ensure-monitor!
+  "Start the monitor service if not already running."
+  []
+  (if (monitor/health-check)
+    (log/info :monitor-already-running)
+    (do
+      (log/info :monitor-not-running :starting)
+      (try
+        (require 'tapalakbot.monitor.main)
+        (let [main-fn (resolve 'tapalakbot.monitor.main/-main)]
+          (.start (Thread. ^Runnable (fn [] (main-fn)) "monitor-service"))
+          ;; Wait for it to be ready
+          (Thread/sleep 5000)
+          (if (monitor/health-check)
+            (log/info :monitor-started)
+            (log/warn :monitor-start-failed)))
+        (catch Exception e
+          (log/warn :monitor-start-error (.getMessage e)))))))
 
 (defn -main [& args]
   (let [token (or (System/getenv "BOT_TOKEN") "")]
@@ -13,6 +33,9 @@
     (log/info :tapalakbot-start)
     @t/tapalakbot
     (log/info :bot-ready)
+
+    ;; Auto-start monitor if not running
+    (ensure-monitor!)
 
     ;; Healthcheck — smoke test Lalafo API
     (let [hc (lalafo/smoke-test)]

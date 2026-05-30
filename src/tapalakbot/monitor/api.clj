@@ -13,7 +13,10 @@
             [ring.util.response :as response]
             [tapalakbot.monitor.store :as store]
             [tapalakbot.monitor.scanner :as scanner]
+            [next.jdbc :as jdbc]
+            [next.jdbc.result-set :as rs]
             [cheshire.core :as json]
+            [clojure.string :as str]
             [clojure.tools.logging :as log]))
 
 ;; ════════════════════════════ HELPERS ════════════════════════════
@@ -143,6 +146,63 @@
   (future (scanner/scan-all!))
   (json-response {:status "scan started"}))
 
+(defn- format-price [p]
+  (if (and p (> p 0))
+    (str (format "%,.0f" (double p)) " KGS")
+    "?"))
+
+(defn- handle-start-digest [_]
+  "Formatted price digest for Telegram /start."
+  (let [summary (store/get-category-summary)
+        stats (store/get-stats)
+        lines (vec
+               (concat
+                [(str "📊 Рынок Lalafo.kg — " (:items stats) " товаров, "
+                      (:snapshots stats) " снимков цен")
+                 (str "🕐 Обновлено: " (or (:last-scan stats) "нет данных"))
+                 ""]
+                (mapv (fn [c]
+                        (str "*" (:name c) "* — "
+                             (:item_count c) " объявлений\n"
+                             "  💰 Средняя: " (format-price (:avg_price c)) "\n"
+                             "  📉 Мин: " (format-price (:min_price c))
+                             " — 📈 Макс: " (format-price (:max_price c))))
+                      summary)
+                [""
+                 "🔍 Ищите товар — я помогу найти лучшую цену!"]))]
+    (json-response
+     {:text (str/join "\n" lines)
+      :categories (count summary)
+      :items (:items stats)
+      :last-scan (:last-scan stats)})))
+
+(defn- handle-search [request]
+  "Search items by query string."
+  (let [query (get-in request [:params "q"])]
+    (if (str/blank? query)
+      (json-response 400 {:error "Missing ?q= parameter"})
+      (let [summary (store/get-category-summary)
+            ;; Search across all items by title match
+            items (jdbc/execute! (store/get-datasource)
+                                 ["SELECT i.*, c.name as category_name
+                                   FROM monitor_items i
+                                   JOIN monitor_categories c ON i.category_id = c.id
+                                   WHERE i.title LIKE ? AND i.current_price > 0 AND i.current_price < 500000
+                                   ORDER BY i.current_price ASC LIMIT 20"
+                                  (str "%" query "%")]
+                                 {:builder-fn rs/as-unqualified-maps})]
+        (json-response
+         {:query query
+          :count (count items)
+          :items (mapv (fn [i]
+                         {:id (:id i)
+                          :title (:title i)
+                          :price (:current_price i)
+                          :currency (:currency i)
+                          :url (:url i)
+                          :category (:category_name i)})
+                       items)})))))
+
 ;; ════════════════════════════ ROUTER ════════════════════════════
 
 (defn- route [request]
@@ -155,6 +215,8 @@
         (= uri "/prices/deals")      (handle-deals request)
         (= uri "/prices/stats")      (handle-stats request)
         (= uri "/prices/categories") (handle-categories request)
+        (= uri "/prices/start")      (handle-start-digest request)
+        (re-find #"/prices/search" uri) (handle-search request)
         (re-find #"/prices/history/\d+" uri)   (handle-history request)
         (re-find #"/prices/category/\d+" uri)  (handle-category request)
         :else (json-response 404 {:error "Not found" :available-endpoints

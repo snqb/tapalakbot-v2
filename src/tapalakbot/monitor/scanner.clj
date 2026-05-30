@@ -17,6 +17,20 @@
   "Max items to fetch per query."
   40)
 
+;; Keywords in title → exclude (accessories, services, repairs)
+(def ^:private exclude-keywords
+  ["чехол" "зарядк" "кабел" "адаптер" "стекло" "пленк" "ремонт"
+   "установка" "прошивк" "гравировк" "батарейк" "наушник" "чехоль"
+   "переходник" "холдер" "держател" "колпачек" "обложк" "чехол-"
+   "аксессуар" "дополнительн" "запчаст" "комплектующ" "service"
+   "аренда" "прокат"])
+
+(defn- exclude-accessory?
+  "True if item title looks like an accessory or service, not the real product."
+  [title]
+  (let [t (str/lower-case (or title ""))]
+    (some #(str/includes? t %) exclude-keywords)))
+
 ;; ════════════════════════════ SCAN LOGIC ════════════════════════════
 
 (defn- parse-queries
@@ -38,14 +52,16 @@
     (doseq [q qs]
       (try
         (let [result (#'lalafo/search-all-pages client q
-                                               :city-id city_id
-                                               :max-pages 1
-                                               :per-page items-per-query)
+                                                :city-id city_id
+                                                :max-pages 1
+                                                :per-page items-per-query)
               items (second result)]
           (doseq [item items]
             (let [item-id (get item "id")
-                  price (get item "price")]
-              (when (and price (> price 50) (< price 500000))
+                  price (get item "price")
+                  title (get item "title" "")]
+              (when (and price (> price 50) (< price 500000)
+                         (not (exclude-accessory? title)))
                 (swap! all-items assoc item-id item)))))
         (catch Exception e
           (log/warn :scan-query-error :category name :query q :error (.getMessage e)))))
@@ -62,8 +78,10 @@
           (store/upsert-item! {:id item-id
                                :category_id id
                                :title (get item "title" "")
-                               :url (or (get item "url")
-                                        (str "https://lalafo.kg/i/" item-id ".html"))
+                               :url (let [raw (or (get item "url") "")]
+                                      (if (str/starts-with? raw "http")
+                                        raw
+                                        (str "https://lalafo.kg" raw)))
                                :price price
                                :currency (or (get item "currency") "KGS")
                                :image_url img-url

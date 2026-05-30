@@ -20,6 +20,11 @@
 (defn- get-ds []
   (or @ds (init-db!)))
 
+(defn get-datasource
+  "Public accessor for the JDBC datasource."
+  []
+  (get-ds))
+
 ;; next.jdbc returns qualified keywords by default (:table/col).
 ;; We use unqualified maps throughout for simpler access.
 (defn- q! [sql-params]
