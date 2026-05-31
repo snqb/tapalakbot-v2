@@ -6,7 +6,7 @@
         cheshire/cheshire {:mvn/version "5.13.0"}
         aero/aero {:mvn/version "1.1.6"}
         clj-harness/clj-harness {:git/url "https://github.com/snqb/clj-harness.git"
-                                 :git/sha "2895c0a"}
+                                 :git/sha "2895c0a413fdc3aafd472758719077b58fdd1e6b"}
         ring/ring-core {:mvn/version "1.13.0"}
         ring/ring-jetty-adapter {:mvn/version "1.13.0"}
         ring/ring-json {:mvn/version "0.5.1"}
