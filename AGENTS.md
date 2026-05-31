@@ -1,7 +1,7 @@
-<!-- Updated: 2026-05-30 -->
+<!-- Updated: 2026-06-01 -->
 # tapalakbot-v2
 
-> Clojure Telegram bot for Lalafo.kg marketplace search. DeepSeek LLM + native Clojure HTTP client. Progressive streaming, HTML formatting, anti-table safety net, 60 QA cycles. **Price monitor** tracks 10 categories, serves market intelligence via HTTP API. **Deployed: NixOS VPS 85.239.40.192 (systemd).** See [docs/deployment.md](docs/deployment.md).
+> Clojure Telegram bot for Lalafo.kg marketplace search. DeepSeek LLM + native Clojure HTTP client. Progressive streaming, HTML formatting, anti-table safety net, 53 test scenarios. **Price monitor** tracks 10 categories, serves market intelligence via HTTP API. **Deployed: NixOS VPS 85.239.40.192 (systemd).** See [docs/deployment.md](docs/deployment.md).
 
 ## Architecture
 
@@ -32,7 +32,7 @@ Most Telegram/format/streaming logic lives in `clj-harness`. Tapalakbot files ar
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `core.clj` | ~450 | Agent: system prompt, 3 tools (smart_search), pre-hook, REPL |
+| `core.clj` | ~450 | Agent: system prompt, smart_search tool, pre-hook, REPL |
 | `lalafo.clj` | ~380 | Direct Lalafo.kg HTTP client + Exa research + healthcheck |
 | `bot.clj` | ~140 | Telegram bot: handler, `/start` `/help` `/prices`, streaming agent |
 | `server.clj` | ~65 | Entry point: bot + monitor auto-start + healthcheck |
@@ -43,38 +43,31 @@ Most Telegram/format/streaming logic lives in `clj-harness`. Tapalakbot files ar
 | **monitor/api.clj** | ~265 | Ring/Jetty HTTP API (:8787): trending, deals, search, history |
 | **monitor/client.clj** | ~130 | HTTP client for monitor API (used by bot) |
 | **monitor/main.clj** | ~60 | Monitor standalone entry point |
-| `cycle_tuner.py` | ~380 | QA tool (references external Python packages) |
-
-## Monitor Subsystem
-
-Tracks prices for 10 categories on Lalafo.kg: iPhone, Samsung, MacBook, iPad, Наушники, PlayStation, Ноутбуки, Видеокарты, Велосипеды, Телевизоры.
-
-**How it works:**
-1. `server.clj` starts `monitor.main/-main` in a background thread on boot
-2. `scanner.clj` searches Lalafo every 4 hours, stores items + price snapshots in SQLite
-3. `api.clj` serves JSON on `:8787` (trending, deals, search, history, categories)
-4. `bot.clj` calls `client.clj` for `/start` (market digest) and `/prices` (category overview / search)
-
-**Bot commands using monitor:**
-- `/start` — greeting + 📊 market digest (avg prices per category)
-- `/prices` — category overview with item counts + avg prices
-- `/prices <query>` — search items in monitor DB
-- `/help` — mentions `/prices`
-
-**Standalone mode:**
-```bash
-clojure -M:monitor  # Runs scanner + API on :8787 without Telegram
-```
+| **test/tapalakbot/test_scenarios.clj** | ~450 | 53 test scenarios for agent testing |
 
 ## Key Decisions
 
-- **DeepSeek** (`:deepseek-v4` → API model `deepseek-chat`) — 10× cheaper than Claude, adequate Russian + tool calling. Token from `pass deepseek-api/token`. Config: `resources/config.edn` models map.
+- **DeepSeek** (`:deepseek-v4-pro`) — adequate Russian + tool calling. Token from `pass deepseek-api/token`. Config: `resources/config.edn` models map.
 - **Direct Clojure search + categories + research** — All tools use Java HttpClient directly. Zero Python shell-outs.
-- **clj-harness middleware stack** — core-agent → wrap-tools → wrap-retry → wrap-logging. `:nudges` requires `search_lalafo` before final answers.
+- **clj-harness middleware stack** — core-agent → wrap-tools → wrap-retry → wrap-logging. `:nudges` requires `smart_search` before final answers.
 - **HTML parse_mode** — `tg/format.clj` converts LLM markdown to HTML, sent with `parse_mode="HTML"`.
-- **Progressive streaming** — `handle-message-stream!` with debounced edits (max once per 800ms). Status callback for phase changes (🧠 thinking → 🔧 tool).
+- **Progressive streaming** — `handle-message-stream!` with phase tracking (`:initial` → `:streaming` → `:tool` → `:done`). Debounced edits (max once per 1500ms). Status callback for phase changes (🧠 thinking → 🔧 tool).
 - **Monitor in same JVM** — Avoids separate deployment. `server.clj` auto-starts monitor thread if not already running.
 - **Accessory filter** — `scanner.clj` excludes чехол, зарядка, ремонт, установка, etc. from monitor results. Price cap: 500K KGS.
+
+## Tools
+
+### smart_search (single tool for all purchase queries)
+
+Handles the full pipeline internally:
+1. **LLM query generation** — Generates 4-6 optimal search queries from user intent
+2. **Optional research** — For niche products, researches model names first
+3. **Lalafo search** — Searches with generated queries
+4. **Returns curated results** — Formatted for Telegram
+
+**Retry logic:** DeepSeek sometimes returns empty content for query generation. 3-attempt retry with fallback to raw user query.
+
+**Nudge:** `:required-steps ["smart_search"]` — agent must call smart_search before final answer for purchase queries.
 
 ## Running (local/dev)
 
@@ -91,6 +84,9 @@ BOT_TOKEN='...' clojure -M:bot
 
 # Monitor only (standalone, no Telegram)
 clojure -M:monitor
+
+# Run test suite
+clojure -M -e '(require (quote [tapalakbot.test-scenarios :as ts])) (ts/run-all-tests)'
 ```
 
 ## Gotchas
@@ -98,24 +94,22 @@ clojure -M:monitor
 ### Deployment (NixOS VPS)
 
 - **Telegram blocked in Russia** — Most `api.telegram.org` IPs blocked. Only `149.154.167.220` works. NixOS: `networking.extraHosts = "149.154.167.220 api.telegram.org";`
-- **NixOS systemd PATH lacks git** — Clojure tools.deps needs `git` to resolve git deps. NixOS config must add `pkgs.git` to service `environment.PATH`. Without it: `Cannot run program "git": No such file or directory`. Fixed in `configuration.nix` with `environment = { PATH = lib.mkForce (lib.makeBinPath [pkgs.git ...]); };`
+- **NixOS systemd PATH lacks git** — Clojure tools.deps needs `git` to resolve git deps. NixOS config must add `pkgs.git` to service `environment.PATH`. Without it: `Cannot run program "git": No such file or directory`.
 - **`.cpcache` stale after deps change** — When deps.edn changes (new deps, SHA update), clear `.cpcache/` on VPS before restart: `rm -rf /opt/tapalakbot-v2/.cpcache`
+- **Full SHA required** — tools.deps requires full SHA for git deps, not prefix. Use `git rev-parse HEAD` to get full SHA.
 
 ### Monitor
 
 - **Monitor DB in /tmp** — SQLite DB at `/tmp/tapalakbot-monitor.db`. Lost on reboot (intentional — fresh scan on restart).
-- **Initial scan takes ~30s** — First startup blocks while scanning 10 categories. Bot waits via `Thread/sleep 5000` then checks health.
-- **Monitor auto-start** — `server.clj` checks `localhost:8787/health` before starting. If another instance is running, skips.
-- **Accessory filter** — `scanner.clj` excludes чехол, зарядка, кабель, адаптер, ремонт, установка, etc. Price cap: 500K KGS. Update `exclude-keywords` to tune.
+- **Initial scan takes ~30s** — First startup blocks while scanning 10 categories.
 - **Deals need 2+ scans** — `/prices/deals` shows items 20%+ below average. Empty until at least 2 scan cycles complete.
 
 ### General
 
+- **DeepSeek empty responses** — DeepSeek sometimes returns `""` for query generation. 3-attempt retry with fallback to raw user query.
 - **Healthcheck at startup** — Bot runs `lalafo/smoke-test` on boot. Logs `:healthcheck-pass` or `:healthcheck-fail`.
-- **No Python deps** — All tools use Java HttpClient directly.
 - **Local dev deps.edn** — Uses `:local/root` for clj-harness. Don't commit this — git SHA in committed tree.
 - **Only ONE process per bot token** — Two pollers = 409 Conflict.
-- **Table stripping safety net** — `format.clj` regex-strips `| --- |` even if LLM ignores rules.
-- **Session lost on restart** — SQLite persistence in clj-harness, not wired in tapalakbot yet.
+- **Table stripping safety net** — `bot.clj` regex-strips `| --- |` even if LLM ignores rules.
 - **clj-harness pinned** — git dep SHA in deps.edn. `:local/root` for dev, git SHA for deploy.
-- **Warmup needed** — First 1-2 queries after restart get 0 links (JVM + categories).
+- **Lalafo search noise** — Generic queries return junk. Use exact model names.
