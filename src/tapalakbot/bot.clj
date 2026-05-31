@@ -24,14 +24,29 @@
 ;; ════════════════════════════ HANDLERS ════════════════════════════
 
 (defn- handle-start [{:keys [chat-id first-name]}]
-  (let [base-greeting (str "👋 Салам, " first-name "!\n\n"
-                           "Я **TapalakBot** — ищу товары на Lalafo.kg и помогаю с выбором.\n\n"
-                           "Просто напиши что хочешь найти. 🔍")
-        digest (monitor/fetch-start-digest)
-        msg (if (:text digest)
-              (str base-greeting "\n\n" (:text digest))
-              base-greeting)]
-    (tg/send-md chat-id msg))
+  (let [stats (monitor/fetch-categories)
+        cats (:categories stats)
+        total-items (reduce + 0 (map :item_count cats))
+        cat-count (count cats)
+        greeting (str "👋 Салам, " first-name "!\n\n"
+                      "Я **TapalakBot** — умный помощник по покупкам на Lalafo.kg 🇰🇬\n\n"
+                      "━━━━━━━━━━━━━━━━━━━━\n"
+                      "📊 **Рынок сейчас:**\n"
+                      "• " cat-count " категорий отслеживается\n"
+                      "• " total-items " товаров в базе\n"
+                      "━━━━━━━━━━━━━━━━━━━━\n\n"
+                      "**Что я умею:**\n"
+                      "🔍 Искать товары по описанию\n"
+                      "💰 Показывать рыночные цены\n"
+                      "📋 Сравнивать варианты\n"
+                      "⚠️ Предупреждать о подозрительных ценах\n\n"
+                      "**Попробуй:**\n"
+                      "• \"iPhone 13 до 30000\" — поиск с бюджетом\n"
+                      "• \"Стоит ли брать б/у MacBook?\" — совет\n"
+                      "• \"Samsung или Xiaomi?\" — сравнение\n\n"
+                      "Просто напиши что ищешь! 🔍")
+        keyboard (tg/reset-keyboard)]
+    (tg/send-md chat-id greeting :reply_markup keyboard))
   nil)
 
 (defn- handle-help [{:keys [chat-id]}]
