@@ -89,6 +89,32 @@ clojure -M:monitor
 clojure -M -e '(require (quote [tapalakbot.test-scenarios :as ts])) (ts/run-all-tests)'
 ```
 
+## Testing Streaming Locally (REPL-first)
+
+**Never debug streaming in prod.** Test in REPL first:
+
+```clojure
+;; 1. Start REPL
+clojure -Sdeps '{:deps {nrepl/nrepl {:mvn/version "1.2.0"}}}' -M -m nrepl.cmdline --port 7899
+
+;; 2. Load bot
+(require '[tapalakbot.core :as t])
+(require '[clj-harness.core :as hc])
+
+;; 3. Test streaming to terminal (no Telegram needed)
+(hc/handle-message-stream! @t/tapalakbot "test-user" "найди iphone 13"
+  (fn [delta] (print delta) (flush))
+  :status-cb (fn [s] (println "\nSTATUS:" s)))
+
+;; 4. Check streaming logs
+tail -f /tmp/tapalakbot.log | grep stream-delta
+```
+
+**What to look for:**
+- `stream-delta` logs appear incrementally (not all at once)
+- Phase transitions: `:initial` → `:streaming` → `:tool` → `:streaming` → `:done`
+- No gaps >5s between deltas
+
 ## Gotchas
 
 ### Deployment (NixOS VPS)
