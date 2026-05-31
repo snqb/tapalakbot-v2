@@ -92,18 +92,22 @@
                         ;; Set phase to :streaming when LLM is generating text
                         (reset! phase :streaming)
                         (let [now (System/currentTimeMillis)
-                              elapsed (- now @last-edit)]
+                              elapsed (- now @last-edit)
+                              msg-id @thinking-msg-id]
+                          (log/info :stream-check :elapsed elapsed :buf-len (.length buf) :phase @phase :msg-id msg-id)
                           ;; Debounce edits: max once per 1500ms
                           (when (and (> elapsed 1500)
-                                     (> (.length buf) 30))
+                                     (> (.length buf) 30)
+                                     msg-id)
                             (reset! last-edit now)
-                            (when-let [msg-id @thinking-msg-id]
-                              (try
-                                (let [preview (strip-tables (.toString buf))
-                                      html (fmt/md->html preview)]
-                                  (tg/edit-message chat-id msg-id html :parse-mode "HTML"))
-                                (catch Exception e
-                                  (log/warn e :stream-edit-fail)))))))
+                            (log/info :stream-edit-triggered)
+                            (try
+                              (let [preview (strip-tables (.toString buf))
+                                    html (fmt/md->html preview)]
+                                (tg/edit-message chat-id msg-id html :parse-mode "HTML")
+                                (log/info :stream-edit-success))
+                              (catch Exception e
+                                (log/warn e :stream-edit-fail))))))
             status-cb (fn [status]
                         (reset! phase :tool)
                         ;; Clear buffer when entering tool phase (new response after tool)
