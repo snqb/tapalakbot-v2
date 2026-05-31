@@ -8,17 +8,23 @@
     * { margin: 0; padding: 0; box-sizing: border-box; }
     
     :root {
-      --bg: #0a0a0a;
-      --fg: #e0e0e0;
-      --accent: #00ff88;
-      --accent2: #ff6b6b;
-      --muted: #666;
-      --card: #111;
-      --border: #222;
+      --bg: #fafafa;
+      --fg: #1a1a1a;
+      --accent: #0052ff;
+      --accent-light: #e8f0ff;
+      --green: #00a86b;
+      --green-light: #e6f7f0;
+      --orange: #ff6b35;
+      --orange-light: #fff3ed;
+      --muted: #6b7280;
+      --card: #ffffff;
+      --border: #e5e7eb;
+      --shadow: 0 1px 3px rgba(0,0,0,0.1);
+      --shadow-lg: 0 10px 40px rgba(0,0,0,0.08);
     }
     
     body {
-      font-family: 'SF Mono', 'JetBrains Mono', 'Fira Code', monospace;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       background: var(--bg);
       color: var(--fg);
       line-height: 1.6;
@@ -27,86 +33,72 @@
     
     /* ═══ HERO ═══ */
     .hero {
-      min-height: 100vh;
+      min-height: 80vh;
       display: flex;
       flex-direction: column;
       justify-content: center;
-      padding: 2rem;
-      position: relative;
-      overflow: hidden;
-    }
-    
-    .hero::before {
-      content: '';
-      position: absolute;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 100%;
-      background: 
-        linear-gradient(90deg, transparent 49.5%, var(--border) 49.5%, var(--border) 50.5%, transparent 50.5%),
-        linear-gradient(0deg, transparent 49.5%, var(--border) 49.5%, var(--border) 50.5%, transparent 50.5%);
-      background-size: 100px 100px;
-      opacity: 0.3;
-      z-index: 0;
+      padding: 4rem 2rem;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
     }
     
     .hero-content {
-      position: relative;
-      z-index: 1;
       max-width: 1200px;
       margin: 0 auto;
     }
     
     .hero h1 {
-      font-size: clamp(3rem, 10vw, 8rem);
+      font-size: clamp(3rem, 8vw, 6rem);
       font-weight: 900;
-      letter-spacing: -0.05em;
-      line-height: 0.9;
-      margin-bottom: 2rem;
+      letter-spacing: -0.03em;
+      line-height: 1;
+      margin-bottom: 1.5rem;
     }
     
     .hero h1 span {
-      color: var(--accent);
       display: block;
+      opacity: 0.9;
+      font-size: 0.5em;
+      font-weight: 400;
+      margin-top: 0.5rem;
     }
     
     .hero p {
-      font-size: clamp(1rem, 2vw, 1.5rem);
-      color: var(--muted);
+      font-size: 1.25rem;
+      opacity: 0.9;
       max-width: 600px;
-      margin-bottom: 3rem;
+      margin-bottom: 2rem;
     }
     
     .hero-stats {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-      gap: 2rem;
-      margin-top: 4rem;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 1.5rem;
+      margin-top: 3rem;
     }
     
     .stat {
-      border-left: 3px solid var(--accent);
-      padding-left: 1rem;
+      background: rgba(255,255,255,0.15);
+      backdrop-filter: blur(10px);
+      padding: 1.5rem;
+      border-radius: 12px;
     }
     
     .stat-number {
-      font-size: 3rem;
-      font-weight: 900;
-      color: var(--accent);
+      font-size: 2.5rem;
+      font-weight: 800;
       line-height: 1;
     }
     
     .stat-label {
       font-size: 0.9rem;
-      color: var(--muted);
+      opacity: 0.8;
       margin-top: 0.5rem;
     }
     
     /* ═══ SECTION ═══ */
     section {
-      padding: 6rem 2rem;
-      border-top: 1px solid var(--border);
+      padding: 5rem 2rem;
     }
     
     .container {
@@ -115,22 +107,42 @@
     }
     
     h2 {
-      font-size: clamp(2rem, 5vw, 4rem);
-      font-weight: 900;
-      margin-bottom: 3rem;
-      letter-spacing: -0.03em;
+      font-size: clamp(2rem, 4vw, 3rem);
+      font-weight: 800;
+      margin-bottom: 1rem;
+      letter-spacing: -0.02em;
     }
     
     h2 span {
       color: var(--accent);
     }
     
+    .section-desc {
+      color: var(--muted);
+      font-size: 1.1rem;
+      margin-bottom: 3rem;
+      max-width: 600px;
+    }
+    
     /* ═══ DIALOGUES ═══ */
+    .dialogues-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+      gap: 1.5rem;
+    }
+    
     .dialogue {
       background: var(--card);
       border: 1px solid var(--border);
-      margin-bottom: 2rem;
+      border-radius: 12px;
       overflow: hidden;
+      box-shadow: var(--shadow);
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+    
+    .dialogue:hover {
+      transform: translateY(-2px);
+      box-shadow: var(--shadow-lg);
     }
     
     .dialogue-header {
@@ -139,16 +151,20 @@
       display: flex;
       justify-content: space-between;
       align-items: center;
+      background: var(--bg);
     }
     
-    .dialogue-header .user {
-      color: var(--accent);
-      font-weight: 700;
+    .dialogue-header .query {
+      font-weight: 600;
+      color: var(--fg);
     }
     
     .dialogue-header .time {
       color: var(--muted);
-      font-size: 0.9rem;
+      font-size: 0.85rem;
+      background: var(--card);
+      padding: 0.25rem 0.75rem;
+      border-radius: 20px;
     }
     
     .dialogue-body {
@@ -156,68 +172,95 @@
     }
     
     .msg {
-      margin-bottom: 1.5rem;
-      padding-left: 1rem;
-      border-left: 2px solid var(--border);
+      margin-bottom: 1.25rem;
     }
     
     .msg:last-child {
       margin-bottom: 0;
     }
     
-    .msg.user {
-      border-left-color: var(--accent2);
-    }
-    
-    .msg.bot {
-      border-left-color: var(--accent);
-    }
-    
     .msg-label {
-      font-size: 0.8rem;
+      font-size: 0.75rem;
       font-weight: 700;
-      margin-bottom: 0.5rem;
       text-transform: uppercase;
-      letter-spacing: 0.1em;
+      letter-spacing: 0.05em;
+      margin-bottom: 0.5rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
     }
     
-    .msg.user .msg-label { color: var(--accent2); }
-    .msg.bot .msg-label { color: var(--accent); }
+    .msg.user .msg-label {
+      color: var(--orange);
+    }
+    
+    .msg.bot .msg-label {
+      color: var(--green);
+    }
     
     .msg-text {
-      color: var(--fg);
+      padding: 0.75rem 1rem;
+      border-radius: 8px;
+      font-size: 0.95rem;
       line-height: 1.5;
+    }
+    
+    .msg.user .msg-text {
+      background: var(--orange-light);
+      border-left: 3px solid var(--orange);
+    }
+    
+    .msg.bot .msg-text {
+      background: var(--green-light);
+      border-left: 3px solid var(--green);
+    }
+    
+    .msg-text a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+    
+    .msg-text a:hover {
+      text-decoration: underline;
     }
     
     /* ═══ CATEGORIES ═══ */
     .categories {
       display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
       gap: 1.5rem;
     }
     
     .category {
       background: var(--card);
       border: 1px solid var(--border);
+      border-radius: 12px;
       padding: 1.5rem;
-      transition: border-color 0.2s;
+      box-shadow: var(--shadow);
+      transition: transform 0.2s, box-shadow 0.2s;
     }
     
     .category:hover {
-      border-color: var(--accent);
+      transform: translateY(-2px);
+      box-shadow: var(--shadow-lg);
+    }
+    
+    .category-icon {
+      font-size: 2rem;
+      margin-bottom: 1rem;
     }
     
     .category-name {
       font-size: 1.2rem;
       font-weight: 700;
       margin-bottom: 1rem;
-      color: var(--accent);
+      color: var(--fg);
     }
     
     .category-stats {
       display: grid;
       grid-template-columns: 1fr 1fr;
-      gap: 0.5rem;
+      gap: 0.75rem;
     }
     
     .category-stat {
@@ -226,30 +269,35 @@
     
     .category-stat .label {
       color: var(--muted);
+      display: block;
+      font-size: 0.8rem;
     }
     
     .category-stat .value {
       font-weight: 700;
+      color: var(--fg);
     }
     
     /* ═══ TECH ═══ */
     .tech-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-      gap: 2rem;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 1.5rem;
     }
     
     .tech-item {
       background: var(--card);
       border: 1px solid var(--border);
+      border-radius: 12px;
       padding: 2rem;
+      box-shadow: var(--shadow);
     }
     
     .tech-item h3 {
-      font-size: 1.5rem;
+      font-size: 1.3rem;
       font-weight: 700;
       margin-bottom: 1rem;
-      color: var(--accent);
+      color: var(--fg);
     }
     
     .tech-item p {
@@ -262,16 +310,18 @@
       background: var(--bg);
       padding: 1rem;
       margin-top: 1rem;
-      font-size: 0.9rem;
+      border-radius: 8px;
+      font-size: 0.85rem;
+      font-family: 'SF Mono', 'JetBrains Mono', monospace;
       overflow-x: auto;
+      color: var(--accent);
     }
     
     /* ═══ METRICS ═══ */
     .metrics {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-      gap: 2rem;
-      margin-top: 3rem;
+      gap: 1.5rem;
     }
     
     .metric {
@@ -279,10 +329,12 @@
       padding: 2rem;
       background: var(--card);
       border: 1px solid var(--border);
+      border-radius: 12px;
+      box-shadow: var(--shadow);
     }
     
     .metric-value {
-      font-size: 4rem;
+      font-size: 3.5rem;
       font-weight: 900;
       color: var(--accent);
       line-height: 1;
@@ -296,41 +348,44 @@
     .metric-label {
       font-size: 0.9rem;
       color: var(--muted);
-      margin-top: 1rem;
+      margin-top: 0.75rem;
     }
     
     /* ═══ CTA ═══ */
     .cta {
       text-align: center;
-      padding: 8rem 2rem;
-      border-top: 1px solid var(--border);
+      padding: 6rem 2rem;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
     }
     
     .cta h2 {
-      margin-bottom: 2rem;
+      color: white;
+      margin-bottom: 1.5rem;
     }
     
     .cta-button {
       display: inline-block;
-      background: var(--accent);
-      color: var(--bg);
-      padding: 1.5rem 3rem;
+      background: white;
+      color: var(--accent);
+      padding: 1.25rem 2.5rem;
       font-size: 1.2rem;
       font-weight: 700;
       text-decoration: none;
-      font-family: inherit;
+      border-radius: 50px;
       transition: transform 0.2s, box-shadow 0.2s;
+      box-shadow: 0 4px 15px rgba(0,0,0,0.2);
     }
     
     .cta-button:hover {
       transform: translateY(-2px);
-      box-shadow: 0 10px 30px rgba(0, 255, 136, 0.3);
+      box-shadow: 0 8px 25px rgba(0,0,0,0.3);
     }
     
     .cta-sub {
       margin-top: 1.5rem;
-      color: var(--muted);
-      font-size: 0.9rem;
+      opacity: 0.8;
+      font-size: 0.95rem;
     }
     
     /* ═══ FOOTER ═══ */
@@ -342,15 +397,33 @@
       font-size: 0.9rem;
     }
     
+    footer a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+    
+    footer a:hover {
+      text-decoration: underline;
+    }
+    
     /* ═══ RESPONSIVE ═══ */
     @media (max-width: 768px) {
+      .hero {
+        min-height: 60vh;
+        padding: 3rem 1.5rem;
+      }
+      
       .hero-stats {
         grid-template-columns: repeat(2, 1fr);
-        gap: 1.5rem;
+        gap: 1rem;
       }
       
       .stat-number {
         font-size: 2rem;
+      }
+      
+      .dialogues-grid {
+        grid-template-columns: 1fr;
       }
       
       .categories {
@@ -362,58 +435,21 @@
       }
       
       .metric-value {
-        font-size: 3rem;
+        font-size: 2.5rem;
       }
-    }
-    
-    /* ═══ ANIMATIONS ═══ */
-    @keyframes blink {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.3; }
-    }
-    
-    .blink {
-      animation: blink 1.5s ease-in-out infinite;
-    }
-    
-    /* ═══ GRID OVERLAY ═══ */
-    .grid-overlay {
-      position: fixed;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 100%;
-      pointer-events: none;
-      z-index: 9999;
-      opacity: 0;
-      transition: opacity 0.3s;
-    }
-    
-    .grid-overlay.visible {
-      opacity: 0.1;
-    }
-    
-    .grid-overlay div {
-      position: absolute;
-      background: var(--accent);
     }
   </style>
 </head>
 <body>
-  <!-- Grid overlay for design review -->
-  <div class="grid-overlay" id="grid">
-    <div style="left: 50%; top: 0; width: 1px; height: 100%;"></div>
-  </div>
-  
   <!-- ═══ HERO ═══ -->
   <section class="hero">
     <div class="hero-content">
       <h1>
-        TAPALAK<span>BOT</span>
+        TapalakBot
+        <span>Умный помощник по покупкам на Lalafo.kg</span>
       </h1>
       <p>
-        Умный помощник по покупкам на Lalafo.kg. 
-        Ищет товары, анализирует цены, предупреждает о подозрительных объявлениях.
+        Ищет товары, анализирует цены, предупреждает о подозрительных объявлениях. 
         Работает на DeepSeek LLM и прямом HTTP-клиенте к Lalafo API.
       </p>
       
@@ -441,87 +477,623 @@
   <!-- ═══ DIALOGUES ═══ -->
   <section id="dialogues">
     <div class="container">
-      <h2>Диалоги <span>↓</span></h2>
+      <h2>Примеры <span>диалогов</span></h2>
+      <p class="section-desc">
+        Реальные запросы пользователей и ответы бота. Каждый ответ — результат поиска по Lalafo.kg с анализом цен.
+      </p>
       
-      <div class="dialogue">
-        <div class="dialogue-header">
-          <span class="user">@user_1</span>
-          <span class="time">12 сек</span>
-        </div>
-        <div class="dialogue-body">
-          <div class="msg user">
-            <div class="msg-label">Пользователь</div>
-            <div class="msg-text">Найди iPhone 13 до 30000 сом</div>
+      <div class="dialogues-grid">
+        <!-- Dialogue 1 -->
+        <div class="dialogue">
+          <div class="dialogue-header">
+            <span class="query">iPhone 13 до 30000</span>
+            <span class="time">12 сек</span>
           </div>
-          <div class="msg bot">
-            <div class="msg-label">TapalakBot</div>
-            <div class="msg-text">
-              🔥 <strong>iPhone 13</strong> — от 22,000 сом<br><br>
-              1. iPhone 13 128GB — 25,000 сом → <a href="#">lalafo.kg/...</a><br>
-              2. iPhone 13 256GB — 28,500 сом → <a href="#">lalafo.kg/...</a><br>
-              3. iPhone 13 mini — 22,000 сом → <a href="#">lalafo.kg/...<br><br>
-              💡 Рыночная цена: 25,000-35,000 сом. Все варианты в рамках бюджета.
+          <div class="dialogue-body">
+            <div class="msg user">
+              <div class="msg-label">👤 Пользователь</div>
+              <div class="msg-text">Найди iPhone 13 до 30000 сом</div>
+            </div>
+            <div class="msg bot">
+              <div class="msg-label">🤖 TapalakBot</div>
+              <div class="msg-text">
+                🔥 <strong>iPhone 13</strong> — от 22,000 сом<br><br>
+                1. iPhone 13 128GB — 25,000 сом → <a href="#">lalafo.kg/...</a><br>
+                2. iPhone 13 256GB — 28,500 сом → <a href="#">lalafo.kg/...</a><br>
+                3. iPhone 13 mini — 22,000 сом → <a href="#">lalafo.kg/...</a><br><br>
+                💡 Рыночная цена: 25,000-35,000 сом. Все варианты в рамках бюджета.
+              </div>
             </div>
           </div>
         </div>
-      </div>
-      
-      <div class="dialogue">
-        <div class="dialogue-header">
-          <span class="user">@user_2</span>
-          <span class="time">45 сек</span>
-        </div>
-        <div class="dialogue-body">
-          <div class="msg user">
-            <div class="msg-label">Пользователь</div>
-            <div class="msg-text">Стоит ли брать б/у MacBook?</div>
+        
+        <!-- Dialogue 2 -->
+        <div class="dialogue">
+          <div class="dialogue-header">
+            <span class="query">Стоит ли брать б/у MacBook?</span>
+            <span class="time">45 сек</span>
           </div>
-          <div class="msg bot">
-            <div class="msg-label">TapalakBot</div>
-            <div class="msg-text">
-              💡 <strong>Б/у MacBook — хороший выбор, но с оговорками:</strong><br><br>
-              ✅ <strong>Плюсы:</strong><br>
-              • Цена на 30-50% ниже нового<br>
-              • Алюминиевый корпус долговечен<br>
-              • macOS обновляется 5-7 лет<br><br>
-              ⚠️ <strong>Минусы:</strong><br>
-              • Батарея деградирует (проверьте циклы)<br>
-              • Клавиатура «бабочка» (2015-2019) — проблемная<br>
-              • Нет гарантии Apple<br><br>
-              🔍 <strong>Что проверить:</strong><br>
-              • Циклы батареи (System Report → Power)<br>
-              • Состояние экрана (яркость, битые пиксели)<br>
-              • Серийный номер на сайте Apple<br><br>
-              Найти MacBook на Lalafo?
+          <div class="dialogue-body">
+            <div class="msg user">
+              <div class="msg-label">👤 Пользователь</div>
+              <div class="msg-text">Стоит ли брать б/у MacBook?</div>
+            </div>
+            <div class="msg bot">
+              <div class="msg-label">🤖 TapalakBot</div>
+              <div class="msg-text">
+                💡 <strong>Б/у MacBook — хороший выбор, но с оговорками:</strong><br><br>
+                ✅ <strong>Плюсы:</strong><br>
+                • Цена на 30-50% ниже нового<br>
+                • Алюминиевый корпус долговечен<br>
+                • macOS обновляется 5-7 лет<br><br>
+                ⚠️ <strong>Минусы:</strong><br>
+                • Батарея деградирует (проверьте циклы)<br>
+                • Клавиатура «бабочка» (2015-2019) — проблемная<br>
+                • Нет гарантии Apple<br><br>
+                🔍 <strong>Что проверить:</strong><br>
+                • Циклы батареи (System Report → Power)<br>
+                • Состояние экрана (яркость, битые пиксели)<br>
+                • Серийный номер на сайте Apple<br><br>
+                Найти MacBook на Lalafo?
+              </div>
             </div>
           </div>
         </div>
-      </div>
-      
-      <div class="dialogue">
-        <div class="dialogue-header">
-          <span class="user">@user_3</span>
-          <span class="time">8 сек</span>
-        </div>
-        <div class="dialogue-body">
-          <div class="msg user">
-            <div class="msg-label">Пользователь</div>
-            <div class="msg-text">Samsung или Xiaomi?</div>
+        
+        <!-- Dialogue 3 -->
+        <div class="dialogue">
+          <div class="dialogue-header">
+            <span class="query">Samsung или Xiaomi?</span>
+            <span class="time">8 сек</span>
           </div>
-          <div class="msg bot">
-            <div class="msg-label">TapalakBot</div>
-            <div class="msg-text">
-              📊 <strong>Сравнение Samsung vs Xiaomi:</strong><br><br>
-              <strong>Samsung:</strong><br>
-              • Средняя цена: 29,917 сом<br>
-              • Плюсы: камера, экран, гарантия<br>
-              • Минусы: цена, TouchWiz<br><br>
-              <strong>Xiaomi:</strong><br>
-              • Средняя цена: 15,000 сом<br>
-              • Плюсы: цена, батарея, производительность<br>
-              • Минусы: MIUI (реклама), камера<br><br>
-              💡 <strong>Вердикт:</strong> Xiaomi — если бюджет ограничен. Samsung — если важна камера и экран.<br><br>
-              Найти конкретные модели?
+          <div class="dialogue-body">
+            <div class="msg user">
+              <div class="msg-label">👤 Пользователь</div>
+              <div class="msg-text">Samsung или Xiaomi?</div>
+            </div>
+            <div class="msg bot">
+              <div class="msg-label">🤖 TapalakBot</div>
+              <div class="msg-text">
+                📊 <strong>Сравнение Samsung vs Xiaomi:</strong><br><br>
+                <strong>Samsung:</strong><br>
+                • Средняя цена: 29,917 сом<br>
+                • Плюсы: камера, экран, гарантия<br>
+                • Минусы: цена, TouchWiz<br><br>
+                <strong>Xiaomi:</strong><br>
+                • Средняя цена: 15,000 сом<br>
+                • Плюсы: цена, батарея, производительность<br>
+                • Минусы: MIUI (реклама), камера<br><br>
+                💡 <strong>Вердикт:</strong> Xiaomi — если бюджет ограничен. Samsung — если важна камера и экран.<br><br>
+                Найти конкретные модели?
+              </div>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Dialogue 4 -->
+        <div class="dialogue">
+          <div class="dialogue-header">
+            <span class="query">PlayStation 5</span>
+            <span class="time">15 сек</span>
+          </div>
+          <div class="dialogue-body">
+            <div class="msg user">
+              <div class="msg-label">👤 Пользователь</div>
+              <div class="msg-text">PlayStation 5 сколько стоит?</div>
+            </div>
+            <div class="msg bot">
+              <div class="msg-label">🤖 TapalakBot</div>
+              <div class="msg-text">
+                🎮 <strong>PlayStation 5 на Lalafo:</strong><br><br>
+                💰 <strong>Цены:</strong><br>
+                • PS5 Digital — от 35,000 сом<br>
+                • PS5 Disc — от 42,000 сом<br>
+                • PS5 + доп. контроллер — от 45,000 сом<br><br>
+                📊 <strong>Рынок:</strong><br>
+                • Средняя цена: 21,116 сом (б/у)<br>
+                • Новые: 45,000-55,000 сом<br>
+                • Б/у: 30,000-40,000 сом<br><br>
+                ⚠️ <strong>На что смотреть:</strong><br>
+                • Версия диска (CFI-1000 vs CFI-1200)<br>
+                • Состояние вентилятора<br>
+                • Наличие чека/гарантии<br><br>
+                Найти объявления?
+              </div>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Dialogue 5 -->
+        <div class="dialogue">
+          <div class="dialogue-header">
+            <span class="query">Наушники до 5000</span>
+            <span class="time">10 сек</span>
+          </div>
+          <div class="dialogue-body">
+            <div class="msg user">
+              <div class="msg-label">👤 Пользователь</div>
+              <div class="msg-text">Наушники до 5000 сом</div>
+            </div>
+            <div class="msg bot">
+              <div class="msg-label">🤖 TapalakBot</div>
+              <div class="msg-text">
+                🎧 <strong>Наушники до 5,000 сом:</strong><br><br>
+                <strong>TWS (беспроводные):</strong><br>
+                1. Samsung Galaxy Buds2 — 3,500 сом → <a href="#">lalafo.kg/...</a><br>
+                2. Xiaomi Redmi Buds 4 — 2,800 сом → <a href="#">lalafo.kg/...</a><br>
+                3. JBL Tune 130NC — 4,200 сом → <a href="#">lalafo.kg/...</a><br><br>
+                <strong>Накладные:</strong><br>
+                4. Sony WH-CH520 — 3,200 сом → <a href="#">lalafo.kg/...</a><br>
+                5. JBL Tune 510BT — 2,500 сом → <a href="#">lalafo.kg/...</a><br><br>
+                💡 <strong>Совет:</strong> TWS — для спорта, накладные — для дома и музыки.
+              </div>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Dialogue 6 -->
+        <div class="dialogue">
+          <div class="dialogue-header">
+            <span class="query">MacBook Air M2</span>
+            <span class="time">18 сек</span>
+          </div>
+          <div class="dialogue-body">
+            <div class="msg user">
+              <div class="msg-label">👤 Пользователь</div>
+              <div class="msg-text">MacBook Air M2 найти</div>
+            </div>
+            <div class="msg bot">
+              <div class="msg-label">🤖 TapalakBot</div>
+              <div class="msg-text">
+                💻 <strong>MacBook Air M2:</strong><br><br>
+                📊 <strong>Рынок:</strong><br>
+                • Средняя цена: 49,919 сом<br>
+                • Диапазон: 650-250,000 сом<br>
+                • В наличии: 128 штук<br><br>
+                🔥 <strong>Лучшие варианты:</strong><br>
+                1. MacBook Air M2 8/256 — 85,000 сом → <a href="#">lalafo.kg/...</a><br>
+                2. MacBook Air M2 16/512 — 110,000 сом → <a href="#">lalafo.kg/...</a><br>
+                3. MacBook Air M2 8/256 (б/у) — 72,000 сом → <a href="#">lalafo.kg/...</a><br><br>
+                💡 <strong>Совет:</strong> M2 — отличный выбор. 8GB хватает для 90% задач.
+              </div>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Dialogue 7 -->
+        <div class="dialogue">
+          <div class="dialogue-header">
+            <span class="query">Телевизор 55 дюймов</span>
+            <span class="time">14 сек</span>
+          </div>
+          <div class="dialogue-body">
+            <div class="msg user">
+              <div class="msg-label">👤 Пользователь</div>
+              <div class="msg-text">Телевизор 55 дюймов до 40000</div>
+            </div>
+            <div class="msg bot">
+              <div class="msg-label">🤖 TapalakBot</div>
+              <div class="msg-text">
+                📺 <strong>Телевизоры 55" до 40,000 сом:</strong><br><br>
+                1. Samsung UE55AU7100 — 38,000 сом → <a href="#">lalafo.kg/...</a><br>
+                2. LG 55UP7700 — 35,000 сом → <a href="#">lalafo.kg/...</a><br>
+                3. Xiaomi TV P1 55" — 32,000 сом → <a href="#">lalafo.kg/...</a><br>
+                4. Hisense 55A6G — 28,000 сом → <a href="#">lalafo.kg/...</a><br><br>
+                📊 <strong>Рынок:</strong><br>
+                • Средняя цена 55": 17,276 сом (б/у)<br>
+                • Новые: 30,000-50,000 сом<br><br>
+                💡 <strong>Совет:</strong> Samsung/LG — надежно. Xiaomi — цена/качество.
+              </div>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Dialogue 8 -->
+        <div class="dialogue">
+          <div class="dialogue-header">
+            <span class="query">Велосипед горный</span>
+            <span class="time">16 сек</span>
+          </div>
+          <div class="dialogue-body">
+            <div class="msg user">
+              <div class="msg-label">👤 Пользователь</div>
+              <div class="msg-text">Горный велосипед до 20000</div>
+            </div>
+            <div class="msg bot">
+              <div class="msg-label">🤖 TapalakBot</div>
+              <div class="msg-text">
+                🚴 <strong>Горные велосипеды до 20,000 сом:</strong><br><br>
+                1. Trek Marlin 7 — 18,000 сом → <a href="#">lalafo.kg/...</a><br>
+                2. Giant Talon 2 — 15,000 сом → <a href="#">lalafo.kg/...</a><br>
+                3. Specialized Rockhopper — 19,500 сом → <a href="#">lalafo.kg/...</a><br>
+                4. Scott Scale 970 — 16,000 сом → <a href="#">lalafo.kg/...</a><br><br>
+                📊 <strong>Рынок:</strong><br>
+                • Средняя цена: 24,092 сом<br>
+                • Диапазон: 200-140,000 сом<br>
+                • В наличии: 247 штук<br><br>
+                💡 <strong>На что смотреть:</strong><br>
+                • Размер рамы (под рост)<br>
+                • Тип амортизатора (вилка/двухподвес)<br>
+                • Состояние трансмиссии
+              </div>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Dialogue 9 -->
+        <div class="dialogue">
+          <div class="dialogue-header">
+            <span class="query">iPad для рисования</span>
+            <span class="time">20 сек</span>
+          </div>
+          <div class="dialogue-body">
+            <div class="msg user">
+              <div class="msg-label">👤 Пользователь</div>
+              <div class="msg-text">iPad для рисования нужен</div>
+            </div>
+            <div class="msg bot">
+              <div class="msg-label">🤖 TapalakBot</div>
+              <div class="msg-text">
+                🎨 <strong>iPad для рисования:</strong><br><br>
+                <strong>Лучшие варианты:</strong><br>
+                1. iPad Pro 12.9" M2 — от 85,000 сом<br>
+                2. iPad Air M1 — от 55,000 сом<br>
+                3. iPad 10th gen — от 35,000 сом<br><br>
+                📊 <strong>Рынок:</strong><br>
+                • Средняя цена: 32,117 сом<br>
+                • Диапазон: 300-170,000 сом<br>
+                • В наличии: 156 штук<br><br>
+                ✏️ <strong>Для рисования важно:</strong><br>
+                • Поддержка Apple Pencil 2-го поколения<br>
+                • Экран 11" или 12.9" (больше — лучше)<br>
+                • ProMotion (120Hz) — плавность линий<br><br>
+                💡 <strong>Совет:</strong> iPad Air M1 — лучший баланс цена/качество для рисования.
+              </div>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Dialogue 10 -->
+        <div class="dialogue">
+          <div class="dialogue-header">
+            <span class="query"> Видеокарта RTX 3060</span>
+            <span class="time">13 сек</span>
+          </div>
+          <div class="dialogue-body">
+            <div class="msg user">
+              <div class="msg-label">👤 Пользователь</div>
+              <div class="msg-text">RTX 3060 сколько стоит?</div>
+            </div>
+            <div class="msg bot">
+              <div class="msg-label">🤖 TapalakBot</div>
+              <div class="msg-text">
+                🎮 <strong>RTX 3060 на Lalafo:</strong><br><br>
+                💰 <strong>Цены:</strong><br>
+                • Новая: от 35,000 сом<br>
+                • Б/у: от 22,000 сом<br>
+                • Средняя: 35,717 сом<br><br>
+                📊 <strong>Рынок:</strong><br>
+                • В наличии: 192 видеокарты<br>
+                • Диапазон: 120-190,000 сом<br><br>
+                🔥 <strong>Варианты:</strong><br>
+                1. RTX 3060 12GB (новая) — 38,000 сом → <a href="#">lalafo.kg/...</a><br>
+                2. RTX 3060 12GB (б/у) — 25,000 сом → <a href="#">lalafo.kg/...</a><br>
+                3. RTX 3060 Ti (б/у) — 30,000 сом → <a href="#">lalafo.kg/...</a><br><br>
+                💡 <strong>Совет:</strong> Б/у майнерские карты — нормально, если чистили и меняли термопасту.
+              </div>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Dialogue 11 -->
+        <div class="dialogue">
+          <div class="dialogue-header">
+            <span class="query">Что подарить девушке?</span>
+            <span class="time">25 сек</span>
+          </div>
+          <div class="dialogue-body">
+            <div class="msg user">
+              <div class="msg-label">👤 Пользователь</div>
+              <div class="msg-text">Что подарить девушке на день рождения?</div>
+            </div>
+            <div class="msg bot">
+              <div class="msg-label">🤖 TapalakBot</div>
+              <div class="msg-text">
+                🎁 <strong>Идеи подарков на Lalafo:</strong><br><br>
+                <strong>Техника (5,000-20,000 сом):</strong><br>
+                • AirPods — от 8,000 сом<br>
+                • Apple Watch — от 12,000 сом<br>
+                • Kindle — от 6,000 сом<br><br>
+                <strong>Красота (2,000-10,000 сом):</strong><br>
+                • Фен Dyson — от 15,000 сом<br>
+                • Уходовая косметика — от 2,000 сом<br><br>
+                <strong>Хобби:</strong><br>
+                • Книги — от 500 сом<br>
+                • Настольные игры — от 1,500 сом<br><br>
+                💡 <strong>Совет:</strong> Лучший подарок — то, что она хочет, но не купит себе сама.
+              </div>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Dialogue 12 -->
+        <div class="dialogue">
+          <div class="dialogue-header">
+            <span class="query">Ноутбук для учебы</span>
+            <span class="time">19 сек</span>
+          </div>
+          <div class="dialogue-body">
+            <div class="msg user">
+              <div class="msg-label">👤 Пользователь</div>
+              <div class="msg-text">Ноутбук для учебы до 30000</div>
+            </div>
+            <div class="msg bot">
+              <div class="msg-label">🤖 TapalakBot</div>
+              <div class="msg-text">
+                💻 <strong>Ноутбуки для учебы до 30,000 сом:</strong><br><br>
+                <strong>Лучшие варианты:</strong><br>
+                1. Lenovo IdeaPad 3 — 28,000 сом → <a href="#">lalafo.kg/...</a><br>
+                2. HP 15s — 25,000 сом → <a href="#">lalafo.kg/...</a><br>
+                3. ASUS VivoBook 15 — 27,000 сом → <a href="#">lalafo.kg/...</a><br>
+                4. Acer Aspire 5 — 24,000 сом → <a href="#">lalafo.kg/...</a><br><br>
+                📊 <strong>Рынок:</strong><br>
+                • Средняя цена: 38,457 сом<br>
+                • В наличии: 376 ноутбуков<br><br>
+                💡 <strong>Для учебы нужно:</strong><br>
+                • 8GB RAM (минимум)<br>
+                • SSD 256GB+<br>
+                • Процессор i5/Ryzen 5+<br>
+                • Батарея 6+ часов
+              </div>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Dialogue 13 -->
+        <div class="dialogue">
+          <div class="dialogue-header">
+            <span class="query">Стиральная машина</span>
+            <span class="time">17 сек</span>
+          </div>
+          <div class="dialogue-body">
+            <div class="msg user">
+              <div class="msg-label">👤 Пользователь</div>
+              <div class="msg-text">Стиральная машина до 20000</div>
+            </div>
+            <div class="msg bot">
+              <div class="msg-label">🤖 TapalakBot</div>
+              <div class="msg-text">
+                🧺 <strong>Стиральные машины до 20,000 сом:</strong><br><br>
+                1. Samsung WW70J4260 — 18,000 сом → <a href="#">lalafo.kg/...</a><br>
+                2. LG F2J6NS1W — 16,000 сом → <a href="#">lalafo.kg/...</a><br>
+                3. Bosch WLG20260 — 19,500 сом → <a href="#">lalafo.kg/...</a><br>
+                4. Beko WRS 55P1 — 14,000 сом → <a href="#">lalafo.kg/...</a><br><br>
+                💡 <strong>На что смотреть:</strong><br>
+                • Объем загрузки (7кг — оптимально)<br>
+                • Класс энергопотребления (A+++)<br>
+                • Максимальные обороты отжима<br>
+                • Состояние барабана и подшипников
+              </div>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Dialogue 14 -->
+        <div class="dialogue">
+          <div class="dialogue-header">
+            <span class="query">iPhone или Samsung?</span>
+            <span class="time">11 сек</span>
+          </div>
+          <div class="dialogue-body">
+            <div class="msg user">
+              <div class="msg-label">👤 Пользователь</div>
+              <div class="msg-text">iPhone или Samsung?</div>
+            </div>
+            <div class="msg bot">
+              <div class="msg-label">🤖 TapalakBot</div>
+              <div class="msg-text">
+                📱 <strong>iPhone vs Samsung:</strong><br><br>
+                <strong>iPhone:</strong><br>
+                • Средняя цена: 37,039 сом<br>
+                • Плюсы: экосистема, камера, поддержка 5+ лет<br>
+                • Минусы: цена, закрытость<br><br>
+                <strong>Samsung:</strong><br>
+                • Средняя цена: 29,917 сом<br>
+                • Плюсы: экран, цена, выбор моделей<br>
+                • Минусы: обновления 2-3 года<br><br>
+                💡 <strong>Вердикт:</strong><br>
+                • iPhone — если важна экосистема и долгая поддержка<br>
+                • Samsung — если нужен экран и цена/качество<br><br>
+                Найти конкретные модели?
+              </div>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Dialogue 15 -->
+        <div class="dialogue">
+          <div class="dialogue-header">
+            <span class="query">Кофемашина</span>
+            <span class="time">22 сек</span>
+          </div>
+          <div class="dialogue-body">
+            <div class="msg user">
+              <div class="msg-label">👤 Пользователь</div>
+              <div class="msg-text">Кофемашина автоматическая</div>
+            </div>
+            <div class="msg bot">
+              <div class="msg-label">🤖 TapalakBot</div>
+              <div class="msg-text">
+                ☕ <strong>Автоматические кофемашины:</strong><br><br>
+                <strong>Бюджетные (до 30,000 сом):</strong><br>
+                1. De'Longhi Magnifica S — 28,000 сом<br>
+                2. Philips EP2221 — 25,000 сом<br>
+                3. Krups Essential — 22,000 сом<br><br>
+                <strong>Средние (30,000-60,000 сом):</strong><br>
+                4. De'Longhi Dinamica — 45,000 сом<br>
+                5. Siemens EQ.6 — 50,000 сом<br><br>
+                <strong>Премиум (60,000+ сом):</strong><br>
+                6. Jura E6 — 85,000 сом<br>
+                7. De'Longhi PrimaDonna — 95,000 сом<br><br>
+                💡 <strong>Совет:</strong> De'Longhi Magnifica S — лучший выбор для дома.
+              </div>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Dialogue 16 -->
+        <div class="dialogue">
+          <div class="dialogue-header">
+            <span class="query">Планшет для ребенка</span>
+            <span class="time">15 сек</span>
+          </div>
+          <div class="dialogue-body">
+            <div class="msg user">
+              <div class="msg-label">👤 Пользователь</div>
+              <div class="msg-text">Планшет для ребенка 10 лет</div>
+            </div>
+            <div class="msg bot">
+              <div class="msg-label">🤖 TapalakBot</div>
+              <div class="msg-text">
+                👶 <strong>Планшеты для ребенка:</strong><br><br>
+                <strong>Бюджетные (до 15,000 сом):</strong><br>
+                1. Samsung Galaxy Tab A8 — 12,000 сом<br>
+                2. Lenovo Tab M10 — 10,000 сом<br>
+                3. Huawei MatePad T10 — 8,000 сом<br><br>
+                <strong>Средние (15,000-30,000 сом):</strong><br>
+                4. iPad 9th gen — 25,000 сом<br>
+                5. Samsung Galaxy Tab S6 Lite — 22,000 сом<br><br>
+                💡 <strong>Для ребенка важно:</strong><br>
+                • Прочный чехол<br>
+                • Родительский контроль<br>
+                • 10" экран (не больше)<br>
+                • 32GB+ памяти<br><br>
+                💡 <strong>Совет:</strong> Samsung Galaxy Tab A8 — лучший выбор по цене/качеству.
+              </div>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Dialogue 17 -->
+        <div class="dialogue">
+          <div class="dialogue-header">
+            <span class="query">Роутер хороший</span>
+            <span class="time">14 сек</span>
+          </div>
+          <div class="dialogue-body">
+            <div class="msg user">
+              <div class="msg-label">👤 Пользователь</div>
+              <div class="msg-text">Посоветуй роутер хороший</div>
+            </div>
+            <div class="msg bot">
+              <div class="msg-label">🤖 TapalakBot</div>
+              <div class="msg-text">
+                📶 <strong>Хорошие роутеры:</strong><br><br>
+                <strong>Бюджетные (до 5,000 сом):</strong><br>
+                1. TP-Link Archer C6 — 3,500 сом<br>
+                2. Xiaomi Router 4A — 2,800 сом<br>
+                3. Tenda AC10 — 2,500 сом<br><br>
+                <strong>Средние (5,000-15,000 сом):</strong><br>
+                4. ASUS RT-AX55 — 8,000 сом<br>
+                5. TP-Link Archer AX50 — 7,000 сом<br><br>
+                <strong>Мощные (15,000+ сом):</strong><br>
+                6. ASUS RT-AX86U — 25,000 сом<br>
+                7. TP-Link Archer AX73 — 18,000 сом<br><br>
+                💡 <strong>Для дома:</strong> TP-Link Archer C6 — достаточно для 90% квартир.
+              </div>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Dialogue 18 -->
+        <div class="dialogue">
+          <div class="dialogue-header">
+            <span class="query">Кресло офисное</span>
+            <span class="time">16 сек</span>
+          </div>
+          <div class="dialogue-body">
+            <div class="msg user">
+              <div class="msg-label">👤 Пользователь</div>
+              <div class="msg-text">Кресло офисное ergonomic</div>
+            </div>
+            <div class="msg bot">
+              <div class="msg-label">🤖 TapalakBot</div>
+              <div class="msg-text">
+                🪑 <strong>Эргономичные офисные кресла:</strong><br><br>
+                <strong>Бюджетные (до 15,000 сом):</strong><br>
+                1. Ergohuman Enjoy — 12,000 сом<br>
+                2. Nowy Styl Xeno — 10,000 сом<br>
+                3. Стуллс Gamma — 8,000 сом<br><br>
+                <strong>Средние (15,000-40,000 сом):</strong><br>
+                4. Herman Miller Aeron (б/у) — 35,000 сом<br>
+                5. Steelcase Leap (б/у) — 30,000 сом<br><br>
+                <strong>Премиум (40,000+ сом):</strong><br>
+                6. Herman Miller Aeron (новое) — 120,000 сом<br>
+                7. Steelcase Gesture — 95,000 сом<br><br>
+                💡 <strong>Совет:</strong> Ergohuman Enjoy — лучший выбор до 15,000 сом.
+              </div>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Dialogue 19 -->
+        <div class="dialogue">
+          <div class="dialogue-header">
+            <span class="query">Камера для блога</span>
+            <span class="time">18 сек</span>
+          </div>
+          <div class="dialogue-body">
+            <div class="msg user">
+              <div class="msg-label">👤 Пользователь</div>
+              <div class="msg-text">Камера для влога нужна</div>
+            </div>
+            <div class="msg bot">
+              <div class="msg-label">🤖 TapalakBot</div>
+              <div class="msg-text">
+                📷 <strong>Камеры для влога:</strong><br><br>
+                <strong>Бюджетные (до 30,000 сом):</strong><br>
+                1. Sony ZV-1 — 28,000 сом<br>
+                2. Canon G7X Mark III — 25,000 сом<br>
+                3. DJI Pocket 2 — 22,000 сом<br><br>
+                <strong>Средние (30,000-60,000 сом):</strong><br>
+                4. Sony ZV-E10 — 45,000 сом<br>
+                5. Canon EOS M50 Mark II — 40,000 сом<br><br>
+                <strong>Профессиональные (60,000+ сом):</strong><br>
+                6. Sony A7C — 95,000 сом<br>
+                7. Canon EOS R6 — 110,000 сом<br><br>
+                💡 <strong>Для влога:</strong> Sony ZV-1 — идеальный выбор. Компактная, хорошая стабилизация.
+              </div>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Dialogue 20 -->
+        <div class="dialogue">
+          <div class="dialogue-header">
+            <span class="query">Кондиционер</span>
+            <span class="time">15 сек</span>
+          </div>
+          <div class="dialogue-body">
+            <div class="msg user">
+              <div class="msg-label">👤 Пользователь</div>
+              <div class="msg-text">Кондиционер инверторный</div>
+            </div>
+            <div class="msg bot">
+              <div class="msg-label">🤖 TapalakBot</div>
+              <div class="msg-text">
+                ❄️ <strong>Инверторные кондиционеры:</strong><br><br>
+                <strong>Бюджетные (до 30,000 сом):</strong><br>
+                1. Cooper&Hunter CH-S09XN7 — 25,000 сом<br>
+                2. Ballu BSUI-09HN1 — 22,000 сом<br>
+                3. General Climate GCW-09CRN1 — 20,000 сом<br><br>
+                <strong>Средние (30,000-50,000 сом):</strong><br>
+                4. Daikin FTXB25C — 40,000 сом<br>
+                5. Mitsubishi Electric MSZ-AP25VGK — 45,000 сом<br><br>
+                <strong>Премиум (50,000+ сом):</strong><br>
+                6. Daikin FTXZ25N — 75,000 сом<br>
+                7. Mitsubishi Electric MSZ-LN25VG — 85,000 сом<br><br>
+                💡 <strong>Совет:</strong> Cooper&Hunter — надежный выбор для Бишкека.
+              </div>
             </div>
           </div>
         </div>
@@ -530,226 +1102,239 @@
   </section>
   
   <!-- ═══ CATEGORIES ═══ -->
-  <section id="categories">
+  <section id="categories" style="background: var(--bg);">
     <div class="container">
-      <h2>Категории <span>↓</span></h2>
+      <h2>Категории <span>товаров</span></h2>
+      <p class="section-desc">
+        10 категорий, которые мы отслеживаем на Lalafo.kg. Цены обновляются каждые 4 часа.
+      </p>
       
       <div class="categories">
         <div class="category">
+          <div class="category-icon">📱</div>
           <div class="category-name">iPhone</div>
           <div class="category-stats">
             <div class="category-stat">
-              <span class="label">Товаров:</span>
+              <span class="label">Товаров</span>
               <span class="value">152</span>
             </div>
             <div class="category-stat">
-              <span class="label">Ср. цена:</span>
+              <span class="label">Ср. цена</span>
               <span class="value">37,039 сом</span>
             </div>
             <div class="category-stat">
-              <span class="label">Мин:</span>
+              <span class="label">Мин</span>
               <span class="value">550 сом</span>
             </div>
             <div class="category-stat">
-              <span class="label">Макс:</span>
+              <span class="label">Макс</span>
               <span class="value">135,000 сом</span>
             </div>
           </div>
         </div>
         
         <div class="category">
+          <div class="category-icon">📱</div>
           <div class="category-name">Samsung</div>
           <div class="category-stats">
             <div class="category-stat">
-              <span class="label">Товаров:</span>
+              <span class="label">Товаров</span>
               <span class="value">234</span>
             </div>
             <div class="category-stat">
-              <span class="label">Ср. цена:</span>
+              <span class="label">Ср. цена</span>
               <span class="value">29,917 сом</span>
             </div>
             <div class="category-stat">
-              <span class="label">Мин:</span>
+              <span class="label">Мин</span>
               <span class="value">111 сом</span>
             </div>
             <div class="category-stat">
-              <span class="label">Макс:</span>
+              <span class="label">Макс</span>
               <span class="value">108,000 сом</span>
             </div>
           </div>
         </div>
         
         <div class="category">
+          <div class="category-icon">💻</div>
           <div class="category-name">MacBook</div>
           <div class="category-stats">
             <div class="category-stat">
-              <span class="label">Товаров:</span>
+              <span class="label">Товаров</span>
               <span class="value">128</span>
             </div>
             <div class="category-stat">
-              <span class="label">Ср. цена:</span>
+              <span class="label">Ср. цена</span>
               <span class="value">49,919 сом</span>
             </div>
             <div class="category-stat">
-              <span class="label">Мин:</span>
+              <span class="label">Мин</span>
               <span class="value">650 сом</span>
             </div>
             <div class="category-stat">
-              <span class="label">Макс:</span>
+              <span class="label">Макс</span>
               <span class="value">250,000 сом</span>
             </div>
           </div>
         </div>
         
         <div class="category">
+          <div class="category-icon">📱</div>
           <div class="category-name">iPad</div>
           <div class="category-stats">
             <div class="category-stat">
-              <span class="label">Товаров:</span>
+              <span class="label">Товаров</span>
               <span class="value">156</span>
             </div>
             <div class="category-stat">
-              <span class="label">Ср. цена:</span>
+              <span class="label">Ср. цена</span>
               <span class="value">32,117 сом</span>
             </div>
             <div class="category-stat">
-              <span class="label">Мин:</span>
+              <span class="label">Мин</span>
               <span class="value">300 сом</span>
             </div>
             <div class="category-stat">
-              <span class="label">Макс:</span>
+              <span class="label">Макс</span>
               <span class="value">170,000 сом</span>
             </div>
           </div>
         </div>
         
         <div class="category">
+          <div class="category-icon">🎧</div>
           <div class="category-name">Наушники</div>
           <div class="category-stats">
             <div class="category-stat">
-              <span class="label">Товаров:</span>
+              <span class="label">Товаров</span>
               <span class="value">36</span>
             </div>
             <div class="category-stat">
-              <span class="label">Ср. цена:</span>
+              <span class="label">Ср. цена</span>
               <span class="value">8,088 сом</span>
             </div>
             <div class="category-stat">
-              <span class="label">Мин:</span>
+              <span class="label">Мин</span>
               <span class="value">399 сом</span>
             </div>
             <div class="category-stat">
-              <span class="label">Макс:</span>
+              <span class="label">Макс</span>
               <span class="value">67,000 сом</span>
             </div>
           </div>
         </div>
         
         <div class="category">
+          <div class="category-icon">🎮</div>
           <div class="category-name">PlayStation</div>
           <div class="category-stats">
             <div class="category-stat">
-              <span class="label">Товаров:</span>
+              <span class="label">Товаров</span>
               <span class="value">182</span>
             </div>
             <div class="category-stat">
-              <span class="label">Ср. цена:</span>
+              <span class="label">Ср. цена</span>
               <span class="value">21,116 сом</span>
             </div>
             <div class="category-stat">
-              <span class="label">Мин:</span>
+              <span class="label">Мин</span>
               <span class="value">80 сом</span>
             </div>
             <div class="category-stat">
-              <span class="label">Макс:</span>
+              <span class="label">Макс</span>
               <span class="value">210,000 сом</span>
             </div>
           </div>
         </div>
         
         <div class="category">
+          <div class="category-icon">💻</div>
           <div class="category-name">Ноутбуки</div>
           <div class="category-stats">
             <div class="category-stat">
-              <span class="label">Товаров:</span>
+              <span class="label">Товаров</span>
               <span class="value">376</span>
             </div>
             <div class="category-stat">
-              <span class="label">Ср. цена:</span>
+              <span class="label">Ср. цена</span>
               <span class="value">38,457 сом</span>
             </div>
             <div class="category-stat">
-              <span class="label">Мин:</span>
+              <span class="label">Мин</span>
               <span class="value">199 сом</span>
             </div>
             <div class="category-stat">
-              <span class="label">Макс:</span>
+              <span class="label">Макс</span>
               <span class="value">240,000 сом</span>
             </div>
           </div>
         </div>
         
         <div class="category">
+          <div class="category-icon">🎮</div>
           <div class="category-name">Видеокарты</div>
           <div class="category-stats">
             <div class="category-stat">
-              <span class="label">Товаров:</span>
+              <span class="label">Товаров</span>
               <span class="value">192</span>
             </div>
             <div class="category-stat">
-              <span class="label">Ср. цена:</span>
+              <span class="label">Ср. цена</span>
               <span class="value">35,717 сом</span>
             </div>
             <div class="category-stat">
-              <span class="label">Мин:</span>
+              <span class="label">Мин</span>
               <span class="value">120 сом</span>
             </div>
             <div class="category-stat">
-              <span class="label">Макс:</span>
+              <span class="label">Макс</span>
               <span class="value">190,000 сом</span>
             </div>
           </div>
         </div>
         
         <div class="category">
+          <div class="category-icon">🚴</div>
           <div class="category-name">Велосипеды</div>
           <div class="category-stats">
             <div class="category-stat">
-              <span class="label">Товаров:</span>
+              <span class="label">Товаров</span>
               <span class="value">247</span>
             </div>
             <div class="category-stat">
-              <span class="label">Ср. цена:</span>
+              <span class="label">Ср. цена</span>
               <span class="value">24,092 сом</span>
             </div>
             <div class="category-stat">
-              <span class="label">Мин:</span>
+              <span class="label">Мин</span>
               <span class="value">200 сом</span>
             </div>
             <div class="category-stat">
-              <span class="label">Макс:</span>
+              <span class="label">Макс</span>
               <span class="value">140,000 сом</span>
             </div>
           </div>
         </div>
         
         <div class="category">
+          <div class="category-icon">📺</div>
           <div class="category-name">Телевизоры</div>
           <div class="category-stats">
             <div class="category-stat">
-              <span class="label">Товаров:</span>
+              <span class="label">Товаров</span>
               <span class="value">274</span>
             </div>
             <div class="category-stat">
-              <span class="label">Ср. цена:</span>
+              <span class="label">Ср. цена</span>
               <span class="value">17,276 сом</span>
             </div>
             <div class="category-stat">
-              <span class="label">Мин:</span>
+              <span class="label">Мин</span>
               <span class="value">100 сом</span>
             </div>
             <div class="category-stat">
-              <span class="label">Макс:</span>
+              <span class="label">Макс</span>
               <span class="value">155,000 сом</span>
             </div>
           </div>
@@ -761,26 +1346,16 @@
   <!-- ═══ TECH ═══ -->
   <section id="tech">
     <div class="container">
-      <h2>Технологии <span>↓</span></h2>
+      <h2>Как это <span>работает</span></h2>
+      <p class="section-desc">
+        Технологии, которые делают TapalakBot быстрым и умным.
+      </p>
       
       <div class="tech-grid">
         <div class="tech-item">
-          <h3>Clojure + clj-harness</h3>
+          <h3>🧠 DeepSeek LLM</h3>
           <p>
-            Весь бот написан на Clojure. clj-harness — фреймворк для AI-агентов с middleware-архитектурой, 
-            retry-логикой, и streaming-поддержкой. Никакого Python, никаких subprocess.
-          </p>
-          <code>
-;; Pure Clojure, no shells<br>
-(defn search-lalafo [queries]<br>
-&nbsp;&nbsp;(pmap lalafo/search queries))
-          </code>
-        </div>
-        
-        <div class="tech-item">
-          <h3>DeepSeek LLM</h3>
-          <p>
-            DeepSeek-v4-pro — 10x дешевле Claude, адекватный русский, поддержка function calling. 
+            DeepSeek-v4-pro — 10x дешевле Claude, адекватный русский язык, поддержка function calling. 
             Генерирует поисковые запросы, анализирует результаты, формирует ответы.
           </p>
           <code>
@@ -791,7 +1366,7 @@
         </div>
         
         <div class="tech-item">
-          <h3>Smart Search</h3>
+          <h3>🔍 Smart Search</h3>
           <p>
             Один инструмент для всех покупательских запросов. LLM генерирует 4-6 оптимальных 
             запросов, выполняет параллельный поиск, возвращает отфильтрованные результаты.
@@ -805,7 +1380,7 @@ smart_search("iPhone 13 до 30000")<br>
         </div>
         
         <div class="tech-item">
-          <h3>Progressive Streaming</h3>
+          <h3>⚡ Progressive Streaming</h3>
           <p>
             Пользователь видит текст в реальном времени. Debounce 1500ms, phase tracking, 
             status callbacks. Никакого «думаю...» — сразу показываем прогресс.
@@ -815,14 +1390,27 @@ smart_search("iPhone 13 до 30000")<br>
 :initial → :streaming → :tool → :streaming → :done
           </code>
         </div>
+        
+        <div class="tech-item">
+          <h3>📊 Price Monitor</h3>
+          <p>
+            Фоновый сканер каждые 4 часа обходит 10 категорий на Lalafo.kg. 
+            Хранит снимки цен в SQLite, выявляет тренды и горящие deals.
+          </p>
+          <code>
+;; Scanner pipeline<br>
+categories → search → items → snapshots → SQLite<br>
+→ trending / deals / history
+          </code>
+        </div>
       </div>
     </div>
   </section>
   
   <!-- ═══ METRICS ═══ -->
-  <section id="metrics">
+  <section id="metrics" style="background: var(--bg);">
     <div class="container">
-      <h2>Метрики <span>↓</span></h2>
+      <h2>Цифры <span>↓</span></h2>
       
       <div class="metrics">
         <div class="metric">
@@ -863,18 +1451,11 @@ smart_search("iPhone 13 до 30000")<br>
   <footer>
     <div class="container">
       TapalakBot © 2026 • Сделано в Бишкеке 🇰🇬 • 
-      <a href="https://github.com/snqb/tapalakbot-v2" style="color: var(--accent);">GitHub</a>
+      <a href="https://github.com/snqb/tapalakbot-v2">GitHub</a>
     </div>
   </footer>
   
   <script>
-    // Grid overlay toggle (press G)
-    document.addEventListener('keydown', (e) => {
-      if (e.key === 'g' || e.key === 'G') {
-        document.getElementById('grid').classList.toggle('visible');
-      }
-    });
-    
     // Smooth scroll
     document.querySelectorAll('a[href^="#"]').forEach(a => {
       a.addEventListener('click', (e) => {
@@ -884,19 +1465,6 @@ smart_search("iPhone 13 до 30000")<br>
           target.scrollIntoView({ behavior: 'smooth' });
         }
       });
-    });
-    
-    // Stats counter animation
-    const observer = new IntersectionObserver((entries) => {
-      entries.forEach(entry => {
-        if (entry.isIntersecting) {
-          entry.target.classList.add('visible');
-        }
-      });
-    }, { threshold: 0.1 });
-    
-    document.querySelectorAll('.stat, .metric, .category').forEach(el => {
-      observer.observe(el);
     });
   </script>
 </body>
