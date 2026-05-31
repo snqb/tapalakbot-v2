@@ -88,10 +88,11 @@
     (try
       (let [stream-cb (fn [delta]
                         (.append buf delta)
+                        ;; Set phase to :streaming when LLM is generating text
+                        (when (= @phase :tool) (reset! phase :streaming))
                         (let [now (System/currentTimeMillis)
                               elapsed (- now @last-edit)]
                           ;; Debounce edits: max once per 1500ms
-                          ;; Also check if we're in streaming phase (not tool execution)
                           (when (and (= @phase :streaming)
                                      (> elapsed 1500)
                                      (> (.length buf) 30))
@@ -105,6 +106,8 @@
                                   (log/warn e :stream-edit-fail)))))))
             status-cb (fn [status]
                         (reset! phase :tool)
+                        ;; Clear buffer when entering tool phase (new response after tool)
+                        (.setLength buf 0)
                         (when-let [msg-id @thinking-msg-id]
                           (try
                             (tg/edit-message chat-id msg-id status :parse-mode nil)
