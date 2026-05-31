@@ -88,13 +88,13 @@
     (try
       (let [stream-cb (fn [delta]
                         (.append buf delta)
+                        (log/info :stream-delta :len (count delta) :total (.length buf))
                         ;; Set phase to :streaming when LLM is generating text
-                        (when (= @phase :tool) (reset! phase :streaming))
+                        (reset! phase :streaming)
                         (let [now (System/currentTimeMillis)
                               elapsed (- now @last-edit)]
                           ;; Debounce edits: max once per 1500ms
-                          (when (and (= @phase :streaming)
-                                     (> elapsed 1500)
+                          (when (and (> elapsed 1500)
                                      (> (.length buf) 30))
                             (reset! last-edit now)
                             (when-let [msg-id @thinking-msg-id]
