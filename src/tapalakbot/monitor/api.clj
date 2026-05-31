@@ -1,6 +1,7 @@
 (ns tapalakbot.monitor.api
   "HTTP API server for Lalafo price monitor.
    Endpoints:
+     GET /                    — showcase website
      GET /health              — health check
      GET /prices/trending     — latest prices per category
      GET /prices/deals        — items below average price
@@ -17,7 +18,8 @@
             [next.jdbc.result-set :as rs]
             [cheshire.core :as json]
             [clojure.string :as str]
-            [clojure.tools.logging :as log]))
+            [clojure.tools.logging :as log]
+            [clojure.java.io :as io]))
 
 ;; ════════════════════════════ HELPERS ════════════════════════════
 
@@ -36,6 +38,13 @@
     (Long/parseLong id-str)))
 
 ;; ════════════════════════════ ROUTES ════════════════════════════
+
+(defn- handle-website [_]
+  (let [html-file (io/resource "docs/index.html")]
+    (if html-file
+      (-> (response/response (slurp html-file))
+          (response/content-type "text/html"))
+      (json-response 404 {:error "Website not found"}))))
 
 (defn- handle-health [_]
   (let [stats (store/get-stats)]
@@ -210,6 +219,7 @@
     (case request-method
       :get
       (cond
+        (= uri "/")                   (handle-website request)
         (= uri "/health")            (handle-health request)
         (= uri "/prices/trending")   (handle-trending request)
         (= uri "/prices/deals")      (handle-deals request)
