@@ -40,8 +40,8 @@
 ;; ════════════════════════════ ROUTES ════════════════════════════
 
 (defn- handle-website [_]
-  (let [html-file (io/resource "docs/index.html")]
-    (if html-file
+  (let [html-file (io/file "docs/index.html")]
+    (if (.exists html-file)
       (-> (response/response (slurp html-file))
           (response/content-type "text/html"))
       (json-response 404 {:error "Website not found"}))))
