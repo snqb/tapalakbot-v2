@@ -10,13 +10,20 @@
 ## Layout
 
 ```
-/opt/tapalakbot-v2/            ← Clojure project (git: snqb/tapalakbot-v2)
+/opt/tapalakbot-v2/              ← Clojure project (git: snqb/tapalakbot-v2)
   src/tapalakbot/
-    core.clj                    — Agent: system prompt, 3 tools, pre-hook
-    lalafo.clj                  — Lalafo HTTP client + Exa research
-    bot.clj                     — Telegram handler
-    server.clj                  — Entry point + healthcheck
-/etc/tapalakbot/secrets.env    ← BOT_TOKEN, DEEPSEEK_API_KEY, EXA_API_KEY (chmod 600)
+    core.clj                      — Agent: system prompt, tools, pre-hook
+    lalafo.clj                    — Lalafo HTTP client + Exa research
+    bot.clj                       — Telegram handler + streaming
+    server.clj                    — Entry point + healthcheck + monitor auto-start
+    monitor/
+      store.clj                   — SQLite: categories, items, price snapshots
+      scanner.clj                 — Background Lalafo scanner (every 4h)
+      api.clj                     — Ring/Jetty HTTP API (:8787)
+      client.clj                  — HTTP client for monitor API
+      main.clj                    — Monitor standalone entry point
+/etc/tapalakbot/secrets.env      ← BOT_TOKEN, DEEPSEEK_API_KEY, EXA_API_KEY (chmod 600)
+/tmp/tapalakbot-monitor.db       ← SQLite DB (ephemeral, recreated on reboot)
 ```
 
 ## Dependencies
@@ -24,21 +31,17 @@
 - **Clojure 1.12** + tools.deps
 - **Java 21** (JDK)
 - **clj-harness** (git dep, pinned SHA in `deps.edn`)
+- **ring/ring-core + ring-jetty-adapter + ring-json** — Monitor HTTP API
+- **next.jdbc + sqlite-jdbc** — Monitor SQLite storage
 - **No Python** — all tools use Java HttpClient directly
-- **No uv** — not needed for runtime
 
-## Service
+## Services
 
-```ini
-# /etc/systemd/system/tapalakbot.service
-[Service]
-EnvironmentFile=/etc/tapalakbot/secrets.env
-ExecStartPre=bash -c 'cd /opt/tapalakbot-v2 && git pull origin main || true'
-ExecStart=clojure -M:bot
-WorkingDirectory=/opt/tapalakbot-v2
-Restart=always
-RestartSec=10
-```
+The bot runs as a single systemd service. On startup, `server.clj`:
+1. Initializes the agent (clj-harness + DeepSeek)
+2. Auto-starts the price monitor in a background thread (scanner + API on :8787)
+3. Runs Lalafo healthcheck
+4. Starts Telegram polling
 
 ```bash
 systemctl restart tapalakbot    # Deploy latest code
@@ -47,34 +50,62 @@ journalctl -u tapalakbot -f     # Follow logs
 journalctl -u tapalakbot | grep healthcheck  # Verify health
 ```
 
+### Monitor API (port 8787)
+
+Available after startup. Used by bot for `/start` and `/prices` commands.
+
+```bash
+curl http://localhost:8787/health            # Health check
+curl http://localhost:8787/prices/start      # Market digest text
+curl http://localhost:8787/prices/categories # Category stats JSON
+curl http://localhost:8787/prices/trending   # Top items per category
+curl http://localhost:8787/prices/search?q=macbook  # Search items
+curl http://localhost:8787/prices/deals      # Items below average
+curl http://localhost:8787/prices/history/:id  # Price history
+curl -X POST http://localhost:8787/scan      # Trigger immediate scan
+```
+
 ## NixOS Config
 
+Key points in `/etc/nixos/configuration.nix`:
+
 ```nix
-# /etc/nixos/configuration.nix
-services.openssh = { enable = true; settings.PasswordAuthentication = true; };
+# Telegram API routing (Russia workaround)
+networking.extraHosts = "149.154.167.220 api.telegram.org";
 
-networking.extraHosts = "149.154.167.220 api.telegram.org";  # Russia workaround
-environment.systemPackages = with pkgs; [ git clojure ];     # build tools only
+# System packages
+environment.systemPackages = with pkgs; [ git clojure ];
 
+# Systemd service
 systemd.services.tapalakbot = {
   description = "TapalakBot - Lalafo.kg Telegram AI Search Bot";
-  after = ["network.target" "network-online.target"];
-  wants = ["network-online.target"];
+  after = [ "network.target" "network-online.target" ];
+  wants = [ "network-online.target" ];
   serviceConfig = {
-    ExecStartPre = "${pkgs.bash}/bin/bash -c 'cd /opt/tapalakbot-v2 && ${pkgs.git}/bin/git pull origin main 2>/dev/null || true'";
-    ExecStart = "${pkgs.clojure}/bin/clojure -M:bot";
-    WorkingDirectory = "/opt/tapalakbot-v2";
-    Restart = "always";
-    RestartSec = "10";
-    EnvironmentFile = "/etc/tapalakbot/secrets.env";
+    Type = "simple";
     User = "root";
+    WorkingDirectory = "/opt/tapalakbot-v2";
+    EnvironmentFile = "/etc/tapalakbot/secrets.env";
+    ExecStartPre = "${pkgs.bash}/bin/bash -c 'cd /opt/tapalakbot-v2 && git pull origin main 2>/dev/null || true'";
+    ExecStart = "${pkgs.clojure}/bin/clojure -M:bot";
+    Restart = "always";
+    RestartSec = 10;
     StandardOutput = "journal";
     StandardError = "journal";
     SyslogIdentifier = "tapalakbot";
   };
-  wantedBy = ["multi-user.target"];
+  # CRITICAL: git must be in PATH for Clojure tools.deps git dep resolution
+  environment = {
+    PATH = lib.mkForce (lib.makeBinPath [
+      pkgs.coreutils pkgs.findutils pkgs.gnugrep pkgs.gnused
+      pkgs.git pkgs.clojure
+    ]);
+  };
+  wantedBy = [ "multi-user.target" ];
 };
 ```
+
+⚠️ **Do not forget `environment.PATH`** — Without `pkgs.git` in PATH, Clojure crashes with `Cannot run program "git": No such file or directory` when resolving git deps.
 
 ## Initial Setup (done)
 
@@ -84,7 +115,8 @@ systemd.services.tapalakbot = {
 4. Cloned tapalakbot-v2 from GitHub to `/opt/tapalakbot-v2`
 5. Created `/etc/tapalakbot/secrets.env` (chmod 600) with API keys
 6. Fixed Telegram API routing in Russia: `networking.extraHosts`
-7. Built and deployed: `nixos-rebuild switch`
+7. Added `pkgs.git` to systemd PATH for git dep resolution
+8. Built and deployed: `nixos-rebuild switch`
 
 ## Redeploy
 
@@ -93,11 +125,21 @@ systemd.services.tapalakbot = {
 cd ~/Projects/tapalakbot-v2
 git push origin main
 
-# Restart on VPS
+# Restart on VPS (ExecStartPre does git pull automatically)
 ssh root@85.239.40.192 systemctl restart tapalakbot
 
 # Verify
 ssh root@85.239.40.192 journalctl -u tapalakbot -n 5 | grep healthcheck
+```
+
+If deps.edn changed (new deps, SHA update), clear classpath cache first:
+```bash
+ssh root@85.239.40.192 "rm -rf /opt/tapalakbot-v2/.cpcache && systemctl restart tapalakbot"
+```
+
+If NixOS config changed:
+```bash
+ssh root@85.239.40.192 "nixos-rebuild switch"
 ```
 
 ## Healthcheck
@@ -105,5 +147,7 @@ ssh root@85.239.40.192 journalctl -u tapalakbot -n 5 | grep healthcheck
 On startup, the bot runs `tapalakbot.lalafo/smoke-test` — searches for "iphone" on Lalafo API:
 - `:healthcheck-pass :found N` — API reachable
 - `:healthcheck-fail` — API unreachable or blocked
+
+Monitor health: `curl http://localhost:8787/health`
 
 Check: `journalctl -u tapalakbot | grep healthcheck`

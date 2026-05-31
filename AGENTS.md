@@ -1,65 +1,80 @@
-<!-- Updated: 2026-05-29 -->
+<!-- Updated: 2026-05-30 -->
 # tapalakbot-v2
 
-> Clojure Telegram bot for Lalafo.kg marketplace search. DeepSeek LLM + native Clojure HTTP client. Progressive streaming, HTML formatting, anti-table safety net, 60 QA cycles. **Deployed: NixOS VPS 85.239.40.192 (systemd).** See [docs/deployment.md](docs/deployment.md).
+> Clojure Telegram bot for Lalafo.kg marketplace search. DeepSeek LLM + native Clojure HTTP client. Progressive streaming, HTML formatting, anti-table safety net, 60 QA cycles. **Price monitor** tracks 10 categories, serves market intelligence via HTTP API. **Deployed: NixOS VPS 85.239.40.192 (systemd).** See [docs/deployment.md](docs/deployment.md).
 
 ## Architecture
 
 ```
-User → Telegram → bot.clj → core.clj → clj-harness v2.0.0 → DeepSeek API
+User → Telegram → bot.clj → core.clj → clj-harness → DeepSeek API
                          │         │
-                    clj-harness   └─ tapalakbot.lalafo (direct HTTP)
+                    clj-harness   └─ lalafo.clj (direct HTTP)
                     (telegram,         ├─ search → Lalafo API
                      streaming,        ├─ categories → Lalafo API
                      format)           └─ exa-research → Exa API
+
+                         ┌─────────────────────────────────────┐
+                         │  Price Monitor (same JVM process)   │
+                         │                                     │
+                         │  scanner.clj → lalafo.clj (search)  │
+                         │       ↓                             │
+                         │  store.clj → SQLite (/tmp/*.db)     │
+                         │       ↓                             │
+                         │  api.clj → Ring/Jetty :8787         │
+                         │       ↓                             │
+                         │  client.clj ← bot.clj (/start, /prices) │
+                         └─────────────────────────────────────┘
 ```
 
-Most Telegram/format/streaming logic lives in `clj-harness`. Tapalakbot files are thin app-layer wires.
+Most Telegram/format/streaming logic lives in `clj-harness`. Tapalakbot files are thin app-layer wires. The monitor is a background service embedded in the same JVM — started by `server.clj` via `ensure-monitor!`.
+
+## File Map
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `core.clj` | ~450 | Agent: system prompt, 3 tools, pre-hook, REPL |
+| `core.clj` | ~450 | Agent: system prompt, 3 tools (smart_search), pre-hook, REPL |
 | `lalafo.clj` | ~380 | Direct Lalafo.kg HTTP client + Exa research + healthcheck |
-| `bot.clj` | ~70 | Telegram bot: handler, `/start` `/help` `/reset`, thinking indicator |
-| `server.clj` | ~45 | Entry point: bot + REPL + healthcheck |
+| `bot.clj` | ~140 | Telegram bot: handler, `/start` `/help` `/prices`, streaming agent |
+| `server.clj` | ~65 | Entry point: bot + monitor auto-start + healthcheck |
 | `tg/format.clj` | ~17 | Thin wrapper → `clj-harness.telegram.format` |
 | `tg/channel.clj` | ~17 | Thin wrapper → `clj-harness.telegram` |
-| `cycle_tuner.py` | ~380 | QA tool: send queries, score responses (references external Python packages) |
+| **monitor/store.clj** | ~260 | SQLite: categories, items, price snapshots + queries |
+| **monitor/scanner.clj** | ~150 | Background Lalafo scanner (every 4h), accessory filter |
+| **monitor/api.clj** | ~265 | Ring/Jetty HTTP API (:8787): trending, deals, search, history |
+| **monitor/client.clj** | ~130 | HTTP client for monitor API (used by bot) |
+| **monitor/main.clj** | ~60 | Monitor standalone entry point |
+| `cycle_tuner.py` | ~380 | QA tool (references external Python packages) |
 
-**Deleted** (v3): `lalafo_cli.py`, `packages/`, `pyproject.toml`, `tg/streaming.clj` — all Python shell-out removed, everything is native Clojure.
+## Monitor Subsystem
+
+Tracks prices for 10 categories on Lalafo.kg: iPhone, Samsung, MacBook, iPad, Наушники, PlayStation, Ноутбуки, Видеокарты, Велосипеды, Телевизоры.
+
+**How it works:**
+1. `server.clj` starts `monitor.main/-main` in a background thread on boot
+2. `scanner.clj` searches Lalafo every 4 hours, stores items + price snapshots in SQLite
+3. `api.clj` serves JSON on `:8787` (trending, deals, search, history, categories)
+4. `bot.clj` calls `client.clj` for `/start` (market digest) and `/prices` (category overview / search)
+
+**Bot commands using monitor:**
+- `/start` — greeting + 📊 market digest (avg prices per category)
+- `/prices` — category overview with item counts + avg prices
+- `/prices <query>` — search items in monitor DB
+- `/help` — mentions `/prices`
+
+**Standalone mode:**
+```bash
+clojure -M:monitor  # Runs scanner + API on :8787 without Telegram
+```
 
 ## Key Decisions
 
 - **DeepSeek** (`:deepseek-v4` → API model `deepseek-chat`) — 10× cheaper than Claude, adequate Russian + tool calling. Token from `pass deepseek-api/token`. Config: `resources/config.edn` models map.
-- **Direct Clojure search + categories + research** — All tools use Java HttpClient directly. Zero Python shell-outs, no subprocess deadlocks, no uv startup cost. Exa research via POST /search.
-- **Native Clojure, not Python** — All bot logic (search, categories, research, formatting) in Clojure. Python files deleted May 2026.
-- **clj-harness middleware stack** — core-agent → wrap-tools → wrap-retry → wrap-logging. `:nudges` is configured to require `search_lalafo` before final answers, so marketplace turns cannot answer from stale session memory.
-- **HTML parse_mode** — `tg/format.clj` converts LLM markdown to HTML, sent with `parse_mode="HTML"`. Telegram handles entities natively.
-- **Thinking indicator** — typing → "🧠 Думаю..." → LLM → edit-message. Falls back to delete+send for multi-chunk responses.
-- **Sessions on atoms** — Per-user dialog history. Follow-up context preserved. Lost on restart (no SQLite — tracked as P0 gap).
-- **Category pre-hook** — Categories cached in `delay`, fetched once from Lalafo API on first access. Injected into system prompt.
-
-## Prompt Tuning (v3, settled)
-
-Key rules from 3-cycle test-fix loop + 60 auto-tune queries:
-
-1. **Search always for marketplace turns** — Prompt says search aggressively, and `:nudges {:required-steps ["search_lalafo"]}` now enforces a current-turn `search_lalafo` call before final answers.
-2. **NEVER tables** — `| --- |` breaks on Telegram mobile. 3 anti-table rules in prompt + safety net in `format.clj`.
-3. **Search by MODEL NAMES** — "Samsung S6 Lite S Pen" not "планшет стилус". Lalafo keyword search is noisy.
-4. **Response format** — Price tiers (🔥 💰 💎), 5-8 listings, lalafo.kg link for EVERY item, 3500 chars max.
-5. **40 items from CLI** — per_page=60, top 40 sent to LLM for curation.
-
-## Tools
-
-1. **search_lalafo** — Multi-query parallel search. Required by `:nudges` before final agent answers; returns relevant items, LLM curates best listings.
-2. **browse_categories** — Live category tree with Russian hints.
-3. **research_topic** — Exa web search for factual questions.
-
-## Lalafo Search Quality
-
-Lalafo keyword search is noisy. Only model-specific queries return relevant results:
-- Tablets with stylus: "Samsung S6 Lite S Pen", "Wacom", "Redmi Pad Smart Pen"
-- Generic "планшет стилус" → junk (Samsung phones, car parts)
+- **Direct Clojure search + categories + research** — All tools use Java HttpClient directly. Zero Python shell-outs.
+- **clj-harness middleware stack** — core-agent → wrap-tools → wrap-retry → wrap-logging. `:nudges` requires `search_lalafo` before final answers.
+- **HTML parse_mode** — `tg/format.clj` converts LLM markdown to HTML, sent with `parse_mode="HTML"`.
+- **Progressive streaming** — `handle-message-stream!` with debounced edits (max once per 800ms). Status callback for phase changes (🧠 thinking → 🔧 tool).
+- **Monitor in same JVM** — Avoids separate deployment. `server.clj` auto-starts monitor thread if not already running.
+- **Accessory filter** — `scanner.clj` excludes чехол, зарядка, ремонт, установка, etc. from monitor results. Price cap: 500K KGS.
 
 ## Running (local/dev)
 
@@ -71,66 +86,36 @@ cd /Users/sn/Projects/tapalakbot-v2
 # Terminal test (one-shot, no Telegram)
 clojure -M:run "роутер до 4000"
 
-# Telegram bot locally
+# Telegram bot locally (auto-starts monitor)
 BOT_TOKEN='...' clojure -M:bot
+
+# Monitor only (standalone, no Telegram)
+clojure -M:monitor
 ```
-
-## QA
-
-- 20/20 terminal QA passed
-- 20/20 Telegram QA passed
-- 10/10 cycle-3 tests: all real URLs, price tiers, 4-9 links
-- 60 auto-tune queries: 62% ≥ 30pts, 20% startup lag (warmup fix applied)
-- **101/101 link validation (2026-05-16)**: 0% dead URLs across 20 isolated queries. See Link Quality section.
-
-Reports: `.git/reports/qa-report-20260513.md`, `.git/reports/telegram-qa-report-20260513.md`, `.git/reports/cycle-tuning-20260514.md`, `.git/reports/link-check-v2-20260516-231725.jsonl`
-
-Full architecture: `.git/reports/system-architecture-20260515.md`
-
-## Link Quality (v2, 2026-05-16)
-
-20-cycle isolated link validation (clean session per query):
-- **101/101 URLs LIVE (200) — 0% dead rate**
-- Each query ran against freshly restarted bot with empty session context
-- 14/20 queries produced search results with URLs; 6/20 correctly didn't search (advice/greeting/vague)
-- Every URL loads correctly. All page titles match bot claims (verified via Lalafo og:title meta tags, not HTML `<h1>` which shows breadcrumbs)
-
-**Why earlier tests showed 63% dead:** Session context contamination. After 3+ queries, bot had 60+ items accumulated from previous searches. LLM reused stale session items instead of calling `search_lalafo` for new topics. Some items expired in the 10-15 minutes between fetch and check.
-
-**Fix applied:** Restart bot between queries (clean session). The bot itself is correct — every URL it sends is a real, live listing. The issue is design: search results should be ephemeral (per-query), not mixed with persistent user context.
-
-Report: `.git/reports/link-check-v2-20260516-231725.jsonl`
-
-## Memory Architecture (decision)
-
-Two-tier, not monolithic:
-
-| Tier | What | Lifetime | Backend |
-|------|------|----------|---------|
-| **User context** | Preferences, dialog thread, price ranges | Persistent across restarts | SQLite (clj-harness) |
-| **Search results** | Items from `search_lalafo` | **Per-query only** | Ephemeral atom, cleared on next user message |
-
-Currently both are mixed in `session-state` atom → cross-contamination. Split them: persist user context, scope search results to active query.
 
 ## Gotchas
 
 ### Deployment (NixOS VPS)
 
 - **Telegram blocked in Russia** — Most `api.telegram.org` IPs blocked. Only `149.154.167.220` works. NixOS: `networking.extraHosts = "149.154.167.220 api.telegram.org";`
-- **proxychains useless with Java** — Java NIO bypasses LD_PRELOAD. Use /etc/hosts or ProxySelector.
+- **NixOS systemd PATH lacks git** — Clojure tools.deps needs `git` to resolve git deps. NixOS config must add `pkgs.git` to service `environment.PATH`. Without it: `Cannot run program "git": No such file or directory`. Fixed in `configuration.nix` with `environment = { PATH = lib.mkForce (lib.makeBinPath [pkgs.git ...]); };`
+- **`.cpcache` stale after deps change** — When deps.edn changes (new deps, SHA update), clear `.cpcache/` on VPS before restart: `rm -rf /opt/tapalakbot-v2/.cpcache`
+
+### Monitor
+
+- **Monitor DB in /tmp** — SQLite DB at `/tmp/tapalakbot-monitor.db`. Lost on reboot (intentional — fresh scan on restart).
+- **Initial scan takes ~30s** — First startup blocks while scanning 10 categories. Bot waits via `Thread/sleep 5000` then checks health.
+- **Monitor auto-start** — `server.clj` checks `localhost:8787/health` before starting. If another instance is running, skips.
+- **Accessory filter** — `scanner.clj` excludes чехол, зарядка, кабель, адаптер, ремонт, установка, etc. Price cap: 500K KGS. Update `exclude-keywords` to tune.
+- **Deals need 2+ scans** — `/prices/deals` shows items 20%+ below average. Empty until at least 2 scan cycles complete.
 
 ### General
 
-- **Healthcheck at startup** — Bot runs `lalafo/smoke-test` on boot. Logs `:healthcheck-pass` or `:healthcheck-fail`. Check journalctl if search breaks.
-- **No Python deps** — All tools use Java HttpClient directly. `uv`, `python3`, `lalafo_cli.py` not needed for runtime.
+- **Healthcheck at startup** — Bot runs `lalafo/smoke-test` on boot. Logs `:healthcheck-pass` or `:healthcheck-fail`.
+- **No Python deps** — All tools use Java HttpClient directly.
 - **Local dev deps.edn** — Uses `:local/root` for clj-harness. Don't commit this — git SHA in committed tree.
-- **Only ONE process per bot token** — Two pollers = 409 Conflict. VPS ↔ local conflict.
-- **Lalafo `totalCount` in `_meta`** — Not in response root.
-- **String quoting** — `"` inside Clojure strings must be escaped as `\"`. Check with `clojure -M -e`.
+- **Only ONE process per bot token** — Two pollers = 409 Conflict.
 - **Table stripping safety net** — `format.clj` regex-strips `| --- |` even if LLM ignores rules.
 - **Session lost on restart** — SQLite persistence in clj-harness, not wired in tapalakbot yet.
-- **clj-harness pinned** — git dep SHA in deps.edn. `:local/root` for dev, git tag for deploy.
-- **Reset command** — `/reset` via `h/reset-session!`. Keyboard button "🔄 Новый диалог".
-- **Session context contamination** — Old search results leak across queries. `:nudges` requires fresh `search_lalafo`. Fix: per-query scope.
+- **clj-harness pinned** — git dep SHA in deps.edn. `:local/root` for dev, git SHA for deploy.
 - **Warmup needed** — First 1-2 queries after restart get 0 links (JVM + categories).
-- **Lalafo page titles** — HTML `<h1>` shows breadcrumbs, use `og:title` for real title.

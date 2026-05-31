@@ -79,7 +79,8 @@
         bot @t/tapalakbot
         thinking-msg-id (atom nil)
         buf (StringBuilder.)
-        last-edit (atom 0)]
+        last-edit (atom 0)
+        phase (atom :initial)]
     ;; Send thinking placeholder
     (let [msg (tg/send-message chat-id "💭 ..." :parse-mode nil)]
       (reset! thinking-msg-id (some-> msg (get "result") (get "message_id"))))
@@ -87,25 +88,30 @@
     (try
       (let [stream-cb (fn [delta]
                         (.append buf delta)
-                        (log/info :stream-delta :len (count delta) :total (.length buf))
                         (let [now (System/currentTimeMillis)
                               elapsed (- now @last-edit)]
-                          (when (and (> elapsed 800)
-                                     (> (.length buf) 20))
+                          ;; Debounce edits: max once per 1500ms
+                          ;; Also check if we're in streaming phase (not tool execution)
+                          (when (and (= @phase :streaming)
+                                     (> elapsed 1500)
+                                     (> (.length buf) 30))
                             (reset! last-edit now)
                             (when-let [msg-id @thinking-msg-id]
                               (try
-                                (let [html (fmt/md->html (strip-tables (.toString buf)))]
+                                (let [preview (strip-tables (.toString buf))
+                                      html (fmt/md->html preview)]
                                   (tg/edit-message chat-id msg-id html :parse-mode "HTML"))
                                 (catch Exception e
                                   (log/warn e :stream-edit-fail)))))))
             status-cb (fn [status]
+                        (reset! phase :tool)
                         (when-let [msg-id @thinking-msg-id]
                           (try
                             (tg/edit-message chat-id msg-id status :parse-mode nil)
                             (catch Exception e
                               (log/warn e :status-edit-fail)))))
             result (hc/handle-message-stream! bot uid text stream-cb :status-cb status-cb)]
+        (reset! phase :done)
         (if-let [msg-id @thinking-msg-id]
           (let [safe-text (-> (str result)
                               (str/replace #"👉 Смотри\b" "🔗")
