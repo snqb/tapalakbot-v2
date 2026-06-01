@@ -3,9 +3,12 @@
    Tables:
      monitor_categories — what we track (id, name, queries, city_id, enabled)
      monitor_items     — individual listings (id, category_id, title, url, current_price, last_seen)
-     monitor_snapshots — price history (id, item_id, price, scanned_at)"
+     monitor_snapshots — price history (id, item_id, price, scanned_at)
+     user_tracks       — user tracking filters (id, user_id, title, queries, price_max, ...)
+     track_seen_items  — items already notified per track (track_id, item_id)"
   (:require [next.jdbc :as jdbc]
             [next.jdbc.result-set :as rs]
+            [clojure.string :as str]
             [clojure.tools.logging :as log]))
 
 ;; ════════════════════════════ DB ════════════════════════════
@@ -69,6 +72,29 @@
     (jdbc/execute! d ["CREATE INDEX IF NOT EXISTS idx_snapshots_item ON monitor_snapshots(item_id)"])
     (jdbc/execute! d ["CREATE INDEX IF NOT EXISTS idx_snapshots_time ON monitor_snapshots(scanned_at)"])
     (jdbc/execute! d ["CREATE INDEX IF NOT EXISTS idx_items_category ON monitor_items(category_id)"])
+    ;; Tracking tables
+    (jdbc/execute! d ["CREATE TABLE IF NOT EXISTS user_tracks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        queries TEXT NOT NULL,
+        price_min INTEGER,
+        price_max INTEGER,
+        city_id INTEGER DEFAULT 103184,
+        enabled INTEGER DEFAULT 1,
+        created_at TEXT DEFAULT (datetime('now')),
+        last_checked_at TEXT,
+        notify_count INTEGER DEFAULT 0
+      )"])
+    (jdbc/execute! d ["CREATE TABLE IF NOT EXISTS track_seen_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        track_id INTEGER NOT NULL REFERENCES user_tracks(id) ON DELETE CASCADE,
+        item_id INTEGER NOT NULL,
+        notified_at TEXT DEFAULT (datetime('now')),
+        UNIQUE(track_id, item_id)
+      )"])
+    (jdbc/execute! d ["CREATE INDEX IF NOT EXISTS idx_tracks_user ON user_tracks(user_id)"])
+    (jdbc/execute! d ["CREATE INDEX IF NOT EXISTS idx_seen_track ON track_seen_items(track_id)"])
     (log/info :monitor-db-init :path db-path)
     d))
 
@@ -263,3 +289,79 @@
   [days]
   (q! ["DELETE FROM monitor_snapshots WHERE scanned_at < datetime('now', ?)"
        (str "-" days " days")]))
+
+;; ══════════════════════ USER TRACKS ══════════════════════
+
+(defn create-track!
+  "Create a tracking filter. Returns the new track record."
+  [{:keys [user-id title queries price-min price-max city-id]
+    :or {city-id 103184}}]
+  (q1! ["INSERT INTO user_tracks (user_id, title, queries, price_min, price_max, city_id)
+         VALUES (?, ?, ?, ?, ?, ?)
+         RETURNING *"
+        user-id title (pr-str queries) price-min price-max city-id]))
+
+(defn get-user-tracks
+  "Get all enabled tracks for a user."
+  [user-id]
+  (q! ["SELECT * FROM user_tracks WHERE user_id = ? AND enabled = 1 ORDER BY created_at DESC"
+       user-id]))
+
+(defn get-track
+  "Get a single track by ID."
+  [track-id]
+  (q1! ["SELECT * FROM user_tracks WHERE id = ?" track-id]))
+
+(defn delete-track!
+  "Delete a track and its seen items."
+  [track-id]
+  (q! ["DELETE FROM track_seen_items WHERE track_id = ?" track-id])
+  (q! ["DELETE FROM user_tracks WHERE id = ?" track-id])
+  true)
+
+(defn delete-user-tracks!
+  "Delete all tracks for a user."
+  [user-id]
+  (let [tracks (get-user-tracks user-id)
+        ids (mapv :id tracks)]
+    (when (seq ids)
+      (doseq [id ids]
+        (q! ["DELETE FROM track_seen_items WHERE track_id = ?" id]))
+      (q! (into [(str "DELETE FROM user_tracks WHERE id IN ("
+                      (str/join "," (repeat (count ids) "?")) ")")]
+                ids)))
+    (count ids)))
+
+(defn mark-track-checked!
+  "Update last_checked_at for a track."
+  [track-id]
+  (q! ["UPDATE user_tracks SET last_checked_at = datetime('now') WHERE id = ?" track-id]))
+
+(defn increment-notify-count!
+  "Increment notify_count for a track."
+  [track-id]
+  (q! ["UPDATE user_tracks SET notify_count = notify_count + 1 WHERE id = ?" track-id]))
+
+(defn seen-item?
+  "Check if an item has already been notified for a track."
+  [track-id item-id]
+  (let [r (q1! ["SELECT 1 FROM track_seen_items WHERE track_id = ? AND item_id = ?"
+                track-id item-id])]
+    (boolean r)))
+
+(defn mark-item-seen!
+  "Record that an item was notified for a track."
+  [track-id item-id]
+  (q! ["INSERT OR IGNORE INTO track_seen_items (track_id, item_id) VALUES (?, ?)"
+       track-id item-id]))
+
+(defn get-all-active-tracks
+  "Get all enabled tracks across all users (for background checker)."
+  []
+  (q! ["SELECT * FROM user_tracks WHERE enabled = 1 ORDER BY last_checked_at ASC NULLS FIRST"]))
+
+(defn parse-track-queries
+  "Parse queries string from DB back to vector."
+  [q]
+  (try (read-string q)
+       (catch Exception _ [q])))

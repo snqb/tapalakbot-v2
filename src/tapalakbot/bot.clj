@@ -9,6 +9,7 @@
   - /reset clears conversation history"
   (:require [tapalakbot.core :as t]
             [tapalakbot.monitor.client :as monitor]
+            [tapalakbot.monitor.store :as store]
             [clj-harness.telegram :as tg]
             [clj-harness.telegram.format :as fmt]
             [clj-harness.core :as hc]
@@ -107,9 +108,9 @@
   (tg/send-md chat-id (str "**TapalakBot** — поиск на Lalafo.kg\n\n"
                            "🔍 Поиск товаров\n"
                            "📊 Рыночные цены (/prices)\n"
+                           "🔔 Отслеживание (/track)\n"
                            "💡 Консультации\n"
-                           "🗑️ /reset — очистить историю\n"
-                           "⚠️ Предупреждения о подозрительных объявлениях\n\n"
+                           "🗑️ /reset — очистить историю\n\n"
                            "Просто опиши что ищешь!"))
   nil)
 
@@ -233,6 +234,89 @@
         (finally
           (release! uid))))))
 
+;; ══════════════════════ TRACKING COMMANDS ══════════════════════
+
+(defn- parse-track-input
+  "Parse /track command input. Extracts title, queries, price range."
+  [text]
+  (let [input (str/trim (subs text (count "/track")))
+        price-match (re-find #"(?i)до\s+(\d[\d\s]*\d)" input)
+        price-max (when price-match
+                    (Long/parseLong (str/replace (second price-match) #"\s+" "")))
+        clean (-> input
+                  (str/replace #"(?i)до\s+\d[\d\s]*\d(\s*сом)?" "")
+                  str/trim)
+        query-words (filterv #(> (count %) 1) (str/split clean #"\s+"))]
+    (when (seq query-words)
+      {:title input
+       :queries [clean]
+       :price-max price-max})))
+
+(defn- handle-track
+  "Handle /track command — create a tracking filter."
+  [{:keys [chat-id user-id text]}]
+  (let [input (str/trim (subs text (count "/track")))]
+    (if (str/blank? input)
+      (tg/send-md chat-id (str "📝 **Как создать фильтр:**\n\n"
+                               "/track iPhone 13 до 30000\n"
+                               "/track MacBook Air\n"
+                               "/track PS5 до 50000 сом\n\n"
+                               "Бот будет уведомлять о новых объявлениях."))
+      (if-let [{:keys [title queries price-max]} (parse-track-input text)]
+        (let [uid (str "tg-" user-id)
+              track (store/create-track! {:user-id uid
+                                          :title title
+                                          :queries queries
+                                          :price-max price-max})]
+          (log/info :track-created :user uid :track-id (:id track) :title title)
+          (tg/send-md chat-id (str "✅ Отслеживаю: «" title "»"
+                                   (when price-max
+                                     (str "\n💰 Бюджет: до " (format "%,.0f" (double price-max)) " сом"))
+                                   "\n\nУведомлю когда появятся новые объявления."
+                                   "\nУправление: /tracks, /untrack")))
+        (tg/send-md chat-id "❌ Не могу разобрать запрос. Попробуйте:\n/track iPhone 13 до 30000")))))
+
+(defn- handle-tracks
+  "Handle /tracks command — list user's tracking filters."
+  [{:keys [chat-id user-id]}]
+  (let [uid (str "tg-" user-id)
+        tracks (store/get-user-tracks uid)]
+    (if (empty? tracks)
+      (tg/send-md chat-id (str "📋 У вас нет активных фильтров.\n\n"
+                               "Создать: /track iPhone 13 до 30000"))
+      (let [lines (mapv (fn [t]
+                          (str "*" (:id t) "*. " (:title t)
+                               (when-let [p (:price_max t)]
+                                 (str " (до " (format "%,.0f" (double p)) ")"))
+                               " — " (:notify_count t) " уведомлений"))
+                        tracks)]
+        (tg/send-md chat-id (str "📋 *Ваши фильтры:*\n\n"
+                                 (str/join "\n" lines)
+                                 "\n\nУдалить: /untrack <номер>"))))))
+
+(defn- handle-untrack
+  "Handle /untrack command — remove a tracking filter."
+  [{:keys [chat-id user-id text]}]
+  (let [uid (str "tg-" user-id)
+        input (str/trim (subs text (count "/untrack")))]
+    (cond
+      (= (str/lower-case input) "all")
+      (let [n (store/delete-user-tracks! uid)]
+        (tg/send-md chat-id (str "🗑️ Удалено фильтров: " n)))
+
+      (re-matches #"\d+" input)
+      (let [track-id (Long/parseLong input)
+            track (store/get-track track-id)]
+        (if (and track (= (:user_id track) uid))
+          (do (store/delete-track! track-id)
+              (tg/send-md chat-id (str "🗑️ Фильтр «" (:title track) "» удалён.")))
+          (tg/send-md chat-id "❌ Фильтр не найден.")))
+
+      :else
+      (tg/send-md chat-id (str "📝 Укажите номер фильтра:\n"
+                               "/untrack 1\n"
+                               "/untrack all — удалить всё")))))
+
 ;; ══════════════════════ ROUTER ══════════════════════
 
 (def handler
@@ -240,7 +324,10 @@
                      {:commands {"/start" #'handle-start
                                  "/help" #'handle-help
                                  "/prices" #'handle-prices
-                                 "/reset" #'handle-reset}
+                                 "/reset" #'handle-reset
+                                 "/track" #'handle-track
+                                 "/tracks" #'handle-tracks
+                                 "/untrack" #'handle-untrack}
                       :fast-path fast-responses})]
     (fn [msg]
       (let [text (str/trim (:text msg))]

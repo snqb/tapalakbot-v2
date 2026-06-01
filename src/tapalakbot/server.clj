@@ -37,6 +37,15 @@
     ;; Auto-start monitor if not running
     (ensure-monitor!)
 
+    ;; Start tracker (user tracking notifications)
+    (try
+      (require 'tapalakbot.monitor.tracker)
+      (let [start-fn (resolve 'tapalakbot.monitor.tracker/start-tracker!)]
+        (start-fn)
+        (log/info :tracker-started))
+      (catch Exception e
+        (log/warn :tracker-start-error (.getMessage e))))
+
     ;; Healthcheck — smoke test Lalafo API
     (let [hc (lalafo/smoke-test)]
       (if (:ok? hc)
