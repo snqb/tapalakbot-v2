@@ -1,6 +1,12 @@
 (ns tapalakbot.bot
   "Telegram bot for TapalakBot v2.
-  Uses progressive streaming for real-time text display."
+  Uses progressive streaming for real-time text display.
+
+  Session safety:
+  - Per-user lock prevents concurrent handler execution
+  - If user sends a new message while bot is busy, the queued msg is skipped
+    (bot will respond to the latest message instead)
+  - /reset clears conversation history"
   (:require [tapalakbot.core :as t]
             [tapalakbot.monitor.client :as monitor]
             [clj-harness.telegram :as tg]
@@ -9,10 +15,38 @@
             [clojure.string :as str]
             [clojure.tools.logging :as log]))
 
-;; ════════════════════════════ RESPONSES ════════════════════════════
+;; ══════════════════════ PER-USER LOCK ══════════════════════
+
+(def ^:private user-locks
+  "Map of user-id → atom holding :idle or :busy.
+   Prevents concurrent message processing per user."
+  (atom {}))
+
+(defn- get-lock [uid]
+  (or (get @user-locks uid)
+      (let [lock (atom :idle)]
+        (swap! user-locks assoc uid lock)
+        lock)))
+
+(defn- try-acquire! [uid]
+  (let [lock (get-lock uid)]
+    (compare-and-set! lock :idle :busy)))
+
+(defn- release! [uid]
+  (when-let [lock (get @user-locks uid)]
+    (reset! lock :idle)))
+
+;; ══════════════════════ RESPONSES ══════════════════════
 
 (def ^:private greeting-resp
-  "👋 Салам! Я TapalakBot — умный помощник по Lalafo.kg\n\nРасскажите что ищете, и я помогу:\n• Разберусь в товаре\n• Найду лучшие варианты на Lalafo\n• Проверю рыночные цены\n\nПросто напишите, что вам нужно 🔍")
+  "👋 Салам! Я TapalakBot — умный помощник по Lalafo.kg
+
+Расскажите что ищете, и я помогу:
+• Разберусь в товаре
+• Найду лучшие варианты на Lalafo
+• Проверю рыночные цены
+
+Просто напишите, что вам нужно 🔍")
 
 (def fast-responses
   {"привет"   greeting-resp "салам"   greeting-resp "хай"     greeting-resp
@@ -21,9 +55,11 @@
    "спс"      "Пожалуйста! 😊" "thanks" "You're welcome! 😊"
    "ок"       "👌" "окей" "👌" "ладно" "👌" "понял" "👌"})
 
-;; ════════════════════════════ HANDLERS ════════════════════════════
+;; ══════════════════════ HANDLERS ══════════════════════
 
-(defn- handle-start [{:keys [chat-id first-name]}]
+(defn- handle-start [{:keys [chat-id user-id first-name]}]
+  ;; Reset session on /start
+  (hc/reset-session! @t/tapalakbot (str "tg-" user-id))
   (let [stats (monitor/fetch-categories)
         cats (:categories stats)
         total-items (reduce + 0 (map :item_count cats))
@@ -49,11 +85,19 @@
     (tg/send-md chat-id greeting :reply_markup keyboard))
   nil)
 
+(defn- handle-reset [{:keys [chat-id user-id]}]
+  (let [uid (str "tg-" user-id)]
+    (hc/reset-session! @t/tapalakbot uid)
+    (release! uid)
+    (tg/send-md chat-id "🗑️ История очищена. Начнём заново!"))
+  nil)
+
 (defn- handle-help [{:keys [chat-id]}]
   (tg/send-md chat-id (str "**TapalakBot** — поиск на Lalafo.kg\n\n"
                            "🔍 Поиск товаров\n"
                            "📊 Рыночные цены (/prices)\n"
                            "💡 Консультации\n"
+                           "🗑️ /reset — очистить историю\n"
                            "⚠️ Предупреждения о подозрительных объявлениях\n\n"
                            "Просто опиши что ищешь!"))
   nil)
@@ -90,80 +134,87 @@
       (str/replace (re-pattern "\\|[^\\n]*\\|") "")))
 
 (defn- handle-agent [{:keys [chat-id user-id text]}]
-  (let [uid (str "tg-" user-id)
-        bot @t/tapalakbot
-        thinking-msg-id (atom nil)
-        buf (StringBuilder.)
-        last-edit (atom 0)
-        last-typing (atom 0)
-        phase (atom :initial)]
-    ;; Send thinking placeholder
-    (let [msg (tg/send-message chat-id "💭 ..." :parse-mode nil)]
-      (reset! thinking-msg-id (some-> msg (get "result") (get "message_id"))))
-    ;; Run agent with streaming
-    (try
-      (let [stream-cb (fn [delta]
-                        (.append buf delta)
-                        (log/info :stream-delta :len (count delta) :total (.length buf))
-                        ;; Set phase to :streaming when LLM is generating text
-                        (reset! phase :streaming)
-                        ;; Send typing indicator every 4s
-                        (let [now (System/currentTimeMillis)]
-                          (when (> (- now @last-typing) 4000)
-                            (reset! last-typing now)
-                            (try (tg/send-typing chat-id) (catch Exception _))))
-                        (let [now (System/currentTimeMillis)
-                              elapsed (- now @last-edit)
-                              msg-id @thinking-msg-id]
-                          (log/info :stream-check :elapsed elapsed :buf-len (.length buf) :phase @phase :msg-id msg-id)
-                          ;; Debounce edits: max once per 1500ms
-                          (when (and (> elapsed 1500)
-                                     (> (.length buf) 30)
-                                     msg-id)
-                            (reset! last-edit now)
-                            (log/info :stream-edit-triggered)
-                            (try
-                              (let [preview (strip-tables (.toString buf))
-                                    html (fmt/md->html preview)]
-                                (tg/edit-message chat-id msg-id html :parse-mode "HTML")
-                                (log/info :stream-edit-success))
-                              (catch Exception e
-                                (log/warn e :stream-edit-fail))))))
-            status-cb (fn [status]
-                        (reset! phase :tool)
-                        ;; Clear buffer when entering tool phase (new response after tool)
-                        (.setLength buf 0)
-                        (when-let [msg-id @thinking-msg-id]
-                          (try
-                            (tg/edit-message chat-id msg-id status :parse-mode nil)
-                            (catch Exception e
-                              (log/warn e :status-edit-fail)))))
-            result (hc/handle-message-stream! bot uid text stream-cb :status-cb status-cb)]
-        (reset! phase :done)
-        (if-let [msg-id @thinking-msg-id]
-          (let [safe-text (-> (str result)
-                              (str/replace #"👉 Смотри\b" "🔗")
-                              strip-tables)
-                html (fmt/md->html safe-text)]
-            (try
-              (tg/edit-message chat-id msg-id html :parse-mode "HTML")
-              (catch Exception e
-                (log/error e :final-edit-fail)
-                (tg/send-message chat-id html :parse-mode "HTML"))))
-          (tg/send-md chat-id (str result))))
-      (catch Exception e
-        (log/error e :agent-error {:user-id uid})
-        (if-let [msg-id @thinking-msg-id]
-          (tg/edit-message chat-id msg-id "❌ Ошибка. Попробуйте ещё раз." :parse-mode nil)
-          (tg/send-message chat-id "❌ Ошибка. Попробуйте ещё раз." :parse-mode nil))))))
+  (let [uid (str "tg-" user-id)]
+    ;; Per-user lock: skip if bot is already processing for this user
+    (if-not (try-acquire! uid)
+      (do
+        (log/info :skip-queued :user-id uid)
+        (tg/send-message chat-id "⏳ Подождите — обрабатываю предыдущий запрос..." :parse-mode nil)
+        nil)
+      ;; Process message
+      (let [bot @t/tapalakbot
+            thinking-msg-id (atom nil)
+            buf (StringBuilder.)
+            last-edit (atom 0)
+            last-typing (atom 0)
+            phase (atom :initial)]
+        ;; Send thinking placeholder
+        (let [msg (tg/send-message chat-id "💭 ..." :parse-mode nil)]
+          (reset! thinking-msg-id (some-> msg (get "result") (get "message_id"))))
+        ;; Run agent with streaming
+        (try
+          (let [stream-cb (fn [delta]
+                            (.append buf delta)
+                            (log/info :stream-delta :len (count delta) :total (.length buf))
+                            (reset! phase :streaming)
+                            ;; Send typing indicator every 4s
+                            (let [now (System/currentTimeMillis)]
+                              (when (> (- now @last-typing) 4000)
+                                (reset! last-typing now)
+                                (try (tg/send-typing chat-id) (catch Exception _))))
+                            (let [now (System/currentTimeMillis)
+                                  elapsed (- now @last-edit)
+                                  msg-id @thinking-msg-id]
+                              (log/info :stream-check :elapsed elapsed :buf-len (.length buf) :phase @phase :msg-id msg-id)
+                              (when (and (> elapsed 1500)
+                                         (> (.length buf) 30)
+                                         msg-id)
+                                (reset! last-edit now)
+                                (log/info :stream-edit-triggered)
+                                (try
+                                  (let [preview (strip-tables (.toString buf))
+                                        html (fmt/md->html preview)]
+                                    (tg/edit-message chat-id msg-id html :parse-mode "HTML")
+                                    (log/info :stream-edit-success))
+                                  (catch Exception e
+                                    (log/warn e :stream-edit-fail))))))
+                status-cb (fn [status]
+                            (reset! phase :tool)
+                            (.setLength buf 0)
+                            (when-let [msg-id @thinking-msg-id]
+                              (try
+                                (tg/edit-message chat-id msg-id status :parse-mode nil)
+                                (catch Exception e
+                                  (log/warn e :status-edit-fail)))))
+                result (hc/handle-message-stream! bot uid text stream-cb :status-cb status-cb)]
+            (reset! phase :done)
+            (if-let [msg-id @thinking-msg-id]
+              (let [safe-text (-> (str result)
+                                  (str/replace #"👉 Смотри\b" "🔗")
+                                  strip-tables)
+                    html (fmt/md->html safe-text)]
+                (try
+                  (tg/edit-message chat-id msg-id html :parse-mode "HTML")
+                  (catch Exception e
+                    (log/error e :final-edit-fail)
+                    (tg/send-message chat-id html :parse-mode "HTML"))))
+              (tg/send-md chat-id (str result))))
+          (catch Exception e
+            (log/error e :agent-error {:user-id uid})
+            (if-let [msg-id @thinking-msg-id]
+              (tg/edit-message chat-id msg-id "❌ Ошибка. Попробуйте ещё раз." :parse-mode nil)
+              (tg/send-message chat-id "❌ Ошибка. Попробуйте ещё раз." :parse-mode nil)))
+          (finally
+            (release! uid)))))))
 
-;; ════════════════════════════ ROUTER ════════════════════════════
+;; ══════════════════════ ROUTER ══════════════════════
 
 (def handler
   (let [std-handler (tg/make-handler
                      {:commands {"/start" #'handle-start
                                  "/help" #'handle-help
-                                 "/prices" #'handle-prices}
+                                 "/prices" #'handle-prices
+                                 "/reset" #'handle-reset}
                       :fast-path fast-responses})]
     (fn [msg]
       (let [text (str/trim (:text msg))]
