@@ -95,6 +95,7 @@
         thinking-msg-id (atom nil)
         buf (StringBuilder.)
         last-edit (atom 0)
+        last-typing (atom 0)
         phase (atom :initial)]
     ;; Send thinking placeholder
     (let [msg (tg/send-message chat-id "💭 ..." :parse-mode nil)]
@@ -106,6 +107,11 @@
                         (log/info :stream-delta :len (count delta) :total (.length buf))
                         ;; Set phase to :streaming when LLM is generating text
                         (reset! phase :streaming)
+                        ;; Send typing indicator every 4s
+                        (let [now (System/currentTimeMillis)]
+                          (when (> (- now @last-typing) 4000)
+                            (reset! last-typing now)
+                            (try (tg/send-typing chat-id) (catch Exception _))))
                         (let [now (System/currentTimeMillis)
                               elapsed (- now @last-edit)
                               msg-id @thinking-msg-id]
