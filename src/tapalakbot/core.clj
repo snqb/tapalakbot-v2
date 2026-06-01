@@ -97,7 +97,7 @@ Example: [113171780, 112908144, 111226783]")
                                          "content" (str "User is looking for: " user-query "\n\nListings:\n" items-text
                                                         "\n\nReturn JSON array of relevant listing IDs.")}]]
                           (try
-                            (let [resp (llm/llm :deepseek-v4-pro messages [] :provider :deepseek :max-tokens 1000)
+                            (let [resp (llm/llm :kimi-k2 messages [] :provider :openrouter :max-tokens 1000)
                                   content (get-in resp ["choices" 0 "message" "content"])
                                   id-set (set (parse-id-array content))]
                               (filter #(contains? id-set (get % "id")) chunk))
@@ -186,7 +186,7 @@ Example: [113171780, 112908144, 111226783]")
         (log/warn :query-gen-all-attempts-failed :user-want user-want))
       (let [result
             (try
-              (let [resp (llm/llm :deepseek-v4-pro messages [] :provider :deepseek :max-tokens 500)
+              (let [resp (llm/llm :kimi-k2 messages [] :provider :openrouter :max-tokens 500)
                     content (get-in resp ["choices" 0 "message" "content"])]
                 (if (or (nil? content) (str/blank? content))
                   (do (log/warn :query-gen-empty-content :attempt attempts)
@@ -285,8 +285,8 @@ Example: [113171780, 112908144, 111226783]")
      {:name "tapalakbot"
       :prompt system-prompt
       :tools tools
-      :model :deepseek-v4
-      :provider :deepseek
+      :model :kimi-k2
+      :provider :openrouter
       :max-turns 8
       :nudges {:required-steps ["smart_search"]
                :recover-tool-errors? true}
