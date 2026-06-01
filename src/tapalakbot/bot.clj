@@ -4,8 +4,8 @@
 
   Session safety:
   - Per-user lock prevents concurrent handler execution
-  - If user sends a new message while bot is busy, the queued msg is skipped
-    (bot will respond to the latest message instead)
+  - Last-write-wins pending queue: if user sends msg while bot is busy,
+    the latest msg is queued. When handler finishes, it processes the pending msg.
   - /reset clears conversation history"
   (:require [tapalakbot.core :as t]
             [tapalakbot.monitor.client :as monitor]
@@ -15,26 +15,37 @@
             [clojure.string :as str]
             [clojure.tools.logging :as log]))
 
-;; ══════════════════════ PER-USER LOCK ══════════════════════
+;; ══════════════════════ PER-USER LOCK + PENDING ══════════════════════
 
-(def ^:private user-locks
-  "Map of user-id → atom holding :idle or :busy.
-   Prevents concurrent message processing per user."
+(def ^:private user-state
+  "Map of user-id → {:lock atom, :pending atom}.
+   :lock   — atom holding :idle or :busy
+   :pending — atom holding latest queued msg map or nil"
   (atom {}))
 
-(defn- get-lock [uid]
-  (or (get @user-locks uid)
-      (let [lock (atom :idle)]
-        (swap! user-locks assoc uid lock)
-        lock)))
+(defn- get-user-state [uid]
+  (or (get @user-state uid)
+      (let [s {:lock (atom :idle) :pending (atom nil)}]
+        (swap! user-state assoc uid s)
+        s)))
 
 (defn- try-acquire! [uid]
-  (let [lock (get-lock uid)]
+  (let [{:keys [lock]} (get-user-state uid)]
     (compare-and-set! lock :idle :busy)))
 
 (defn- release! [uid]
-  (when-let [lock (get @user-locks uid)]
+  (let [{:keys [lock]} (get-user-state uid)]
     (reset! lock :idle)))
+
+(defn- store-pending! [uid msg]
+  (let [{:keys [pending]} (get-user-state uid)]
+    (reset! pending msg)))
+
+(defn- take-pending! [uid]
+  (let [{:keys [pending]} (get-user-state uid)]
+    (let [m @pending]
+      (reset! pending nil)
+      m)))
 
 ;; ══════════════════════ RESPONSES ══════════════════════
 
@@ -58,7 +69,6 @@
 ;; ══════════════════════ HANDLERS ══════════════════════
 
 (defn- handle-start [{:keys [chat-id user-id first-name]}]
-  ;; Reset session on /start
   (hc/reset-session! @t/tapalakbot (str "tg-" user-id))
   (let [stats (monitor/fetch-categories)
         cats (:categories stats)
@@ -89,6 +99,7 @@
   (let [uid (str "tg-" user-id)]
     (hc/reset-session! @t/tapalakbot uid)
     (release! uid)
+    (store-pending! uid nil)
     (tg/send-md chat-id "🗑️ История очищена. Начнём заново!"))
   nil)
 
@@ -103,7 +114,6 @@
   nil)
 
 (defn- handle-prices
-  "Handle /prices command — show market overview or search."
   [{:keys [chat-id text]}]
   (let [parts (str/split text #"\s+" 2)
         query (when (> (count parts) 1) (str/trim (second parts)))]
@@ -126,86 +136,102 @@
           (tg/send-md chat-id (monitor/format-search-results results))
           (tg/send-md chat-id (str "🔍 Ничего не найдено по запросу «" query "»")))))))
 
-(defn- strip-tables
-  "Strip markdown tables from text."
-  [text]
+(defn- strip-tables [text]
   (-> text
       (str/replace #"\|[-:| ]+\|" "")
       (str/replace (re-pattern "\\|[^\\n]*\\|") "")))
 
-(defn- handle-agent [{:keys [chat-id user-id text]}]
+(defn- process-agent-message
+  "Process a single agent message with streaming. Returns nil."
+  [{:keys [chat-id user-id text]}]
+  (let [uid (str "tg-" user-id)
+        bot @t/tapalakbot
+        thinking-msg-id (atom nil)
+        buf (StringBuilder.)
+        last-edit (atom 0)
+        last-typing (atom 0)
+        phase (atom :initial)]
+    ;; Send thinking placeholder
+    (let [msg (tg/send-message chat-id "💭 ..." :parse-mode nil)]
+      (reset! thinking-msg-id (some-> msg (get "result") (get "message_id"))))
+    ;; Run agent with streaming
+    (try
+      (let [stream-cb (fn [delta]
+                        (.append buf delta)
+                        (log/info :stream-delta :len (count delta) :total (.length buf))
+                        (reset! phase :streaming)
+                        ;; Send typing indicator every 4s
+                        (let [now (System/currentTimeMillis)]
+                          (when (> (- now @last-typing) 4000)
+                            (reset! last-typing now)
+                            (try (tg/send-typing chat-id) (catch Exception _))))
+                        (let [now (System/currentTimeMillis)
+                              elapsed (- now @last-edit)
+                              msg-id @thinking-msg-id]
+                          (when (and (> elapsed 1500)
+                                     (> (.length buf) 30)
+                                     msg-id)
+                            (reset! last-edit now)
+                            (try
+                              (let [preview (strip-tables (.toString buf))
+                                    html (fmt/md->html preview)]
+                                (tg/edit-message chat-id msg-id html :parse-mode "HTML"))
+                              (catch Exception e
+                                (log/warn e :stream-edit-fail))))))
+            status-cb (fn [status]
+                        (reset! phase :tool)
+                        (.setLength buf 0)
+                        (when-let [msg-id @thinking-msg-id]
+                          (try
+                            (tg/edit-message chat-id msg-id status :parse-mode nil)
+                            (catch Exception e
+                              (log/warn e :status-edit-fail)))))
+            result (hc/handle-message-stream! bot uid text stream-cb :status-cb status-cb)]
+        (reset! phase :done)
+        (if-let [msg-id @thinking-msg-id]
+          (let [safe-text (-> (str result)
+                              (str/replace #"👉 Смотри\b" "🔗")
+                              strip-tables)
+                html (fmt/md->html safe-text)]
+            (try
+              (tg/edit-message chat-id msg-id html :parse-mode "HTML")
+              (catch Exception e
+                (log/error e :final-edit-fail)
+                (tg/send-message chat-id html :parse-mode "HTML"))))
+          (tg/send-md chat-id (str result))))
+      (catch Exception e
+        (log/error e :agent-error {:user-id uid})
+        (if-let [msg-id @thinking-msg-id]
+          (tg/edit-message chat-id msg-id "❌ Ошибка. Попробуйте ещё раз." :parse-mode nil)
+          (tg/send-message chat-id "❌ Ошибка. Попробуйте ещё раз." :parse-mode nil))))))
+
+(defn- handle-agent
+  "Handle agent message with per-user lock and pending queue.
+   If lock is busy: store msg as pending (last-write-wins), notify user.
+   If lock is free: acquire, process, then check for pending and process it."
+  [{:keys [chat-id user-id] :as msg}]
   (let [uid (str "tg-" user-id)]
-    ;; Per-user lock: skip if bot is already processing for this user
     (if-not (try-acquire! uid)
+      ;; Lock busy — queue as pending (last-write-wins)
       (do
-        (log/info :skip-queued :user-id uid)
-        (tg/send-message chat-id "⏳ Подождите — обрабатываю предыдущий запрос..." :parse-mode nil)
+        (log/info :msg-queued :user-id uid :text (:text msg))
+        (store-pending! uid msg)
+        (try (tg/send-message chat-id "⏳ Обрабатываю предыдущий запрос..." :parse-mode nil)
+             (catch Exception _))
         nil)
-      ;; Process message
-      (let [bot @t/tapalakbot
-            thinking-msg-id (atom nil)
-            buf (StringBuilder.)
-            last-edit (atom 0)
-            last-typing (atom 0)
-            phase (atom :initial)]
-        ;; Send thinking placeholder
-        (let [msg (tg/send-message chat-id "💭 ..." :parse-mode nil)]
-          (reset! thinking-msg-id (some-> msg (get "result") (get "message_id"))))
-        ;; Run agent with streaming
-        (try
-          (let [stream-cb (fn [delta]
-                            (.append buf delta)
-                            (log/info :stream-delta :len (count delta) :total (.length buf))
-                            (reset! phase :streaming)
-                            ;; Send typing indicator every 4s
-                            (let [now (System/currentTimeMillis)]
-                              (when (> (- now @last-typing) 4000)
-                                (reset! last-typing now)
-                                (try (tg/send-typing chat-id) (catch Exception _))))
-                            (let [now (System/currentTimeMillis)
-                                  elapsed (- now @last-edit)
-                                  msg-id @thinking-msg-id]
-                              (log/info :stream-check :elapsed elapsed :buf-len (.length buf) :phase @phase :msg-id msg-id)
-                              (when (and (> elapsed 1500)
-                                         (> (.length buf) 30)
-                                         msg-id)
-                                (reset! last-edit now)
-                                (log/info :stream-edit-triggered)
-                                (try
-                                  (let [preview (strip-tables (.toString buf))
-                                        html (fmt/md->html preview)]
-                                    (tg/edit-message chat-id msg-id html :parse-mode "HTML")
-                                    (log/info :stream-edit-success))
-                                  (catch Exception e
-                                    (log/warn e :stream-edit-fail))))))
-                status-cb (fn [status]
-                            (reset! phase :tool)
-                            (.setLength buf 0)
-                            (when-let [msg-id @thinking-msg-id]
-                              (try
-                                (tg/edit-message chat-id msg-id status :parse-mode nil)
-                                (catch Exception e
-                                  (log/warn e :status-edit-fail)))))
-                result (hc/handle-message-stream! bot uid text stream-cb :status-cb status-cb)]
-            (reset! phase :done)
-            (if-let [msg-id @thinking-msg-id]
-              (let [safe-text (-> (str result)
-                                  (str/replace #"👉 Смотри\b" "🔗")
-                                  strip-tables)
-                    html (fmt/md->html safe-text)]
-                (try
-                  (tg/edit-message chat-id msg-id html :parse-mode "HTML")
-                  (catch Exception e
-                    (log/error e :final-edit-fail)
-                    (tg/send-message chat-id html :parse-mode "HTML"))))
-              (tg/send-md chat-id (str result))))
-          (catch Exception e
-            (log/error e :agent-error {:user-id uid})
-            (if-let [msg-id @thinking-msg-id]
-              (tg/edit-message chat-id msg-id "❌ Ошибка. Попробуйте ещё раз." :parse-mode nil)
-              (tg/send-message chat-id "❌ Ошибка. Попробуйте ещё раз." :parse-mode nil)))
-          (finally
-            (release! uid)))))))
+      ;; Lock acquired — process in loop (handles pending messages after current)
+      (try
+        (loop [current msg]
+          (process-agent-message current)
+          ;; After processing, check for pending message
+          (if-let [next-msg (take-pending! uid)]
+            (do
+              (log/info :process-pending :user-id uid :text (:text next-msg))
+              (recur next-msg))
+            ;; No pending — done
+            nil))
+        (finally
+          (release! uid))))))
 
 ;; ══════════════════════ ROUTER ══════════════════════
 
