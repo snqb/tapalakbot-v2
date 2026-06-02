@@ -122,17 +122,27 @@
     72 "каждые 72ч"
     (str "каждые " hours "ч")))
 
+(def ^:private pending-track-queries
+  "Map of user-id → query string (for contextual tracking button)."
+  (atom {}))
+
 (defn- track-context-button
-  "Create inline button for tracking after search results."
-  [query]
-  (inline-keyboard
-   [[{:text (str "🔔 Отслеживать «" query "»")
-      :callback_data (str "track_quick:" query)}]]))
+  "Create inline button for tracking after search results.
+   Stores query in atom, uses short ID in callback_data."
+  [user-id query]
+  (let [short-id (str (hash query))]
+    (swap! pending-track-queries assoc user-id query)
+    (inline-keyboard
+     [[{:text (str "🔔 Отслеживать «" query "»")
+        :callback_data (str "track_quick:" short-id)}]])))
 
 (defn- handle-track-quick
   "Handle quick track button — create filter with 24h default."
-  [chat-id msg-id user-id query]
+  [chat-id msg-id user-id short-id]
   (let [uid (str "tg-" user-id)
+        query (get @pending-track-queries user-id)
+        _ (swap! pending-track-queries dissoc user-id)
+        query (or query "товар")  ;; fallback if atom was cleared
         track (store/create-track! {:user-id uid
                                     :title query
                                     :queries [query]
@@ -404,7 +414,7 @@
               (when-let [query (extract-search-query (str result) text)]
                 (try
                   (Thread/sleep 500)
-                  (let [track-btn (track-context-button query)]
+                  (let [track-btn (track-context-button user-id query)]
                     (tg/send-message chat-id (str "🔔 Хотите отслеживать «" query "»?")
                                      :reply_markup track-btn))
                   (catch Exception e
@@ -486,6 +496,7 @@
 (defn- extended-handler
   "Handler that processes both messages and callback queries."
   [parsed]
+  (log/info :extended-handler :text (:text parsed) :callback (:callback-id parsed))
   (cond
     ;; Callback query (inline keyboard button pressed)
     (:callback-id parsed)
@@ -505,6 +516,7 @@
         ;; Commands
         (str/starts-with? text "/")
         (let [cmd (first (str/split text #"\s+"))]
+          (log/info :command-detected :cmd cmd)
           (case cmd
             "/start"    (handle-start parsed)
             "/help"     (handle-help parsed)
