@@ -43,7 +43,15 @@
   (let [uri (:uri request)
         path (if (= uri "/") "/index.html" uri)
         file (io/file "docs" (subs path 1))]
-    (if (.exists file)
+    (cond
+      (.isDirectory file)
+      (let [index (io/file file "index.html")]
+        (if (.exists index)
+          (-> (response/response (slurp index))
+              (response/content-type "text/html"))
+          (json-response 404 {:error "Not found"})))
+      
+      (.exists file)
       (let [content-type (cond
                            (.endsWith path ".html") "text/html"
                            (.endsWith path ".css") "text/css"
@@ -55,6 +63,8 @@
                            :else "application/octet-stream")]
         (-> (response/response (slurp file))
             (response/content-type content-type)))
+      
+      :else
       (json-response 404 {:error "Not found"}))))
 
 (defn- handle-health [_]
