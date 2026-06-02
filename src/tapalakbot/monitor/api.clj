@@ -39,12 +39,23 @@
 
 ;; ════════════════════════════ ROUTES ════════════════════════════
 
-(defn- handle-website [_]
-  (let [html-file (io/file "docs/index.html")]
-    (if (.exists html-file)
-      (-> (response/response (slurp html-file))
-          (response/content-type "text/html"))
-      (json-response 404 {:error "Website not found"}))))
+(defn- handle-website [request]
+  (let [uri (:uri request)
+        path (if (= uri "/") "/index.html" uri)
+        file (io/file "docs" (subs path 1))]
+    (if (.exists file)
+      (let [content-type (cond
+                           (.endsWith path ".html") "text/html"
+                           (.endsWith path ".css") "text/css"
+                           (.endsWith path ".js") "application/javascript"
+                           (.endsWith path ".json") "application/json"
+                           (.endsWith path ".png") "image/png"
+                           (.endsWith path ".jpg") "image/jpeg"
+                           (.endsWith path ".svg") "image/svg+xml"
+                           :else "application/octet-stream")]
+        (-> (response/response (slurp file))
+            (response/content-type content-type)))
+      (json-response 404 {:error "Not found"}))))
 
 (defn- handle-health [_]
   (let [stats (store/get-stats)]
@@ -219,7 +230,8 @@
     (case request-method
       :get
       (cond
-        (= uri "/")                   (handle-website request)
+        (or (= uri "/")
+            (.startsWith uri "/designs/")) (handle-website request)
         (= uri "/health")            (handle-health request)
         (= uri "/prices/trending")   (handle-trending request)
         (= uri "/prices/deals")      (handle-deals request)
