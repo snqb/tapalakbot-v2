@@ -110,10 +110,25 @@
 
 (defonce ^:private tracker-thread (atom nil))
 
+(defn- should-check-now?
+  "Check if a track is due for checking based on its notify_interval."
+  [{:keys [last_checked_at notify_interval]}]
+  (let [interval-h (or notify_interval 24)
+        interval-ms (* interval-h 60 60 1000)]
+    (if last_checked_at
+      (let [checked-ms (.getTime (java.sql.Timestamp/valueOf last_checked_at))
+            now-ms (System/currentTimeMillis)]
+        (>= (- now-ms checked-ms) interval-ms))
+      true)))
+
 (defn run-check-cycle!
-  "Check all active tracks. Returns summary."
+  "Check all active tracks that are due. Returns summary."
   []
-  (let [tracks (store/get-all-active-tracks)]
+  (let [all-tracks (store/get-all-active-tracks)
+        tracks (filterv should-check-now? all-tracks)
+        skipped (- (count all-tracks) (count tracks))]
+    (when (pos? skipped)
+      (log/info :track-skipped :count skipped))
     (if (empty? tracks)
       (do (log/info :track-check :no-active-tracks)
           {:tracks 0 :new-items 0 :notified 0})

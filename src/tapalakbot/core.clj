@@ -140,7 +140,7 @@ Example: [113171780, 112908144, 111226783]")
                  (str " (from " raw " raw listings across " pages " pages)")
                  (when truncated " [truncated]")
                  (if (>= (count relevant) 7)
-                   "\nSTRICT: show 7-10 listings from these candidates in the final answer. Do not show only 5-6. Include older/budget actual items with caveats if needed."
+                   "\nSTRICT: show 15-25 listings from these candidates in the final answer. Include older/budget actual items with caveats if needed. Cover as many relevant listings as possible — users want to see the full market."
                    (str "\nNOTE: Only " (count relevant) " relevant candidates remained after filtering; tell the user the market is thin instead of pretending there are many."))
                  ":\n"
                  (str/join "\n"
@@ -245,7 +245,7 @@ Example: [113171780, 112908144, 111226783]")
                      "price_min" final-price-min
                      "price_max" final-price-max
                      "city_id" (get args "city_id")
-                     "candidate_limit" 100}
+                     "candidate_limit" 250}
         result (lalafo/search search-args)]
     (log/info :smart-search :queries enhanced-queries :price-max final-price-max)
     (format-search-results result :user-query user-want)))

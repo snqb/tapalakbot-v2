@@ -1,4 +1,5 @@
 {:openrouter-key #or [#env OPENROUTER_API_KEY "placeholder"]
+ :riskbypass-key #or [#env RISKBYPASS_API_KEY ""]
  :models {:claude-sonnet "anthropic/claude-sonnet-4"
           :claude-opus  "anthropic/claude-opus-4-5"
           :gemini-flash "google/gemini-2.5-flash"

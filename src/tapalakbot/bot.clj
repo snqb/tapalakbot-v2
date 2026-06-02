@@ -2,11 +2,7 @@
   "Telegram bot for TapalakBot v2.
   Uses progressive streaming for real-time text display.
   Button-based tracking UI via inline keyboards.
-
-  Session safety:
-  - Per-user lock prevents concurrent handler execution
-  - Last-write-wins pending queue
-  - /reset clears conversation history"
+  Persistent menu: [🔄 Новый диалог] [🔔 Отслеживание]"
   (:require [tapalakbot.core :as t]
             [tapalakbot.monitor.client :as monitor]
             [tapalakbot.monitor.store :as store]
@@ -14,8 +10,7 @@
             [clj-harness.telegram.format :as fmt]
             [clj-harness.core :as hc]
             [clojure.string :as str]
-            [clojure.tools.logging :as log]
-            [cheshire.core :as json]))
+            [clojure.tools.logging :as log]))
 
 ;; ══════════════════════ PER-USER LOCK + PENDING ══════════════════════
 
@@ -50,8 +45,7 @@
 ;; ══════════════════════ INLINE KEYBOARD HELPERS ══════════════════════
 
 (defn- inline-keyboard
-  "Build InlineKeyboardMarkup from rows of buttons.
-   Each row is a vector of [{:text \"...\" :callback_data \"...\"} ...]"
+  "Build InlineKeyboardMarkup from rows of buttons."
   [rows]
   {"inline_keyboard"
    (mapv (fn [row]
@@ -85,6 +79,21 @@
     (catch Exception e
       (log/warn e :send-with-buttons-fail))))
 
+;; ══════════════════════ PERSISTENT MENU ══════════════════════
+
+(defn- persistent-menu
+  "Create ReplyKeyboardMarkup with persistent buttons."
+  []
+  {"keyboard"
+   [[{"text" "🔄 Новый диалог"} {"text" "🔔 Отслеживание"}]]
+   "resize_keyboard" true
+   "one_time" false})
+
+(defn- send-menu!
+  "Send message with persistent menu."
+  [chat-id text]
+  (tg/send-md chat-id text :reply_markup (persistent-menu)))
+
 ;; ══════════════════════ RESPONSES ══════════════════════
 
 (def ^:private greeting-resp
@@ -104,112 +113,89 @@
    "спс"      "Пожалуйста! 😊" "thanks" "You're welcome! 😊"
    "ок"       "👌" "окей" "👌" "ладно" "👌" "понял" "👌"})
 
-;; ══════════════════════ TRACKING — STEP 1: CATEGORY PICK ══════════════════════
+;; ══════════════════════ TRACKING — CONTEXTUAL BUTTON ══════════════════════
 
-(def ^:private track-categories
-  "Category buttons for tracking."
-  [["📱 Телефоны" "track_cat:телефон"]
-   ["💻 Ноутбуки" "track_cat:ноутбук"]
-   ["🎮 Приставки" "track_cat:приставка"]
-   ["📺 Телевизоры" "track_cat:телевизор"]
-   ["🎧 Наушники" "track_cat:наушники"]
-   ["⌚ Часы" "track_cat:часы"]
-   ["🚲 Велосипеды" "track_cat:велосипед"]
-   ["✏️ Свой запрос" "track_cat:custom"]])
+(defn- format-interval [hours]
+  (case (int hours)
+    3 "каждые 3ч"
+    24 "каждые 24ч"
+    72 "каждые 72ч"
+    (str "каждые " hours "ч")))
 
-(def ^:private track-price-buttons
-  "Price range buttons."
-  [["До 10 000 ₽" "track_price:10000"]
-   ["До 20 000 ₽" "track_price:20000"]
-   ["До 30 000 ₽" "track_price:30000"]
-   ["До 50 000 ₽" "track_price:50000"]
-   ["До 100 000 ₽" "track_price:100000"]
-   ["💰 Любая цена" "track_price:any"]])
+(defn- track-context-button
+  "Create inline button for tracking after search results."
+  [query]
+  (inline-keyboard
+   [[{:text (str "🔔 Отслеживать «" query "»")
+      :callback_data (str "track_quick:" query)}]]))
 
-(defn- show-track-categories
-  "Show category selection keyboard."
-  [chat-id msg-id]
-  (let [keyboard (inline-keyboard
-                  (mapv (fn [[text data]] [{:text text :callback_data data}])
-                        track-categories))]
-    (if msg-id
-      (edit-with-buttons chat-id msg-id
-                         "🔍 *Что хотите отслеживать?*\n\nВыберите категорию или напишите свой запрос:"
-                         keyboard)
-      (send-with-buttons chat-id
-                         "🔍 *Что хотите отслеживать?*\n\nВыберите категорию или напишите свой запрос:"
-                         keyboard))))
-
-(defn- show-track-price
-  "Show price range selection keyboard."
-  [chat-id msg-id query]
-  (let [keyboard (inline-keyboard
-                  (mapv (fn [[text data]]
-                          [{:text text :callback_data (str data ":" query)}])
-                        track-price-buttons))]
+(defn- handle-track-quick
+  "Handle quick track button — create filter with 24h default."
+  [chat-id msg-id user-id query]
+  (let [uid (str "tg-" user-id)
+        track (store/create-track! {:user-id uid
+                                    :title query
+                                    :queries [query]
+                                    :notify-interval 24})]
+    (log/info :track-created :user uid :track-id (:id track) :query query)
     (edit-with-buttons chat-id msg-id
-                       (str "🔍 *Отслеживание:* «" query "»\n\n"
-                            "💰 Какой максимальный бюджет?")
-                       keyboard)))
+                       (str "✅ Подписался на «" query "»\n\n"
+                            "📅 Проверяю каждые 24 часа\n"
+                            "Уведомлю когда появятся новые объявления")
+                       (inline-keyboard
+                        [[{:text "📋 Мои подписки" :callback_data "track_list"}
+                          {:text "⚙ Настроить" :callback_data (str "track_settings:" (:id track))}]]))))
 
-(defn- confirm-track-created
-  "Show confirmation after track is created."
-  [chat-id msg-id title price-max]
-  (edit-with-buttons chat-id msg-id
-                     (str "✅ *Фильтр создан!*\n\n"
-                          "🔍 «" title "»"
-                          (when price-max
-                            (str "\n💰 Бюджет: до " (format "%,d" price-max) " ₽"))
-                          "\n\n🔔 Уведомлю когда появятся новые объявления.")
-                     (inline-keyboard [[{:text "📋 Мои фильтры" :callback_data "track_list"}
-                                        {:text "➕ Ещё фильтр" :callback_data "track_new"}]])))
+;; ══════════════════════ TRACKING — SUBSCRIPTION LIST ══════════════════════
 
-;; ══════════════════════ TRACKING — STEP 2: LIST / DELETE ══════════════════════
-
-(defn- show-track-list
-  "Show user's tracking filters with delete buttons."
+(defn- show-tracking-list
+  "Show user's tracking subscriptions with frequency controls."
   [chat-id user-id]
   (let [uid (str "tg-" user-id)
         tracks (store/get-user-tracks uid)]
     (if (empty? tracks)
       (send-with-buttons chat-id
-                         "📋 *У вас нет активных фильтров.*\n\nСоздайте первый:"
-                         (inline-keyboard [[{:text "➕ Создать фильтр" :callback_data "track_new"}]]))
+                         "📋 *Ваши подписки пусты*\n\nНайдите товар и нажмите «🔔 Отслеживать»"
+                         (inline-keyboard
+                          [[{:text "🔍 Поиск товаров" :callback_data "open_search"}]]))
       (let [track-rows (mapv (fn [t]
-                               (let [title (if (> (count (:title t)) 30)
-                                             (str (subs (:title t) 0 27) "...")
-                                             (:title t))
-                                     price (when-let [p (:price_max t)]
-                                             (str " до " (format "%,d" p) "₽"))]
-                                 [{:text (str "🔍 " title (or price ""))
+                               (let [freq (format-interval (:notify_interval t))]
+                                 [{:text (str "🔍 " (:title t))
                                    :callback_data (str "track_info:" (:id t))}
-                                  {:text "❌" :callback_data (str "track_del_ask:" (:id t))}]))
-                             tracks)
-            all-rows (conj track-rows
-                           [{:text "➕ Новый фильтр" :callback_data "track_new"}
-                            {:text "🗑 Удалить все" :callback_data "track_del_all"}])]
+                                  {:text (str "📅 " freq)
+                                   :callback_data (str "track_freq:" (:id t))}
+                                  {:text "❌"
+                                   :callback_data (str "track_del_ask:" (:id t))}]))
+                             tracks)]
         (send-with-buttons chat-id
-                           (str "📋 *Ваши фильтры* (" (count tracks) ")\n\n"
-                                "Нажмите ❌ чтобы удалить")
-                           (inline-keyboard all-rows))))))
+                           (str "📋 *Ваши подписки* (" (count tracks) ")\n\n"
+                                "📅 — частота уведомлений\n❌ — удалить")
+                           (inline-keyboard track-rows))))))
+
+(defn- show-track-settings
+  "Show frequency settings for a track."
+  [chat-id msg-id track-id]
+  (let [track (store/get-track track-id)]
+    (when track
+      (edit-with-buttons chat-id msg-id
+                         (str "⚙ *Настройки:* «" (:title track) "»\n\n"
+                              "📅 Частота уведомлений:")
+                         (inline-keyboard
+                          [[{:text "⏰ Каждые 3 часа"
+                             :callback_data (str "track_set_freq:" track-id ":3")}
+                            {:text "📅 Каждые 24 часа"
+                             :callback_data (str "track_set_freq:" track-id ":24")}
+                            {:text "📆 Каждые 72 часа"
+                             :callback_data (str "track_set_freq:" track-id ":72")}]])))))
 
 (defn- confirm-delete-track
   "Ask for delete confirmation."
   [chat-id msg-id track-id title]
   (edit-with-buttons chat-id msg-id
-                     (str "🗑 *Удалить фильтр?*\n\n«" title "»")
+                     (str "🗑 *Удалить подписку?*\n\n«" title "»")
                      (inline-keyboard
                       [[{:text "Да, удалить" :callback_data (str "track_del_yes:" track-id)}
-                        {:text "Отмена" :callback_data "track_list"}]])))
-
-(defn- confirm-delete-all
-  "Ask for delete all confirmation."
-  [chat-id msg-id count]
-  (edit-with-buttons chat-id msg-id
-                     (str "🗑 *Удалить все фильтры?*\n\nВсего: " count)
-                     (inline-keyboard
-                      [[{:text "Да, удалить все" :callback_data "track_del_all_yes"}
-                        {:text "Отмена" :callback_data "track_list"}]])))
+                        {:text "← Назад" :callback_data "track_list"}]])))
 
 ;; ══════════════════════ CALLBACK ROUTER ══════════════════════
 
@@ -218,61 +204,44 @@
   [{:keys [callback-id data user-id chat-id msg-id]}]
   (log/info :callback :data data :user user-id)
   (cond
-    ;; === TRACKING: Category selection ===
-    (= data "track_new")
-    (do (answer-callback callback-id)
-        (show-track-categories chat-id msg-id))
-
-    (re-matches #"track_cat:(.+)" data)
-    (let [[_ cat] (re-matches #"track_cat:(.+)" data)]
+    ;; === TRACKING: Quick create from search result ===
+    (re-matches #"track_quick:(.+)" data)
+    (let [[_ query] (re-matches #"track_quick:(.+)" data)]
       (answer-callback callback-id)
-      (if (= cat "custom")
-        ;; Custom query — ask user to type
-        (do (edit-with-buttons chat-id msg-id
-                               "✏️ *Напишите что ищете:*\n\nНапример: «iPhone 13», «MacBook Air», «PS5»"
-                               (inline-keyboard [[{:text "← Назад" :callback_data "track_new"}]]))
-            ;; Mark user as waiting for custom query
-            (swap! user-state assoc-in [(str "tg-" user-id) :waiting-track] true))
-        ;; Category selected — show price buttons
-        (show-track-price chat-id msg-id cat)))
+      (handle-track-quick chat-id msg-id user-id query))
 
-    ;; === TRACKING: Price selection ===
-    (re-matches #"track_price:(.+):(.+)" data)
-    (let [[_ price-str query] (re-matches #"track_price:(.+):(.+)" data)
-          price-max (when-not (= price-str "any") (Long/parseLong price-str))
-          uid (str "tg-" user-id)
-          track (store/create-track! {:user-id uid
-                                      :title (if price-max
-                                               (str query " до " (format "%,d" price-max))
-                                               query)
-                                      :queries [query]
-                                      :price-max price-max})]
-      (answer-callback callback-id)
-      (log/info :track-created :user uid :track-id (:id track) :query query)
-      (confirm-track-created chat-id msg-id query price-max))
-
-    ;; === TRACKING: List ===
+    ;; === TRACKING: Show subscription list ===
     (= data "track_list")
     (do (answer-callback callback-id)
-        (show-track-list chat-id user-id))
+        (show-tracking-list chat-id user-id))
 
-    ;; === TRACKING: Info ===
-    (re-matches #"track_info:(\d+)" data)
-    (let [[_ id-str] (re-matches #"track_info:(\d+)" data)
-          track (store/get-track (Long/parseLong id-str))]
+    ;; === TRACKING: Show settings for a track ===
+    (re-matches #"track_settings:(\d+)" data)
+    (let [[_ id-str] (re-matches #"track_settings:(\d+)" data)]
       (answer-callback callback-id)
-      (if track
+      (show-track-settings chat-id msg-id (Long/parseLong id-str)))
+
+    ;; === TRACKING: Show frequency picker ===
+    (re-matches #"track_freq:(\d+)" data)
+    (let [[_ id-str] (re-matches #"track_freq:(\d+)" data)]
+      (answer-callback callback-id)
+      (show-track-settings chat-id msg-id (Long/parseLong id-str)))
+
+    ;; === TRACKING: Set frequency ===
+    (re-matches #"track_set_freq:(\d+):(\d+)" data)
+    (let [[_ id-str interval] (re-matches #"track_set_freq:(\d+):(\d+)" data)
+          track-id (Long/parseLong id-str)
+          interval-h (Long/parseLong interval)
+          track (store/get-track track-id)]
+      (answer-callback callback-id :text (str "✅ " (format-interval interval-h)))
+      (when (and track (= (:user_id track) (str "tg-" user-id)))
+        (store/update-track-interval! track-id interval-h)
+        (log/info :track-interval-updated :track-id track-id :interval interval-h)
         (edit-with-buttons chat-id msg-id
-                           (str "🔍 *Фильтр #" (:id track) "*\n\n"
-                                "📝 " (:title track) "\n"
-                                (when-let [p (:price_max track)]
-                                  (str "💰 Бюджет: до " (format "%,d" p) " ₽\n"))
-                                "🔔 Уведомлений: " (:notify_count track) "\n"
-                                "📅 Создан: " (:created_at track))
+                           (str "✅ Частота обновлена\n\n"
+                                "«" (:title track) "» → " (format-interval interval-h))
                            (inline-keyboard
-                            [[{:text "❌ Удалить" :callback_data (str "track_del_ask:" (:id track))}
-                              {:text "← Назад" :callback_data "track_list"}]]))
-        (answer-callback callback-id :text "Фильтр не найден")))
+                            [[{:text "📋 Назад к списку" :callback_data "track_list"}]]))))
 
     ;; === TRACKING: Delete confirmation ===
     (re-matches #"track_del_ask:(\d+)" data)
@@ -293,25 +262,13 @@
         (log/info :track-deleted :user user-id :track-id track-id)
         (edit-with-buttons chat-id msg-id
                            (str "🗑 *Удалено:* «" (:title track) "»")
-                           (inline-keyboard [[{:text "📋 Мои фильтры" :callback_data "track_list"}
-                                              {:text "➕ Новый" :callback_data "track_new"}]]))))
+                           (inline-keyboard
+                            [[{:text "📋 К списку" :callback_data "track_list"}]]))))
 
-    ;; === TRACKING: Delete all confirmation ===
-    (= data "track_del_all")
-    (let [uid (str "tg-" user-id)
-          tracks (store/get-user-tracks uid)]
-      (answer-callback callback-id)
-      (when (seq tracks)
-        (confirm-delete-all chat-id msg-id (count tracks))))
-
-    ;; === TRACKING: Delete all yes ===
-    (= data "track_del_all_yes")
-    (let [uid (str "tg-" user-id)
-          n (store/delete-user-tracks! uid)]
-      (answer-callback callback-id)
-      (edit-with-buttons chat-id msg-id
-                         (str "🗑 *Удалено фильтров:* " n)
-                         (inline-keyboard [[{:text "➕ Создать фильтр" :callback_data "track_new"}]])))
+    ;; === TRACKING: Open search (from empty list) ===
+    (= data "open_search")
+    (do (answer-callback callback-id)
+        (tg/send-md chat-id "🔍 Напишите что ищете, и в конце будет кнопка «🔔 Отслеживать»"))
 
     ;; Unknown callback
     :else
@@ -325,7 +282,7 @@
         cats (:categories stats)
         total-items (reduce + 0 (map :item_count cats))
         cat-count (count cats)]
-    (send-with-buttons
+    (send-menu!
      chat-id
      (str "👋 Салам, " first-name "!\n\n"
           "Я *TapalakBot* — умный помощник по покупкам на Lalafo.kg 🇰🇬\n\n"
@@ -334,11 +291,7 @@
           "• " cat-count " категорий отслеживается\n"
           "• " total-items " товаров в базе\n"
           "━━━━━━━━━━━━━━━━━━━━\n\n"
-          "Просто напиши что ищешь! 🔍")
-     (inline-keyboard
-      [[{:text "🔔 Отслеживать" :callback_data "track_new"}
-        {:text "📋 Фильтры" :callback_data "track_list"}]
-       [{:text "📊 Рынок" :callback_data "market_stats"}]])))
+          "Просто напиши что ищешь! 🔍")))
   nil)
 
 (defn- handle-reset [{:keys [chat-id user-id]}]
@@ -346,16 +299,17 @@
     (hc/reset-session! @t/tapalakbot uid)
     (release! uid)
     (store-pending! uid nil)
-    (tg/send-md chat-id "🗑️ История очищена. Начнём заново!"))
+    (send-menu! chat-id "🗑️ Контекст очищен. Начнём заново!"))
+  nil)
+
+(defn- handle-tracking [{:keys [chat-id user-id]}]
+  (show-tracking-list chat-id user-id)
   nil)
 
 (defn- handle-help [{:keys [chat-id]}]
-  (send-with-buttons
+  (send-menu!
    chat-id
-   "*TapalakBot* — поиск на Lalafo.kg\n\n🔍 Поиск товаров\n🔔 Отслеживание новых объявлений\n📊 Рыночные цены\n\nПросто опиши что ищешь!"
-   (inline-keyboard
-    [[{:text "🔔 Отслеживать" :callback_data "track_new"}
-      {:text "📋 Фильтры" :callback_data "track_list"}]]))
+   "*TapalakBot* — поиск на Lalafo.kg\n\n🔍 Поиск товаров\n🔔 Отслеживание новых объявлений\n📊 Рыночные цены\n\nПросто опиши что ищешь!")
   nil)
 
 (defn- handle-prices
@@ -385,6 +339,14 @@
   (-> text
       (str/replace #"\|[-:| ]+\|" "")
       (str/replace (re-pattern "\\|[^\\n]*\\|") "")))
+
+(defn- extract-search-query
+  "Try to extract the original search query from agent response.
+   Looks for patterns like 'Поиск по запросу: ...' or the user's original text."
+  [result-text user-text]
+  ;; Use the user's text as the query (it's what they searched for)
+  (when (and user-text (not (str/blank? user-text)))
+    (str/trim user-text)))
 
 (defn- process-agent-message
   "Process a single agent message with streaming. Returns nil."
@@ -436,7 +398,17 @@
                               strip-tables)
                 html (fmt/md->html safe-text)]
             (try
+              ;; Edit with search results
               (tg/edit-message chat-id msg-id html :parse-mode "HTML")
+              ;; Add contextual track button after a short delay
+              (when-let [query (extract-search-query (str result) text)]
+                (try
+                  (Thread/sleep 500)
+                  (let [track-btn (track-context-button query)]
+                    (tg/send-message chat-id (str "🔔 Хотите отслеживать «" query "»?")
+                                     :reply_markup track-btn))
+                  (catch Exception e
+                    (log/warn e :track-button-fail))))
               (catch Exception e
                 (log/error e :final-edit-fail)
                 (tg/send-message chat-id html :parse-mode "HTML"))))
@@ -472,7 +444,7 @@
 (defn- handle-market-stats [{:keys [chat-id]}]
   (let [cats (monitor/fetch-categories)
         stats (:categories cats)]
-    (answer-callback nil) ;; no callback id for this
+    (answer-callback nil)
     (if (seq stats)
       (let [lines (mapv (fn [c]
                           (str "• *" (:name c) "* — "
@@ -519,36 +491,33 @@
     (:callback-id parsed)
     (handle-callback parsed)
 
-    ;; Custom track query (user typing after category = custom)
-    (let [uid (str "tg-" (:user-id parsed))
-          waiting? (get-in @user-state [uid :waiting-track])]
-      (and waiting? (:text parsed)))
-    (let [uid (str "tg-" (:user-id parsed))
-          text (str/trim (:text parsed))
-          chat-id (:chat-id parsed)]
-      ;; Clear waiting state
-      (swap! user-state assoc-in [uid :waiting-track] nil)
-      ;; Show price selection for custom query
-      (show-track-price chat-id nil text))
-
     ;; Regular text message
     (:text parsed)
     (let [text (str/trim (:text parsed))]
       (cond
+        ;; Persistent menu buttons
+        (= text "🔄 Новый диалог")
+        (handle-reset parsed)
+
+        (= text "🔔 Отслеживание")
+        (handle-tracking parsed)
+
+        ;; Commands
         (str/starts-with? text "/")
         (let [cmd (first (str/split text #"\s+"))]
           (case cmd
-            "/start"  (handle-start parsed)
-            "/help"   (handle-help parsed)
-            "/prices" (handle-prices parsed)
-            "/reset"  (handle-reset parsed)
-            "/track"  (show-track-categories (:chat-id parsed) nil)
-            "/tracks" (show-track-list (:chat-id parsed) (:user-id parsed))
+            "/start"    (handle-start parsed)
+            "/help"     (handle-help parsed)
+            "/prices"   (handle-prices parsed)
+            "/reset"    (handle-reset parsed)
+            "/tracking" (handle-tracking parsed)
             nil))
 
+        ;; Fast-path words
         (get fast-responses (str/lower-case text))
         (tg/send-md (:chat-id parsed) (get fast-responses (str/lower-case text)))
 
+        ;; Agent
         (not (str/blank? text))
         (handle-agent parsed)
 
