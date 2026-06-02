@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TapalakBot — Mantine Style</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'Inter', sans-serif; background: #f8f9fa; color: #212529; }
+    
+    /* Mantine colors */
+    :root {
+      --mantine-blue-0: #e7f5ff;
+      --mantine-blue-1: #d0ebff;
+      --mantine-blue-2: #a5d8ff;
+      --mantine-blue-4: #4dabf7;
+      --mantine-blue-6: #228be6;
+      --mantine-blue-7: #1c7ed6;
+      --mantine-blue-9: #1864ab;
+      --mantine-gray-0: #f8f9fa;
+      --mantine-gray-1: #f1f3f5;
+      --mantine-gray-2: #e9ecef;
+      --mantine-gray-3: #dee2e6;
+      --mantine-gray-5: #adb5bd;
+      --mantine-gray-7: #495057;
+      --mantine-gray-9: #212529;
+      --mantine-green-0: #ebfbee;
+      --mantine-green-1: #d3f9d8;
+      --mantine-green-6: #40c057;
+      --mantine-orange-0: #fff4e6;
+      --mantine-orange-1: #ffe8cc;
+      --mantine-orange-6: #fd7e14;
+    }
+    
+    /* Mantine components */
+    .mantine-AppShell { min-height: 100vh; }
+    .mantine-Header {
+      height: 60px;
+      background: white;
+      border-bottom: 1px solid var(--mantine-gray-2);
+      display: flex;
+      align-items: center;
+      padding: 0 24px;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    .mantine-Navbar { width: 100%; max-width: 1200px; margin: 0 auto; display: flex; align-items: center; justify-content: space-between; }
+    
+    .mantine-Title { font-weight: 700; letter-spacing: -0.02em; }
+    .mantine-Title-h1 { font-size: 2.5rem; }
+    .mantine-Title-h2 { font-size: 2rem; }
+    .mantine-Title-h3 { font-size: 1.25rem; }
+    
+    .mantine-Text { line-height: 1.65; }
+    .mantine-Text-sm { font-size: 14px; }
+    .mantine-Text-muted { color: var(--mantine-gray-7); }
+    
+    .mantine-Container { max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+    
+    .mantine-Button {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 20px;
+      border-radius: 8px;
+      font-weight: 600;
+      font-size: 14px;
+      text-decoration: none;
+      transition: all 150ms ease;
+      border: none;
+      cursor: pointer;
+    }
+    .mantine-Button-filled { background: var(--mantine-blue-6); color: white; }
+    .mantine-Button-filled:hover { background: var(--mantine-blue-7); }
+    .mantine-Button-outline { background: transparent; color: var(--mantine-blue-6); border: 1px solid var(--mantine-blue-6); }
+    .mantine-Button-outline:hover { background: var(--mantine-blue-0); }
+    .mantine-Button-light { background: var(--mantine-blue-0); color: var(--mantine-blue-6); }
+    .mantine-Button-light:hover { background: var(--mantine-blue-1); }
+    .mantine-Button-white { background: white; color: var(--mantine-gray-9); border: 1px solid var(--mantine-gray-3); }
+    .mantine-Button-white:hover { background: var(--mantine-gray-0); }
+    
+    .mantine-Card {
+      background: white;
+      border-radius: 8px;
+      border: 1px solid var(--mantine-gray-2);
+      overflow: hidden;
+      transition: all 150ms ease;
+    }
+    .mantine-Card:hover { border-color: var(--mantine-blue-4); box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+    
+    .mantine-Badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 4px 12px;
+      border-radius: 9999px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .mantine-Badge-blue { background: var(--mantine-blue-0); color: var(--mantine-blue-6); }
+    .mantine-Badge-green { background: var(--mantine-green-0); color: var(--mantine-green-6); }
+    .mantine-Badge-orange { background: var(--mantine-orange-0); color: var(--mantine-orange-6); }
+    
+    .mantine-Avatar {
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 600;
+      font-size: 14px;
+    }
+    .mantine-Avatar-user { background: var(--mantine-orange-1); color: var(--mantine-orange-6); }
+    .mantine-Avatar-bot { background: var(--mantine-green-1); color: var(--mantine-green-6); }
+    
+    .mantine-Divider { border: none; border-top: 1px solid var(--mantine-gray-2); }
+    
+    .mantine-Paper {
+      background: white;
+      border-radius: 8px;
+      padding: 24px;
+    }
+    
+    .mantine-Group { display: flex; align-items: center; gap: 8px; }
+    .mantine-Stack { display: flex; flex-direction: column; gap: 8px; }
+    .mantine-SimpleGrid { display: grid; gap: 16px; }
+    .mantine-SimpleGrid-cols-2 { grid-template-columns: repeat(2, 1fr); }
+    .mantine-SimpleGrid-cols-4 { grid-template-columns: repeat(4, 1fr); }
+    .mantine-SimpleGrid-cols-5 { grid-template-columns: repeat(5, 1fr); }
+    
+    @media (max-width: 768px) {
+      .mantine-SimpleGrid-cols-2, .mantine-SimpleGrid-cols-4, .mantine-SimpleGrid-cols-5 { grid-template-columns: repeat(2, 1fr); }
+    }
+    @media (max-width: 480px) {
+      .mantine-SimpleGrid-cols-2, .mantine-SimpleGrid-cols-4, .mantine-SimpleGrid-cols-5 { grid-template-columns: 1fr; }
+    }
+    
+    /* Hero */
+    .hero {
+      background: linear-gradient(135deg, var(--mantine-blue-6) 0%, var(--mantine-blue-9) 100%);
+      color: white;
+      padding: 80px 0;
+    }
+    
+    /* Section */
+    section { padding: 48px 0; }
+    
+    /* Stat */
+    .stat-number { font-size: 2.5rem; font-weight: 700; color: var(--mantine-blue-6); }
+    .stat-label { font-size: 14px; color: var(--mantine-gray-7); }
+  </style>
+</head>
+<body class="mantine-AppShell">
+  <!-- Header -->
+  <header class="mantine-Header">
+    <div class="mantine-Navbar">
+      <a href="#" class="mantine-Title mantine-Title-h3" style="color:var(--mantine-blue-6);text-decoration:none;">tapalakbot</a>
+      <a href="https://t.me/tapalakbot" class="mantine-Button mantine-Button-filled">Открыть бота</a>
+    </div>
+  </header>
+
+  <!-- Hero -->
+  <section class="hero">
+    <div class="mantine-Container">
+      <div style="max-width:600px;">
+        <div class="mantine-Badge mantine-Badge-green" style="margin-bottom:16px;">Онлайн</div>
+        <h1 class="mantine-Title mantine-Title-h1">Найду товар на Lalafo дешевле рынка</h1>
+        <p class="mantine-Text" style="margin-top:16px;font-size:18px;opacity:0.9;">Умный помощник по покупкам. Ищет товары, анализирует цены, предупреждает о подозрительных объявлениях.</p>
+        <div class="mantine-Group" style="margin-top:32px;">
+          <a href="https://t.me/tapalakbot" class="mantine-Button" style="background:white;color:var(--mantine-blue-6);">Написать боту</a>
+          <a href="#examples" class="mantine-Button" style="border:1px solid white;color:white;">Смотреть примеры</a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Stats -->
+  <section style="background:white;">
+    <div class="mantine-Container">
+      <div class="mantine-SimpleGrid mantine-SimpleGrid-cols-4">
+        <div class="mantine-Paper" style="text-align:center;">
+          <div class="stat-number">1,977</div>
+          <div class="stat-label" style="margin-top:4px;">товаров в базе</div>
+        </div>
+        <div class="mantine-Paper" style="text-align:center;">
+          <div class="stat-number">22,509</div>
+          <div class="stat-label" style="margin-top:4px;">снимков цен</div>
+        </div>
+        <div class="mantine-Paper" style="text-align:center;">
+          <div class="stat-number">10</div>
+          <div class="stat-label" style="margin-top:4px;">категорий</div>
+        </div>
+        <div class="mantine-Paper" style="text-align:center;">
+          <div class="stat-number">47/50</div>
+          <div class="stat-label" style="margin-top:4px;">тестов пройдено</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Dialogues -->
+  <section id="examples">
+    <div class="mantine-Container">
+      <h2 class="mantine-Title mantine-Title-h2">Примеры диалогов</h2>
+      <p class="mantine-Text mantine-Text-muted" style="margin-top:8px;">Реальные запросы и ответы бота</p>
+
+      <div class="mantine-SimpleGrid mantine-SimpleGrid-cols-2" style="margin-top:32px;">
+        <!-- Dialogue 1 -->
+        <div class="mantine-Card">
+          <div style="padding:16px;border-bottom:1px solid var(--mantine-gray-2);display:flex;justify-content:space-between;align-items:center;">
+            <span class="mantine-Title mantine-Title-h3">iPhone 13 до 30000</span>
+            <span class="mantine-Badge mantine-Badge-blue">12 сек</span>
+          </div>
+          <div style="padding:16px;display:flex;flex-direction:column;gap:16px;">
+            <div class="mantine-Group">
+              <div class="mantine-Avatar mantine-Avatar-user">U</div>
+              <div style="background:var(--mantine-orange-0);padding:12px 16px;border-radius:8px;flex:1;font-size:14px;">Найди iPhone 13 до 30000 сом</div>
+            </div>
+            <div class="mantine-Group">
+              <div class="mantine-Avatar mantine-Avatar-bot">T</div>
+              <div style="background:var(--mantine-green-0);padding:12px 16px;border-radius:8px;flex:1;font-size:14px;">
+                <strong>iPhone 13</strong> — от 22,000 сом<br><br>
+                1. iPhone 13 128GB — 25,000 сом<br>
+                2. iPhone 13 256GB — 28,500 сом<br>
+                3. iPhone 13 mini — 22,000 сом
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Dialogue 2 -->
+        <div class="mantine-Card">
+          <div style="padding:16px;border-bottom:1px solid var(--mantine-gray-2);display:flex;justify-content:space-between;align-items:center;">
+            <span class="mantine-Title mantine-Title-h3">Samsung или Xiaomi?</span>
+            <span class="mantine-Badge mantine-Badge-blue">8 сек</span>
+          </div>
+          <div style="padding:16px;display:flex;flex-direction:column;gap:16px;">
+            <div class="mantine-Group">
+              <div class="mantine-Avatar mantine-Avatar-user">U</div>
+              <div style="background:var(--mantine-orange-0);padding:12px 16px;border-radius:8px;flex:1;font-size:14px;">Samsung или Xiaomi?</div>
+            </div>
+            <div class="mantine-Group">
+              <div class="mantine-Avatar mantine-Avatar-bot">T</div>
+              <div style="background:var(--mantine-green-0);padding:12px 16px;border-radius:8px;flex:1;font-size:14px;">
+                <strong>Samsung vs Xiaomi:</strong><br><br>
+                Samsung: ср. 29,917 сом<br>
+                Xiaomi: ср. 15,000 сом<br><br>
+                Xiaomi — если бюджет ограничен
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Dialogue 3 -->
+        <div class="mantine-Card">
+          <div style="padding:16px;border-bottom:1px solid var(--mantine-gray-2);display:flex;justify-content:space-between;align-items:center;">
+            <span class="mantine-Title mantine-Title-h3">MacBook Air M2</span>
+            <span class="mantine-Badge mantine-Badge-blue">18 сек</span>
+          </div>
+          <div style="padding:16px;display:flex;flex-direction:column;gap:16px;">
+            <div class="mantine-Group">
+              <div class="mantine-Avatar mantine-Avatar-user">U</div>
+              <div style="background:var(--mantine-orange-0);padding:12px 16px;border-radius:8px;flex:1;font-size:14px;">MacBook Air M2 найти</div>
+            </div>
+            <div class="mantine-Group">
+              <div class="mantine-Avatar mantine-Avatar-bot">T</div>
+              <div style="background:var(--mantine-green-0);padding:12px 16px;border-radius:8px;flex:1;font-size:14px;">
+                <strong>MacBook Air M2:</strong><br><br>
+                Средняя цена: 49,919 сом<br>
+                В наличии: 128 штук<br><br>
+                8/256 — 85,000 сом
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Dialogue 4 -->
+        <div class="mantine-Card">
+          <div style="padding:16px;border-bottom:1px solid var(--mantine-gray-2);display:flex;justify-content:space-between;align-items:center;">
+            <span class="mantine-Title mantine-Title-h3">PlayStation 5</span>
+            <span class="mantine-Badge mantine-Badge-blue">15 сек</span>
+          </div>
+          <div style="padding:16px;display:flex;flex-direction:column;gap:16px;">
+            <div class="mantine-Group">
+              <div class="mantine-Avatar mantine-Avatar-user">U</div>
+              <div style="background:var(--mantine-orange-0);padding:12px 16px;border-radius:8px;flex:1;font-size:14px;">PlayStation 5 сколько стоит?</div>
+            </div>
+            <div class="mantine-Group">
+              <div class="mantine-Avatar mantine-Avatar-bot">T</div>
+              <div style="background:var(--mantine-green-0);padding:12px 16px;border-radius:8px;flex:1;font-size:14px;">
+                <strong>PlayStation 5:</strong><br><br>
+                PS5 Digital — от 35,000 сом<br>
+                PS5 Disc — от 42,000 сом<br>
+                Б/у: 30,000-40,000 сом
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Categories -->
+  <section style="background:white;">
+    <div class="mantine-Container">
+      <h2 class="mantine-Title mantine-Title-h2">Категории</h2>
+      <p class="mantine-Text mantine-Text-muted" style="margin-top:8px;">10 категорий, цены обновляются каждые 4 часа</p>
+
+      <div class="mantine-SimpleGrid mantine-SimpleGrid-cols-5" style="margin-top:32px;">
+        <div class="mantine-Paper" style="text-align:center;">
+          <div style="font-size:2rem;">📱</div>
+          <div class="mantine-Title mantine-Title-h3" style="margin-top:8px;">iPhone</div>
+          <div class="mantine-Text mantine-Text-sm mantine-Text-muted">152 • ср. 37,039</div>
+        </div>
+        <div class="mantine-Paper" style="text-align:center;">
+          <div style="font-size:2rem;">📱</div>
+          <div class="mantine-Title mantine-Title-h3" style="margin-top:8px;">Samsung</div>
+          <div class="mantine-Text mantine-Text-sm mantine-Text-muted">234 • ср. 29,917</div>
+        </div>
+        <div class="mantine-Paper" style="text-align:center;">
+          <div style="font-size:2rem;">💻</div>
+          <div class="mantine-Title mantine-Title-h3" style="margin-top:8px;">MacBook</div>
+          <div class="mantine-Text mantine-Text-sm mantine-Text-muted">128 • ср. 49,919</div>
+        </div>
+        <div class="mantine-Paper" style="text-align:center;">
+          <div style="font-size:2rem;">📱</div>
+          <div class="mantine-Title mantine-Title-h3" style="margin-top:8px;">iPad</div>
+          <div class="mantine-Text mantine-Text-sm mantine-Text-muted">156 • ср. 32,117</div>
+        </div>
+        <div class="mantine-Paper" style="text-align:center;">
+          <div style="font-size:2rem;">🎧</div>
+          <div class="mantine-Title mantine-Title-h3" style="margin-top:8px;">Наушники</div>
+          <div class="mantine-Text mantine-Text-sm mantine-Text-muted">36 • ср. 8,088</div>
+        </div>
+        <div class="mantine-Paper" style="text-align:center;">
+          <div style="font-size:2rem;">🎮</div>
+          <div class="mantine-Title mantine-Title-h3" style="margin-top:8px;">PlayStation</div>
+          <div class="mantine-Text mantine-Text-sm mantine-Text-muted">182 • ср. 21,116</div>
+        </div>
+        <div class="mantine-Paper" style="text-align:center;">
+          <div style="font-size:2rem;">💻</div>
+          <div class="mantine-Title mantine-Title-h3" style="margin-top:8px;">Ноутбуки</div>
+          <div class="mantine-Text mantine-Text-sm mantine-Text-muted">376 • ср. 38,457</div>
+        </div>
+        <div class="mantine-Paper" style="text-align:center;">
+          <div style="font-size:2rem;">🎮</div>
+          <div class="mantine-Title mantine-Title-h3" style="margin-top:8px;">Видеокарты</div>
+          <div class="mantine-Text mantine-Text-sm mantine-Text-muted">192 • ср. 35,717</div>
+        </div>
+        <div class="mantine-Paper" style="text-align:center;">
+          <div style="font-size:2rem;">🚴</div>
+          <div class="mantine-Title mantine-Title-h3" style="margin-top:8px;">Велосипеды</div>
+          <div class="mantine-Text mantine-Text-sm mantine-Text-muted">247 • ср. 24,092</div>
+        </div>
+        <div class="mantine-Paper" style="text-align:center;">
+          <div style="font-size:2rem;">📺</div>
+          <div class="mantine-Title mantine-Title-h3" style="margin-top:8px;">Телевизоры</div>
+          <div class="mantine-Text mantine-Text-sm mantine-Text-muted">274 • ср. 17,276</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer style="background:var(--mantine-gray-9);color:white;padding:24px 0;">
+    <div class="mantine-Container" style="display:flex;justify-content:space-between;align-items:center;">
+      <span style="color:var(--mantine-gray-5);">TapalakBot © 2026</span>
+      <div style="display:flex;gap:24px;">
+        <a href="https://github.com/snqb/tapalakbot-v2" style="color:var(--mantine-gray-5);text-decoration:none;">GitHub</a>
+        <a href="https://t.me/tapalakbot" style="color:var(--mantine-gray-5);text-decoration:none;">Telegram</a>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>

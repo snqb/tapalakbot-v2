@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TapalakBot — 5 Design Systems</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'Inter', sans-serif; background: #f8f9fa; color: #212529; }
+    
+    .container { max-width: 800px; margin: 0 auto; padding: 0 24px; }
+    
+    header {
+      text-align: center;
+      padding: 80px 0 40px;
+    }
+    
+    h1 {
+      font-size: 3rem;
+      font-weight: 800;
+      letter-spacing: -0.03em;
+    }
+    
+    .subtitle {
+      font-size: 1.25rem;
+      color: #6b7280;
+      margin-top: 16px;
+    }
+    
+    .cards {
+      display: flex;
+      flex-direction: column;
+      gap: 24px;
+      padding: 40px 0 80px;
+    }
+    
+    .card {
+      background: white;
+      border: 1px solid #e5e7eb;
+      border-radius: 16px;
+      padding: 32px;
+      transition: all 0.2s;
+      text-decoration: none;
+      color: inherit;
+      display: block;
+    }
+    
+    .card:hover {
+      border-color: #a855f7;
+      box-shadow: 0 10px 40px rgba(168, 85, 247, 0.1);
+      transform: translateY(-4px);
+    }
+    
+    .card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 16px;
+    }
+    
+    .card-number {
+      font-size: 3rem;
+      font-weight: 800;
+      background: linear-gradient(135deg, #a855f7, #6366f1);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    
+    .card-badge {
+      padding: 4px 12px;
+      border-radius: 9999px;
+      font-size: 13px;
+      font-weight: 600;
+      background: #f3f4f6;
+      color: #4b5563;
+    }
+    
+    .card h2 {
+      font-size: 1.5rem;
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+    
+    .card p {
+      color: #6b7280;
+      line-height: 1.6;
+    }
+    
+    .card-tags {
+      display: flex;
+      gap: 8px;
+      margin-top: 16px;
+      flex-wrap: wrap;
+    }
+    
+    .tag {
+      padding: 4px 10px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 500;
+      background: #f3f4f6;
+      color: #4b5563;
+    }
+    
+    .card-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      margin-top: 20px;
+      color: #a855f7;
+      font-weight: 600;
+      font-size: 14px;
+    }
+    
+    .card-link svg {
+      transition: transform 0.2s;
+    }
+    
+    .card:hover .card-link svg {
+      transform: translateX(4px);
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="container">
+      <h1>TapalakBot</h1>
+      <div class="subtitle">5 дизайнов в 5 дизайн-системах</div>
+    </div>
+  </header>
+  
+  <main class="container">
+    <div class="cards">
+      <a href="1-shadcn.html" class="card">
+        <div class="card-header">
+          <div class="card-number">01</div>
+          <div class="card-badge">Tailwind</div>
+        </div>
+        <h2>shadcn/ui</h2>
+        <p>Чистый, минималистичный дизайн. Copy-paste компоненты с Tailwind CSS. Полный контроль над кодом.</p>
+        <div class="card-tags">
+          <span class="tag">Tailwind CSS</span>
+          <span class="tag">Radix UI</span>
+          <span class="tag">TypeScript</span>
+        </div>
+        <div class="card-link">
+          Смотреть
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"></path></svg>
+        </div>
+      </a>
+      
+      <a href="2-mui.html" class="card">
+        <div class="card-header">
+          <div class="card-number">02</div>
+          <div class="card-badge">Material Design</div>
+        </div>
+        <h2>MUI (Material UI)</h2>
+        <p>Google's Material Design. Тени, карточки, кнопки. Для enterprise и дашбордов.</p>
+        <div class="card-tags">
+          <span class="tag">Material Design</span>
+          <span class="tag">React</span>
+          <span class="tag">Enterprise</span>
+        </div>
+        <div class="card-link">
+          Смотреть
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"></path></svg>
+        </div>
+      </a>
+      
+      <a href="3-chakra.html" class="card">
+        <div class="card-header">
+          <div class="card-number">03</div>
+          <div class="card-badge">Accessible</div>
+        </div>
+        <h2>Chakra UI</h2>
+        <p>Цветной, доступный дизайн. Интуитивные API, responsive props. Для быстрого прототипирования.</p>
+        <div class="card-tags">
+          <span class="tag">Accessibility</span>
+          <span class="tag">Responsive</span>
+          <span class="tag">Dark Mode</span>
+        </div>
+        <div class="card-link">
+          Смотреть
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"></path></svg>
+        </div>
+      </a>
+      
+      <a href="4-mantine.html" class="card">
+        <div class="card-header">
+          <div class="card-number">04</div>
+          <div class="card-badge">Professional</div>
+        </div>
+        <h2>Mantine</h2>
+        <p>Профессиональный, богатый компонентами. 100+ компонентов, хуки, формы. Для сложных приложений.</p>
+        <div class="card-tags">
+          <span class="tag">100+ Components</span>
+          <span class="tag">Hooks</span>
+          <span class="tag">Forms</span>
+        </div>
+        <div class="card-link">
+          Смотреть
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"></path></svg>
+        </div>
+      </a>
+      
+      <a href="5-aceternity.html" class="card">
+        <div class="card-header">
+          <div class="card-number">05</div>
+          <div class="card-badge">Animated</div>
+        </div>
+        <h2>Aceternity UI</h2>
+        <p>Анимированный, впечатляющий. Glassmorphism, градиенты, scroll-анимации. Для лендингов.</p>
+        <div class="card-tags">
+          <span class="tag">Glassmorphism</span>
+          <span class="tag">Animations</span>
+          <span class="tag">Gradients</span>
+        </div>
+        <div class="card-link">
+          Смотреть
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"></path></svg>
+        </div>
+      </a>
+    </div>
+  </main>
+</body>
+</html>

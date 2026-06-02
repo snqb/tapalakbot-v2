@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TapalakBot — Chakra UI Style</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'Inter', sans-serif; background: #f7fafc; color: #1a202c; }
+    
+    /* Chakra-style colors */
+    :root {
+      --blue-50: #ebf8ff;
+      --blue-100: #bee3f8;
+      --blue-500: #3182ce;
+      --blue-600: #2b6cb0;
+      --green-50: #f0fff4;
+      --green-100: #c6f6d5;
+      --green-500: #38a169;
+      --gray-50: #f7fafc;
+      --gray-100: #edf2f7;
+      --gray-200: #e2e8f0;
+      --gray-500: #a0aec0;
+      --gray-700: #4a5568;
+      --gray-800: #2d3748;
+      --gray-900: #1a202c;
+      --orange-500: #dd6b20;
+      --orange-100: #feebc8;
+    }
+    
+    /* Chakra-style spacing */
+    .p-4 { padding: 1rem; }
+    .p-6 { padding: 1.5rem; }
+    .p-8 { padding: 2rem; }
+    .px-4 { padding-left: 1rem; padding-right: 1rem; }
+    .py-2 { padding-top: 0.5rem; padding-bottom: 0.5rem; }
+    .py-12 { padding-top: 3rem; padding-bottom: 3rem; }
+    .py-24 { padding-top: 6rem; padding-bottom: 6rem; }
+    .mt-2 { margin-top: 0.5rem; }
+    .mt-4 { margin-top: 1rem; }
+    .mt-8 { margin-top: 2rem; }
+    .mb-2 { margin-bottom: 0.5rem; }
+    .gap-4 { gap: 1rem; }
+    .gap-6 { gap: 1.5rem; }
+    .gap-8 { gap: 2rem; }
+    
+    /* Chakra-style layout */
+    .container { max-width: 1200px; margin: 0 auto; padding: 0 1rem; }
+    .flex { display: flex; }
+    .flex-col { flex-direction: column; }
+    .items-center { align-items: center; }
+    .justify-between { justify-content: space-between; }
+    .grid { display: grid; }
+    .grid-cols-2 { grid-template-columns: repeat(2, 1fr); }
+    .grid-cols-4 { grid-template-columns: repeat(4, 1fr); }
+    .grid-cols-5 { grid-template-columns: repeat(5, 1fr); }
+    
+    @media (max-width: 768px) {
+      .grid-cols-2, .grid-cols-4, .grid-cols-5 { grid-template-columns: repeat(2, 1fr); }
+    }
+    @media (max-width: 480px) {
+      .grid-cols-2, .grid-cols-4, .grid-cols-5 { grid-template-columns: 1fr; }
+    }
+    
+    /* Chakra-style components */
+    .box {
+      background: white;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 2px 8px;
+      border-radius: 9999px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .badge-blue { background: var(--blue-100); color: var(--blue-600); }
+    .badge-green { background: var(--green-100); color: var(--green-500); }
+    .badge-orange { background: var(--orange-100); color: var(--orange-500); }
+    
+    .avatar {
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 600;
+      font-size: 14px;
+    }
+    .avatar-user { background: var(--orange-100); color: var(--orange-500); }
+    .avatar-bot { background: var(--green-100); color: var(--green-500); }
+    
+    /* Chakra-style buttons */
+    .button {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 20px;
+      border-radius: 8px;
+      font-weight: 600;
+      font-size: 14px;
+      text-decoration: none;
+      transition: all 0.2s;
+      border: none;
+      cursor: pointer;
+    }
+    .button-blue { background: var(--blue-500); color: white; }
+    .button-blue:hover { background: var(--blue-600); }
+    .button-outline { background: transparent; color: var(--blue-500); border: 1px solid var(--blue-500); }
+    .button-outline:hover { background: var(--blue-50); }
+    
+    /* Chakra-style heading */
+    .heading { font-weight: 700; letter-spacing: -0.02em; }
+    .heading-xl { font-size: 3rem; line-height: 1.2; }
+    .heading-lg { font-size: 2rem; line-height: 1.3; }
+    .heading-md { font-size: 1.25rem; line-height: 1.4; }
+    
+    .text { color: var(--gray-700); }
+    .text-sm { font-size: 14px; }
+    .text-xs { font-size: 12px; }
+    .text-muted { color: var(--gray-500); }
+    
+    /* Chakra-style card */
+    .card {
+      background: white;
+      border-radius: 8px;
+      border: 1px solid var(--gray-200);
+      transition: all 0.2s;
+    }
+    .card:hover { border-color: var(--blue-500); box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+    
+    /* Chakra-style stat */
+    .stat-number { font-size: 2.5rem; font-weight: 700; color: var(--blue-500); }
+    .stat-label { font-size: 14px; color: var(--gray-500); }
+    
+    /* Chakra-style divider */
+    .divider { border: none; border-top: 1px solid var(--gray-200); }
+    
+    /* Hero */
+    .hero {
+      background: linear-gradient(135deg, #3182ce 0%, #2b6cb0 100%);
+      color: white;
+      padding: 80px 0;
+    }
+    
+    /* Section */
+    section { padding: 48px 0; }
+    
+    /* Nav */
+    .nav {
+      background: white;
+      border-bottom: 1px solid var(--gray-200);
+      padding: 0 1rem;
+      height: 64px;
+      display: flex;
+      align-items: center;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+  </style>
+</head>
+<body>
+  <!-- Nav -->
+  <div class="nav">
+    <div class="container flex items-center justify-between">
+      <a href="#" class="heading heading-md" style="color:var(--blue-500);text-decoration:none;">tapalakbot</a>
+      <a href="https://t.me/tapalakbot" class="button button-blue">Открыть бота</a>
+    </div>
+  </div>
+
+  <!-- Hero -->
+  <section class="hero">
+    <div class="container">
+      <div style="max-width:600px;">
+        <div class="badge badge-green mb-2">Онлайн</div>
+        <h1 class="heading heading-xl">Найду товар на Lalafo дешевле рынка</h1>
+        <p class="mt-4" style="font-size:18px;opacity:0.9;">Умный помощник по покупкам. Ищет товары, анализирует цены, предупреждает о подозрительных объявлениях.</p>
+        <div class="flex gap-4 mt-8">
+          <a href="https://t.me/tapalakbot" class="button" style="background:white;color:var(--blue-500);">
+            Написать боту
+          </a>
+          <a href="#examples" class="button" style="border:1px solid white;color:white;">
+            Смотреть примеры
+          </a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Stats -->
+  <section style="background:white;">
+    <div class="container">
+      <div class="grid grid-cols-4 gap-8">
+        <div class="card p-6" style="text-align:center;">
+          <div class="stat-number">1,977</div>
+          <div class="stat-label mt-2">товаров в базе</div>
+        </div>
+        <div class="card p-6" style="text-align:center;">
+          <div class="stat-number">22,509</div>
+          <div class="stat-label mt-2">снимков цен</div>
+        </div>
+        <div class="card p-6" style="text-align:center;">
+          <div class="stat-number">10</div>
+          <div class="stat-label mt-2">категорий</div>
+        </div>
+        <div class="card p-6" style="text-align:center;">
+          <div class="stat-number">47/50</div>
+          <div class="stat-label mt-2">тестов пройдено</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Dialogues -->
+  <section id="examples">
+    <div class="container">
+      <h2 class="heading heading-lg">Примеры диалогов</h2>
+      <p class="text text-muted mt-2">Реальные запросы и ответы бота</p>
+
+      <div class="grid grid-cols-2 gap-6 mt-8">
+        <!-- Dialogue 1 -->
+        <div class="card">
+          <div class="p-4 flex items-center justify-between" style="border-bottom:1px solid var(--gray-200);">
+            <span class="heading heading-md">iPhone 13 до 30000</span>
+            <span class="badge badge-blue">12 сек</span>
+          </div>
+          <div class="p-4 flex flex-col gap-4">
+            <div class="flex gap-4">
+              <div class="avatar avatar-user">U</div>
+              <div class="p-4" style="background:var(--orange-50);border-radius:8px;flex:1;font-size:14px;">Найди iPhone 13 до 30000 сом</div>
+            </div>
+            <div class="flex gap-4">
+              <div class="avatar avatar-bot">T</div>
+              <div class="p-4" style="background:var(--green-50);border-radius:8px;flex:1;font-size:14px;">
+                <strong>iPhone 13</strong> — от 22,000 сом<br><br>
+                1. iPhone 13 128GB — 25,000 сом<br>
+                2. iPhone 13 256GB — 28,500 сом<br>
+                3. iPhone 13 mini — 22,000 сом
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Dialogue 2 -->
+        <div class="card">
+          <div class="p-4 flex items-center justify-between" style="border-bottom:1px solid var(--gray-200);">
+            <span class="heading heading-md">Samsung или Xiaomi?</span>
+            <span class="badge badge-blue">8 сек</span>
+          </div>
+          <div class="p-4 flex flex-col gap-4">
+            <div class="flex gap-4">
+              <div class="avatar avatar-user">U</div>
+              <div class="p-4" style="background:var(--orange-50);border-radius:8px;flex:1;font-size:14px;">Samsung или Xiaomi?</div>
+            </div>
+            <div class="flex gap-4">
+              <div class="avatar avatar-bot">T</div>
+              <div class="p-4" style="background:var(--green-50);border-radius:8px;flex:1;font-size:14px;">
+                <strong>Samsung vs Xiaomi:</strong><br><br>
+                Samsung: ср. 29,917 сом<br>
+                Xiaomi: ср. 15,000 сом<br><br>
+                Xiaomi — если бюджет ограничен
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Dialogue 3 -->
+        <div class="card">
+          <div class="p-4 flex items-center justify-between" style="border-bottom:1px solid var(--gray-200);">
+            <span class="heading heading-md">MacBook Air M2</span>
+            <span class="badge badge-blue">18 сек</span>
+          </div>
+          <div class="p-4 flex flex-col gap-4">
+            <div class="flex gap-4">
+              <div class="avatar avatar-user">U</div>
+              <div class="p-4" style="background:var(--orange-50);border-radius:8px;flex:1;font-size:14px;">MacBook Air M2 найти</div>
+            </div>
+            <div class="flex gap-4">
+              <div class="avatar avatar-bot">T</div>
+              <div class="p-4" style="background:var(--green-50);border-radius:8px;flex:1;font-size:14px;">
+                <strong>MacBook Air M2:</strong><br><br>
+                Средняя цена: 49,919 сом<br>
+                В наличии: 128 штук<br><br>
+                8/256 — 85,000 сом
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Dialogue 4 -->
+        <div class="card">
+          <div class="p-4 flex items-center justify-between" style="border-bottom:1px solid var(--gray-200);">
+            <span class="heading heading-md">PlayStation 5</span>
+            <span class="badge badge-blue">15 сек</span>
+          </div>
+          <div class="p-4 flex flex-col gap-4">
+            <div class="flex gap-4">
+              <div class="avatar avatar-user">U</div>
+              <div class="p-4" style="background:var(--orange-50);border-radius:8px;flex:1;font-size:14px;">PlayStation 5 сколько стоит?</div>
+            </div>
+            <div class="flex gap-4">
+              <div class="avatar avatar-bot">T</div>
+              <div class="p-4" style="background:var(--green-50);border-radius:8px;flex:1;font-size:14px;">
+                <strong>PlayStation 5:</strong><br><br>
+                PS5 Digital — от 35,000 сом<br>
+                PS5 Disc — от 42,000 сом<br>
+                Б/у: 30,000-40,000 сом
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Categories -->
+  <section style="background:white;">
+    <div class="container">
+      <h2 class="heading heading-lg">Категории</h2>
+      <p class="text text-muted mt-2">10 категорий, цены обновляются каждые 4 часа</p>
+
+      <div class="grid grid-cols-5 gap-4 mt-8">
+        <div class="card p-4" style="text-align:center;">
+          <div style="font-size:2rem;">📱</div>
+          <div class="heading heading-md mt-2">iPhone</div>
+          <div class="text text-sm text-muted">152 • ср. 37,039</div>
+        </div>
+        <div class="card p-4" style="text-align:center;">
+          <div style="font-size:2rem;">📱</div>
+          <div class="heading heading-md mt-2">Samsung</div>
+          <div class="text text-sm text-muted">234 • ср. 29,917</div>
+        </div>
+        <div class="card p-4" style="text-align:center;">
+          <div style="font-size:2rem;">💻</div>
+          <div class="heading heading-md mt-2">MacBook</div>
+          <div class="text text-sm text-muted">128 • ср. 49,919</div>
+        </div>
+        <div class="card p-4" style="text-align:center;">
+          <div style="font-size:2rem;">📱</div>
+          <div class="heading heading-md mt-2">iPad</div>
+          <div class="text text-sm text-muted">156 • ср. 32,117</div>
+        </div>
+        <div class="card p-4" style="text-align:center;">
+          <div style="font-size:2rem;">🎧</div>
+          <div class="heading heading-md mt-2">Наушники</div>
+          <div class="text text-sm text-muted">36 • ср. 8,088</div>
+        </div>
+        <div class="card p-4" style="text-align:center;">
+          <div style="font-size:2rem;">🎮</div>
+          <div class="heading heading-md mt-2">PlayStation</div>
+          <div class="text text-sm text-muted">182 • ср. 21,116</div>
+        </div>
+        <div class="card p-4" style="text-align:center;">
+          <div style="font-size:2rem;">💻</div>
+          <div class="heading heading-md mt-2">Ноутбуки</div>
+          <div class="text text-sm text-muted">376 • ср. 38,457</div>
+        </div>
+        <div class="card p-4" style="text-align:center;">
+          <div style="font-size:2rem;">🎮</div>
+          <div class="heading heading-md mt-2">Видеокарты</div>
+          <div class="text text-sm text-muted">192 • ср. 35,717</div>
+        </div>
+        <div class="card p-4" style="text-align:center;">
+          <div style="font-size:2rem;">🚴</div>
+          <div class="heading heading-md mt-2">Велосипеды</div>
+          <div class="text text-sm text-muted">247 • ср. 24,092</div>
+        </div>
+        <div class="card p-4" style="text-align:center;">
+          <div style="font-size:2rem;">📺</div>
+          <div class="heading heading-md mt-2">Телевизоры</div>
+          <div class="text text-sm text-muted">274 • ср. 17,276</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer style="background:var(--gray-900);color:white;padding:24px 0;">
+    <div class="container flex items-center justify-between">
+      <span style="color:var(--gray-500);">TapalakBot © 2026</span>
+      <div class="flex gap-4">
+        <a href="https://github.com/snqb/tapalakbot-v2" style="color:var(--gray-500);text-decoration:none;">GitHub</a>
+        <a href="https://t.me/tapalakbot" style="color:var(--gray-500);text-decoration:none;">Telegram</a>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>
