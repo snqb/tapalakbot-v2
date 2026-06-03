@@ -4,6 +4,7 @@
   (:require [tapalakbot.monitor.store :as store]
             [tapalakbot.lalafo :as lalafo]
             [clj-harness.telegram :as tg]
+            [clojure.edn :as edn]
             [clojure.string :as str]
             [clojure.tools.logging :as log]))
 

@@ -33,15 +33,53 @@ When user wants to BUY something (any product: phone, laptop, clothes, etc.) —
 ## Response format
 
 - Show 5-8 listings with prices
-- EVERY listing MUST include the EXACT 🔗 URL from the search results — DO NOT make up or invent URLs
-- If a listing has no URL in the search results, skip it or show without a link
-- NEVER generate lalafo.kg/... URLs yourself — only use URLs literally provided in the tool output
+- Reference items by their ID (e.g., #123456 or объявление #123456) — the bot will auto-add links
 - Organize by price tier: 🔥 Best / 💰 Budget / 💎 Premium
 - NEVER use markdown tables (| --- |). Use numbered lists.
-- Never write «👉 Смотреть» — only real URLs from results
+- NEVER write URLs or link emojis — links are added automatically
 - Max 3000 chars. Be concise.
 - Respond in Russian")
 ;; ══════════════════════ TOOLS ══════════════════════
+
+;; ══════════════════════ URL STORE ══════════════════════
+
+(def ^:private url-store
+  "Map of user-id → {item-id url}. Populated by format-search-results, consumed by bot.clj post-processing.
+   Per-user to prevent race conditions between concurrent searches."
+  (atom {}))
+
+(defn get-item-url
+  "Get the real URL for an item ID. Returns nil if not found."
+  [user-id item-id]
+  (get-in @url-store [user-id (str item-id)]))
+
+(defn get-url-store
+  "Get the URL store for a specific user."
+  [user-id]
+  (get @url-store user-id {}))
+
+(def ^:dynamic *current-user-id*
+  "Dynamic var holding current user-id during search execution."
+  nil)
+
+(def ^:private thread-user-id
+  "Map of thread-id → user-id for passing context through clj-harness."
+  (atom {}))
+
+(defn set-thread-user-id!
+  "Set user-id for current thread."
+  [uid]
+  (swap! thread-user-id assoc (Thread/currentThread) uid))
+
+(defn clear-thread-user-id!
+  "Clear user-id for current thread."
+  []
+  (swap! thread-user-id dissoc (Thread/currentThread)))
+
+(defn get-thread-user-id
+  "Get user-id for current thread."
+  []
+  (get @thread-user-id (Thread/currentThread)))
 
 ;; ══════════════════════ TWO-PASS LLM ══════════════════════
 
@@ -119,14 +157,15 @@ Example: [113171780, 112908144, 111226783]")
 (defn- format-search-results [result-json & {:keys [user-query] :or {user-query ""}}]
   "Format JSON search result into readable text for LLM.
    With user-query: applies LLM relevance filter first (pass 1).
-   Main LLM does curation (pass 2)."
+   Main LLM does curation (pass 2).
+   Returns {:text formatted-text :url-store {item-id url}}."
   (let [data (if (string? result-json)
                (try (json/parse-string result-json false) (catch Exception _ nil))
                result-json)]
     (if (not (map? data))
-      (str result-json)
+      {:text (str result-json) :url-store {}}
       (if-let [err (get data "error")]
-        (str "Search error: " err)
+        {:text (str "Search error: " err) :url-store {}}
         (let [found (get data "found" 0)
               raw (get-in data ["stats" "raw"] found)
               pages (get-in data ["stats" "pages"] 0)
@@ -135,31 +174,41 @@ Example: [113171780, 112908144, 111226783]")
               ;; Apply relevance filter if we have many items
               relevant (if (and user-query (not (str/blank? user-query)) (> (count items) 100))
                          (relevance-filter items user-query)
-                         items)]
+                         items)
+              ;; Build url-store locally (not global atom)
+              ]
           (if (zero? found)
-            (get data "message" "Nothing found.")
-            (str "🔍 Showing " (count relevant) " relevant candidates"
-                 (str " (from " raw " raw listings across " pages " pages)")
-                 (when truncated " [truncated]")
-                 (if (>= (count relevant) 7)
-                   "\nSTRICT: show 15-25 listings from these candidates in the final answer. Include older/budget actual items with caveats if needed. Cover as many relevant listings as possible — users want to see the full market."
-                   (str "\nNOTE: Only " (count relevant) " relevant candidates remained after filtering; tell the user the market is thin instead of pretending there are many."))
-                 ":\n"
-                 (str/join "\n"
-                           (for [item relevant]
-                             (let [price (get item "price")
-                                   price-str (if price
-                                               (str (format "%,.0f" (double price)) " " (get item "currency" "KGS"))
-                                               "price unknown")
-                                   desc (get item "desc" "")]
-                               (str "- #" (get item "id") " " (get item "title" "")
-                                    " | " price-str
-                                    " | 🔗 " (get item "url" "")
-                                    (when (not (str/blank? desc))
-                                      (str " | " desc)))))))))))))
+            {:text (get data "message" "Nothing found.") :url-store {}}
+            {:text
+             (str "🔍 Showing " (count relevant) " relevant candidates"
+                  (str " (from " raw " raw listings across " pages " pages)")
+                  (when truncated " [truncated]")
+                  (if (>= (count relevant) 7)
+                    "\nSTRICT: show 15-25 listings from these candidates in the final answer. Include older/budget actual items with caveats if needed. Cover as many relevant listings as possible — users want to see the full market."
+                    (str "\nNOTE: Only " (count relevant) " relevant candidates remained after filtering; tell the user the market is thin instead of pretending there are many."))
+                  "\n"
+                  (str/join "\n"
+                            (for [item relevant]
+                              (let [item-id (str (get item "id"))
+                                    url (get item "url" "")
+                                    price (get item "price")
+                                    price-str (if price
+                                                (str (format "%,.0f" (double price)) " " (get item "currency" "KGS"))
+                                                "price unknown")
+                                    desc (get item "desc" "")]
+                              ;; Store URL for post-LLM citation (per-user)
+                                (when (and item-id (not (str/blank? url)) *current-user-id*)
+                                  (swap! url-store assoc-in [*current-user-id* item-id] url))
+                              ;; Format WITHOUT URL — LLM doesn't see it
+                                (str "- #" item-id " " (get item "title" "")
+                                     " | " price-str
+                                     (when (not (str/blank? desc))
+                                       (str " | " desc)))))))
+             :url-store {}}))))))
 
-(defn- format-research-results [result-json]
+(defn- format-research-results
   "Format web research results."
+  [result-json]
   (let [data (if (string? result-json)
                (try (json/parse-string result-json false) (catch Exception _ nil))
                result-json)]
@@ -224,7 +273,8 @@ Example: [113171780, 112908144, 111226783]")
 (defn- smart-search-execute
   "Smart search pipeline: intent → query generation → optional research → search."
   [args]
-  (let [user-want (get args "user_want")
+  (let [user-id (or (get-thread-user-id) (get args "_user_id") "anonymous")
+        user-want (get args "user_want")
         price-min (get args "price_min")
         price-max (get args "price_max")
         ;; Step 1: Generate optimal queries
@@ -250,7 +300,9 @@ Example: [113171780, 112908144, 111226783]")
                      "candidate_limit" 250}
         result (lalafo/search search-args)]
     (log/info :smart-search :queries enhanced-queries :price-max final-price-max)
-    (format-search-results result :user-query user-want)))
+    ;; Bind dynamic var for per-user URL storage
+    (binding [*current-user-id* user-id]
+      (:text (format-search-results result :user-query user-want)))))
 
 (def tools
   [{:name "smart_search"

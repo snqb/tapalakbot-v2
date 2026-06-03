@@ -12,20 +12,46 @@
             [clojure.string :as str]
             [clojure.tools.logging :as log]))
 
+;; ══════════════════════ THREAD POOL ══════════════════════
+
+(def ^:private handler-pool
+  "Fixed thread pool for handler futures — prevents thread leak."
+  (java.util.concurrent.Executors/newFixedThreadPool
+   (.availableProcessors (Runtime/getRuntime))))
+
+(defn- handler-future
+  "Submit work to the handler pool instead of bare future."
+  [f]
+  (.submit handler-pool
+           (reify java.util.concurrent.Callable
+             (call [_] (try (f) (catch Exception e (log/error e :handler-error)))))))
+
 ;; ══════════════════════ PER-USER LOCK + PENDING ══════════════════════
 
 (def ^:private user-state
-  "Map of user-id → {:lock atom, :pending atom}."
+  "Map of user-id → {:lock atom, :pending atom, :last-seen atom}."
   (atom {}))
 
 (defn- get-user-state [uid]
   (or (get @user-state uid)
-      (let [s {:lock (atom :idle) :pending (atom nil)}]
+      (let [s {:lock (atom :idle) :pending (atom nil) :last-seen (atom (System/currentTimeMillis))}]
         (swap! user-state assoc uid s)
         s)))
 
+(defn- cleanup-stale-users!
+  "Remove user states inactive for >30 minutes to prevent memory leak."
+  []
+  (let [now (System/currentTimeMillis)
+        stale-ids (->> @user-state
+                       (filter (fn [[_ v]] (> (- now @(:last-seen v)) 1800000)))
+                       (mapv first))]
+    (when (seq stale-ids)
+      (doseq [uid stale-ids]
+        (swap! user-state dissoc uid)))))
+
 (defn- try-acquire! [uid]
-  (let [{:keys [lock]} (get-user-state uid)]
+  (let [{:keys [lock] :as state} (get-user-state uid)]
+    (reset! (:last-seen state) (System/currentTimeMillis))
     (compare-and-set! lock :idle :busy)))
 
 (defn- release! [uid]
@@ -55,13 +81,15 @@
          rows)})
 
 (defn- answer-callback
-  "Answer callback query to remove loading spinner."
+  "Answer callback query to remove loading spinner.
+   Uses #'tg/call (private) because clj-harness has no public answerCallbackQuery."
   [callback-id & {:keys [text]}]
-  (try
-    (let [body (cond-> {"callback_query_id" callback-id}
-                 text (assoc "text" text))]
-      (@#'tg/call "answerCallbackQuery" body))
-    (catch Exception _ nil)))
+  (when callback-id
+    (try
+      (let [body (cond-> {"callback_query_id" callback-id}
+                   text (assoc "text" text))]
+        (@#'tg/call "answerCallbackQuery" body))
+      (catch Exception _ nil))))
 
 (defn- edit-with-buttons
   "Edit message to show new text + inline keyboard."
@@ -130,7 +158,7 @@
   "Create inline button for tracking after search results.
    Stores query in atom, uses short ID in callback_data."
   [user-id query]
-  (let [short-id (str (hash query))]
+  (let [short-id (str (java.util.UUID/randomUUID))]
     (swap! pending-track-queries assoc user-id query)
     (inline-keyboard
      [[{:text (str "🔔 Отслеживать «" query "»")
@@ -214,81 +242,81 @@
   [{:keys [callback-id data user-id chat-id msg-id]}]
   (log/info :callback-received :data data :user user-id :chat chat-id :msg msg-id)
   (try
-  (cond
+    (cond
     ;; === TRACKING: Quick create from search result ===
-    (re-matches #"track_quick:(.+)" data)
-    (let [[_ query] (re-matches #"track_quick:(.+)" data)]
-      (answer-callback callback-id)
-      (handle-track-quick chat-id msg-id user-id query))
+      (re-matches #"track_quick:(.+)" data)
+      (let [[_ query] (re-matches #"track_quick:(.+)" data)]
+        (answer-callback callback-id)
+        (handle-track-quick chat-id msg-id user-id query))
 
     ;; === TRACKING: Show subscription list ===
-    (= data "track_list")
-    (do (answer-callback callback-id)
-        (show-tracking-list chat-id user-id))
+      (= data "track_list")
+      (do (answer-callback callback-id)
+          (show-tracking-list chat-id user-id))
 
     ;; === TRACKING: Show settings for a track ===
-    (re-matches #"track_settings:(\d+)" data)
-    (let [[_ id-str] (re-matches #"track_settings:(\d+)" data)]
-      (answer-callback callback-id)
-      (show-track-settings chat-id msg-id (Long/parseLong id-str)))
+      (re-matches #"track_settings:(\d+)" data)
+      (let [[_ id-str] (re-matches #"track_settings:(\d+)" data)]
+        (answer-callback callback-id)
+        (show-track-settings chat-id msg-id (Long/parseLong id-str)))
 
     ;; === TRACKING: Show frequency picker ===
-    (re-matches #"track_freq:(\d+)" data)
-    (let [[_ id-str] (re-matches #"track_freq:(\d+)" data)]
-      (answer-callback callback-id)
-      (show-track-settings chat-id msg-id (Long/parseLong id-str)))
+      (re-matches #"track_freq:(\d+)" data)
+      (let [[_ id-str] (re-matches #"track_freq:(\d+)" data)]
+        (answer-callback callback-id)
+        (show-track-settings chat-id msg-id (Long/parseLong id-str)))
 
     ;; === TRACKING: Set frequency ===
-    (re-matches #"track_set_freq:(\d+):(\d+)" data)
-    (let [[_ id-str interval] (re-matches #"track_set_freq:(\d+):(\d+)" data)
-          track-id (Long/parseLong id-str)
-          interval-h (Long/parseLong interval)
-          track (store/get-track track-id)]
-      (answer-callback callback-id :text (str "✅ " (format-interval interval-h)))
-      (when (and track (= (:user_id track) (str "tg-" user-id)))
-        (store/update-track-interval! track-id interval-h)
-        (log/info :track-interval-updated :track-id track-id :interval interval-h)
-        (edit-with-buttons chat-id msg-id
-                           (str "✅ Частота обновлена\n\n"
-                                "«" (:title track) "» → " (format-interval interval-h))
-                           (inline-keyboard
-                            [[{:text "📋 Назад к списку" :callback_data "track_list"}]]))))
+      (re-matches #"track_set_freq:(\d+):(\d+)" data)
+      (let [[_ id-str interval] (re-matches #"track_set_freq:(\d+):(\d+)" data)
+            track-id (Long/parseLong id-str)
+            interval-h (Long/parseLong interval)
+            track (store/get-track track-id)]
+        (answer-callback callback-id :text (str "✅ " (format-interval interval-h)))
+        (when (and track (= (:user_id track) (str "tg-" user-id)))
+          (store/update-track-interval! track-id interval-h)
+          (log/info :track-interval-updated :track-id track-id :interval interval-h)
+          (edit-with-buttons chat-id msg-id
+                             (str "✅ Частота обновлена\n\n"
+                                  "«" (:title track) "» → " (format-interval interval-h))
+                             (inline-keyboard
+                              [[{:text "📋 Назад к списку" :callback_data "track_list"}]]))))
 
     ;; === TRACKING: Delete confirmation ===
-    (re-matches #"track_del_ask:(\d+)" data)
-    (let [[_ id-str] (re-matches #"track_del_ask:(\d+)" data)
-          track (store/get-track (Long/parseLong id-str))]
-      (answer-callback callback-id)
-      (when track
-        (confirm-delete-track chat-id msg-id (:id track) (:title track))))
+      (re-matches #"track_del_ask:(\d+)" data)
+      (let [[_ id-str] (re-matches #"track_del_ask:(\d+)" data)
+            track (store/get-track (Long/parseLong id-str))]
+        (answer-callback callback-id)
+        (when track
+          (confirm-delete-track chat-id msg-id (:id track) (:title track))))
 
     ;; === TRACKING: Delete yes ===
-    (re-matches #"track_del_yes:(\d+)" data)
-    (let [[_ id-str] (re-matches #"track_del_yes:(\d+)" data)
-          track-id (Long/parseLong id-str)
-          track (store/get-track track-id)]
-      (answer-callback callback-id)
-      (when (and track (= (:user_id track) (str "tg-" user-id)))
-        (store/delete-track! track-id)
-        (log/info :track-deleted :user user-id :track-id track-id)
-        (edit-with-buttons chat-id msg-id
-                           (str "🗑 *Удалено:* «" (:title track) "»")
-                           (inline-keyboard
-                            [[{:text "📋 К списку" :callback_data "track_list"}]]))))
+      (re-matches #"track_del_yes:(\d+)" data)
+      (let [[_ id-str] (re-matches #"track_del_yes:(\d+)" data)
+            track-id (Long/parseLong id-str)
+            track (store/get-track track-id)]
+        (answer-callback callback-id)
+        (when (and track (= (:user_id track) (str "tg-" user-id)))
+          (store/delete-track! track-id)
+          (log/info :track-deleted :user user-id :track-id track-id)
+          (edit-with-buttons chat-id msg-id
+                             (str "🗑 *Удалено:* «" (:title track) "»")
+                             (inline-keyboard
+                              [[{:text "📋 К списку" :callback_data "track_list"}]]))))
 
     ;; === TRACKING: Open search (from empty list) ===
-    (= data "open_search")
-    (do (answer-callback callback-id)
-        (tg/send-md chat-id "🔍 Напишите что ищете, и в конце будет кнопка «🔔 Отслеживать»"))
+      (= data "open_search")
+      (do (answer-callback callback-id)
+          (tg/send-md chat-id "🔍 Напишите что ищете, и в конце будет кнопка «🔔 Отслеживать»"))
 
     ;; Unknown callback
-    :else
-    (do (log/warn :unknown-callback :data data)
-        (answer-callback callback-id)))
+      :else
+      (do (log/warn :unknown-callback :data data)
+          (answer-callback callback-id)))
 
-  (catch Exception e
-    (log/error e :callback-error :data data)
-    (try (answer-callback callback-id) (catch Exception _ nil)))))
+    (catch Exception e
+      (log/error e :callback-error :data data)
+      (try (answer-callback callback-id) (catch Exception _ nil)))))
 
 ;; ══════════════════════ HANDLERS ══════════════════════
 
@@ -358,14 +386,34 @@
 
 (defn- strip-fake-urls
   "Remove any URL that is not from lalafo.kg.
-   LLMs hallucinate fake links — this is the safety net."
+   Catches URLs with or without 🔗 prefix. LLMs hallucinate fake links."
   [text]
-  (let [link-emoji "🔗"]
-    (str/replace text #"🔗\s*https?://[^\s)\]>]+"
-                 (fn [match]
-                   (if (re-find #"lalafo\.kg" match)
-                     match
-                     (str link-emoji " [ссылка недоступна]"))))))
+  (str/replace text #"(🔗\s*)?https?://[^\s)\]>]+"
+               (fn [match]
+                 (if (re-find #"lalafo\.kg" match)
+                   match
+                   "🔗 [ссылка недоступна]"))))
+
+(defn- citation-replace
+  "Replace #ID patterns with actual URLs from the url-store.
+   str/replace with capturing group passes a vector [full-match group1]."
+  [text user-id]
+  (let [url-store (t/get-url-store user-id)
+        store-count (count url-store)
+        id-count (count (re-seq #"#\d+" text))]
+    (log/info :citation-replace :store-size store-count :ids-in-text id-count)
+    (when (pos? store-count)
+      (log/info :citation-sample :first-3 (take 3 url-store)))
+    (if (empty? url-store)
+      text
+      (str/replace text #"#(\d+)"
+                   (fn [match]
+                     (let [full-match (first match)
+                           id (second match)
+                           url (get url-store id)]
+                       (if url
+                         (str "🔗 " url)
+                         full-match)))))))
 
 (defn- extract-search-query
   "Try to extract the original search query from agent response.
@@ -417,12 +465,18 @@
                             (tg/edit-message chat-id msg-id status :parse-mode nil)
                             (catch Exception e
                               (log/warn e :status-edit-fail)))))
-            result (hc/handle-message-stream! bot uid text stream-cb :status-cb status-cb)]
+            result (do
+                     (t/set-thread-user-id! uid)
+                     (try
+                       (hc/handle-message-stream! bot uid text stream-cb :status-cb status-cb)
+                       (finally
+                         (t/clear-thread-user-id!))))]
         (reset! phase :done)
         (if-let [msg-id @thinking-msg-id]
           (let [safe-text (-> (str result)
                               (str/replace #"👉 Смотри\b" "🔗")
                               strip-tables
+                              (citation-replace uid)
                               strip-fake-urls)
                 html (fmt/md->html safe-text)]
             (try
@@ -430,11 +484,13 @@
               (tg/edit-message chat-id msg-id html :parse-mode "HTML")
               ;; Add contextual track button after a short delay
               (when-let [query (extract-search-query (str result) text)]
+                (log/info :track-button-prepare :query query :user user-id)
                 (try
                   (Thread/sleep 500)
-                  (let [track-btn (track-context-button user-id query)]
-                    (tg/send-message chat-id (str "🔔 Хотите отслеживать «" query "»?")
-                                     :reply_markup track-btn))
+                  (let [track-btn (track-context-button user-id query)
+                        resp (tg/send-message chat-id (str "🔔 Хотите отслеживать «" query "»?")
+                                              :reply_markup track-btn)]
+                    (log/info :track-button-sent :resp (when resp "ok")))
                   (catch Exception e
                     (log/warn e :track-button-fail))))
               (catch Exception e
@@ -472,11 +528,10 @@
 (defn- handle-market-stats [{:keys [chat-id]}]
   (let [cats (monitor/fetch-categories)
         stats (:categories cats)]
-    (answer-callback nil)
     (if (seq stats)
       (let [lines (mapv (fn [c]
                           (str "• *" (:name c) "* — "
-                               (:item_count c) " об\\'яв"))
+                               (:item_count c) " об'яв"))
                         stats)]
         (tg/send-md chat-id (str "📊 *Рынок Lalafo.kg*\n\n"
                                  (str/join "\n" lines))))
@@ -491,6 +546,7 @@
   (if-let [cb (get update "callback_query")]
     (let [from (get cb "from")
           msg (get cb "message")]
+      (log/info :callback-received :data (get cb "data") :from-id (get from "id") :has-message (some? msg))
       {:callback-id (get cb "id")
        :data (get cb "data")
        :user-id (get from "id")
@@ -506,10 +562,10 @@
           :user-id    (get user "id")
           :first-name (get user "first_name" "друг")
           :text       (get msg "text")
-          :message-id (get msg "message_id")}
+          :message-id (get msg "message_id")
           loc
           (assoc :location {:lat (get loc "latitude")
-                            :lon (get loc "longitude")}))))))
+                            :lon (get loc "longitude")})})))))
 
 (defn- extended-handler
   "Handler that processes both messages and callback queries."
@@ -518,9 +574,11 @@
     (log/info :extended-handler :callback (:callback-id parsed) :data (:data parsed))
     (log/info :extended-handler :text (:text parsed)))
   (cond
-    ;; Callback query (inline keyboard button pressed)
+    ;; Callback query (inline keyboard button pressed) — process async
     (:callback-id parsed)
-    (handle-callback parsed)
+    (do (handler-future
+         (fn [] (handle-callback parsed)))
+        nil)
 
     ;; Regular text message
     (:text parsed)
@@ -528,50 +586,73 @@
       (cond
         ;; Persistent menu buttons
         (= text "🔄 Новый диалог")
-        (handle-reset parsed)
+        (do (handler-future (fn [] (handle-reset parsed))) nil)
 
         (= text "🔔 Отслеживание")
-        (handle-tracking parsed)
+        (do (handler-future (fn [] (handle-tracking parsed))) nil)
 
         ;; Commands
         (str/starts-with? text "/")
         (let [cmd (first (str/split text #"\s+"))]
           (log/info :command-detected :cmd cmd)
-          (case cmd
-            "/start"    (handle-start parsed)
-            "/help"     (handle-help parsed)
-            "/prices"   (handle-prices parsed)
-            "/reset"    (handle-reset parsed)
-            "/tracking" (handle-tracking parsed)
-            nil))
+          (do (handler-future
+               (fn []
+                 (case cmd
+                   "/start"    (handle-start parsed)
+                   "/help"     (handle-help parsed)
+                   "/prices"   (handle-prices parsed)
+                   "/reset"    (handle-reset parsed)
+                   "/tracking" (handle-tracking parsed)
+                   nil)))
+              nil))
 
         ;; Fast-path words
         (get fast-responses (str/lower-case text))
-        (tg/send-md (:chat-id parsed) (get fast-responses (str/lower-case text)))
+        (do (handler-future (fn [] (tg/send-md (:chat-id parsed) (get fast-responses (str/lower-case text)))))
+            nil)
 
-        ;; Agent
-        (not (str/blank? text))
-        (handle-agent parsed)
+        ;; Agent — process in separate thread to unblock poll loop
+        (and (not (str/blank? text))
+             (:text parsed))
+        (do (handler-future
+             (fn [] (handle-agent parsed)))
+            nil)  ;; return nil immediately to unblock poll loop
 
         :else nil))
 
     :else nil))
 
+(defn- get-updates-extended
+  "getUpdates with allowed_updates for messages + callbacks.
+   Uses #'tg/call (private) because clj-harness get-updates doesn't pass allowed_updates."
+  [& {:keys [offset timeout limit]
+      :or {timeout 1 limit 10}}]
+  (let [body (cond-> {"timeout" timeout "limit" limit "allowed_updates" ["message" "callback_query"]}
+               offset (assoc "offset" offset))]
+    (@#'tg/call "getUpdates" body :timeout-ms 70000)))
+
 (defn start-polling
-  "Start custom polling loop that handles both messages and callback queries."
+  "Start polling loop. ALL handlers run in futures to never block poll loop."
   [& {:keys [interval-ms] :or {interval-ms 1500}}]
-  (let [init (tg/get-updates :offset -1 :limit 1 :timeout 1)
+  (let [init (get-updates-extended :offset -1 :limit 1 :timeout 1)
         offset (atom (if-let [u (first (get init "result" []))]
-                       (inc (get u "update_id")) 0))]
-    (log/info :poll-start :offset @offset :mode :extended)
+                       (inc (get u "update_id")) 0))
+        cleanup-counter (atom 0)]
+    (log/info :poll-start :offset @offset :mode :extended-v4)
     (while true
       (try
-        (let [resp (tg/get-updates :offset @offset)]
-          (doseq [u (get resp "result" [])]
-            (try
-              (when-let [parsed (parse-update-extended u)]
-                (extended-handler parsed))
-              (catch Exception e (log/error e :handler-error)))
+        (let [resp (get-updates-extended :offset @offset :timeout 1)
+              updates (get resp "result" [])]
+          (when (seq updates)
+            (log/info :poll-received :count (count updates)))
+          (doseq [u updates]
+            (when-let [parsed (parse-update-extended u)]
+              (handler-future
+               (fn [] (extended-handler parsed))))
             (reset! offset (inc (get u "update_id")))))
         (catch Exception e (log/error e :poll-error)))
+      ;; Cleanup stale user states every 10 minutes
+      (when (>= (swap! cleanup-counter inc) 400)
+        (reset! cleanup-counter 0)
+        (cleanup-stale-users!))
       (Thread/sleep interval-ms))))

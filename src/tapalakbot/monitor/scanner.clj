@@ -34,10 +34,10 @@
 ;; ════════════════════════════ SCAN LOGIC ════════════════════════════
 
 (defn- parse-queries
-  "Parse queries string (EDN vector stored as text)."
+  "Parse queries string (EDN vector stored as text). Uses safe edn/read-string."
   [q]
   (try
-    (read-string q)
+    (clojure.edn/read-string q)
     (catch Exception _
       [q])))
 

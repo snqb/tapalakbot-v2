@@ -375,7 +375,7 @@
   (q! ["SELECT * FROM user_tracks WHERE enabled = 1 ORDER BY last_checked_at ASC NULLS FIRST"]))
 
 (defn parse-track-queries
-  "Parse queries string from DB back to vector."
+  "Parse queries string from DB back to vector. Uses safe edn/read-string."
   [q]
-  (try (read-string q)
+  (try (clojure.edn/read-string q)
        (catch Exception _ [q])))
