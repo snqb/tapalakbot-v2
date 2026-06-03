@@ -212,7 +212,8 @@
 (defn- handle-callback
   "Handle inline keyboard callback queries."
   [{:keys [callback-id data user-id chat-id msg-id]}]
-  (log/info :callback :data data :user user-id)
+  (log/info :callback-received :data data :user user-id :chat chat-id :msg msg-id)
+  (try
   (cond
     ;; === TRACKING: Quick create from search result ===
     (re-matches #"track_quick:(.+)" data)
@@ -282,7 +283,12 @@
 
     ;; Unknown callback
     :else
-    (answer-callback callback-id)))
+    (do (log/warn :unknown-callback :data data)
+        (answer-callback callback-id)))
+
+  (catch Exception e
+    (log/error e :callback-error :data data)
+    (try (answer-callback callback-id) (catch Exception _ nil)))))
 
 ;; ══════════════════════ HANDLERS ══════════════════════
 
@@ -348,7 +354,18 @@
 (defn- strip-tables [text]
   (-> text
       (str/replace #"\|[-:| ]+\|" "")
-      (str/replace (re-pattern "\\|[^\\n]*\\|") "")))
+      (str/replace #"\|[^\n]*\|" "")))
+
+(defn- strip-fake-urls
+  "Remove any URL that is not from lalafo.kg.
+   LLMs hallucinate fake links — this is the safety net."
+  [text]
+  (let [link-emoji "🔗"]
+    (str/replace text #"🔗\s*https?://[^\s)\]>]+"
+                 (fn [match]
+                   (if (re-find #"lalafo\.kg" match)
+                     match
+                     (str link-emoji " [ссылка недоступна]"))))))
 
 (defn- extract-search-query
   "Try to extract the original search query from agent response.
@@ -405,7 +422,8 @@
         (if-let [msg-id @thinking-msg-id]
           (let [safe-text (-> (str result)
                               (str/replace #"👉 Смотри\b" "🔗")
-                              strip-tables)
+                              strip-tables
+                              strip-fake-urls)
                 html (fmt/md->html safe-text)]
             (try
               ;; Edit with search results
@@ -496,7 +514,9 @@
 (defn- extended-handler
   "Handler that processes both messages and callback queries."
   [parsed]
-  (log/info :extended-handler :text (:text parsed) :callback (:callback-id parsed))
+  (if (:callback-id parsed)
+    (log/info :extended-handler :callback (:callback-id parsed) :data (:data parsed))
+    (log/info :extended-handler :text (:text parsed)))
   (cond
     ;; Callback query (inline keyboard button pressed)
     (:callback-id parsed)

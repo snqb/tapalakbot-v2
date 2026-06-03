@@ -33,10 +33,12 @@ When user wants to BUY something (any product: phone, laptop, clothes, etc.) —
 ## Response format
 
 - Show 5-8 listings with prices
-- EVERY listing MUST have 🔗 + real lalafo.kg URL from search results
+- EVERY listing MUST include the EXACT 🔗 URL from the search results — DO NOT make up or invent URLs
+- If a listing has no URL in the search results, skip it or show without a link
+- NEVER generate lalafo.kg/... URLs yourself — only use URLs literally provided in the tool output
 - Organize by price tier: 🔥 Best / 💰 Budget / 💎 Premium
 - NEVER use markdown tables (| --- |). Use numbered lists.
-- Never write «👉 Смотреть» — only real URLs
+- Never write «👉 Смотреть» — only real URLs from results
 - Max 3000 chars. Be concise.
 - Respond in Russian")
 ;; ══════════════════════ TOOLS ══════════════════════
