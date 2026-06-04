@@ -76,30 +76,31 @@ Rules:
    Input: track-title + items vector
    Output: vector of relevant items"
   [track-title items]
-  (when (empty? items)
-    [])
-  (let [item-lines (mapv (fn [i item]
-                           (str i ". " (get item "title" "") " | " (get item "price" "нет цены")))
-                         (range) items)
-        prompt (str "User wants: " track-title "\n\n"
-                    "Items found:\n" (str/join "\n" item-lines) "\n\n"
-                    "Which items are relevant? Return JSON array of indices.")
-        messages [{:role "user" :content prompt}]]
-    (try
-      (let [resp (llm/llm :kimi-k2 messages [] :provider :openrouter :max-tokens 200)
-            content (get-in resp ["choices" 0 "message" "content"])
-            json-str (or (re-find #"(?s)\[.*\}" content) "[]")
-            indices (try (json/parse-string json-str)
-                         (catch Exception _ []))
-            ;; Filter to valid indices
-            valid-indices (filterv #(and (integer? %) (>= % 0) (< % (count items))) indices)
-            relevant (mapv items valid-indices)]
-        (log/info :track-relevance :track track-title :total (count items) :relevant (count relevant))
-        relevant)
-      (catch Exception e
-        (log/warn :track-relevance-failed :error (.getMessage e))
-        ;; Fallback: return all items (no filtering)
-        items))))
+  (if (empty? items)
+    []
+    (let [item-lines (mapv (fn [i item]
+                             (str i ". " (get item "title" "") " | " (get item "price" "нет цены")))
+                           (range) items)
+          prompt (str "User wants: " track-title "\n\n"
+                      "Items found:\n" (str/join "\n" item-lines) "\n\n"
+                      "Which items are relevant? Return JSON array of indices.")
+          messages [{:role "system" :content relevance-prompt}
+                    {:role "user" :content prompt}]]
+      (try
+        (let [resp (llm/llm :kimi-k2 messages [] :provider :openrouter :max-tokens 200)
+              content (get-in resp ["choices" 0 "message" "content"])
+              json-str (or (re-find #"(?s)\[.*\]" content) "[]")
+              indices (try (json/parse-string json-str)
+                           (catch Exception _ []))
+              ;; Filter to valid indices
+              valid-indices (filterv #(and (integer? %) (>= % 0) (< % (count items))) indices)
+              relevant (mapv items valid-indices)]
+          (log/info :track-relevance :track track-title :total (count items) :relevant (count relevant))
+          relevant)
+        (catch Exception e
+          (log/warn :track-relevance-failed :error (.getMessage e))
+          ;; Fallback: return empty (don't spam user with unfiltered items)
+          [])))))
 
 ;; ══════════════════════ SEARCH ══════════════════════
 
