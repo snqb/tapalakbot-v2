@@ -77,28 +77,32 @@ Rules:
 
 (def ^:private relevance-prompt
   "You are a relevance filter for Lalafo.kg marketplace listings.
-Given a user's search intent and a list of items, return ONLY the indices (0-based) of items that are genuinely relevant.
+Given a user's search intent and a list of items, return ONLY the indices (0-based) of items that are relevant.
 
 Rules:
-1. Be STRICT — only include items that clearly match the user's intent
-2. Exclude: services, repairs, accessories, unrelated categories
-3. For real estate: must be actual premises (not apartments, not services)
-4. Return ONLY a JSON array of indices, e.g. [0, 2, 4]
-5. If nothing is relevant, return empty array []")
+1. Include items that MATCH the user's intent — don't be overly strict
+2. For 'кофейня/кафе помещение' → include any commercial space suitable for food service
+3. For 'офис' → include any office space
+4. For 'магазин' → include any retail space
+5. For electronics/phones/cars → include matching products
+6. EXCLUDE only: completely unrelated items, services, repairs, accessories
+7. Return ONLY a JSON array of indices, e.g. [0, 2, 4]
+8. If 3+ items look relevant, return them all")
 
 (defn filter-relevant
-  "Use LLM to filter items by relevance. Returns only relevant items."
+  "Use LLM to filter items by relevance. Returns only relevant items.
+   Simple approach: ask LLM to list indices of relevant items."
   [track-title items]
   (if (empty? items)
     []
     (let [item-lines (mapv (fn [i item]
                              (str i ". " (get item "title" "") " | " (get item "price" "нет цены")))
                            (range) items)
-          prompt (str "User wants: " track-title "\n\n"
-                      "Items found:\n" (str/join "\n" item-lines) "\n\n"
-                      "Which items are relevant? Return JSON array of indices.")
-          messages [{:role "system" :content relevance-prompt}
-                    {:role "user" :content prompt}]]
+          prompt (str "User searches for: " track-title "\n\n"
+                      "Found items:\n" (str/join "\n" item-lines) "\n\n"
+                      "Return JSON array of indices (0-based) of items user would want to see.\n"
+                      "Include anything loosely related. Empty array [] if nothing fits.")
+          messages [{:role "user" :content prompt}]]
       (try
         (let [resp (llm/llm :kimi-k2 messages [] :provider :openrouter :max-tokens 200)
               content (get-in resp ["choices" 0 "message" "content"])
