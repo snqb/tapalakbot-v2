@@ -14,6 +14,26 @@
   "Check every 2 hours."
   (* 2 60 60 1000))
 
+(def ^:private exclude-keywords
+  "Keywords in title → exclude (services, repairs, not actual premises)."
+  ["сварк" "решетк" "теплоизоляц" "утеплен" "уборк" "клининг"
+   "ремонт" "услуг" "установк" "монтаж" "обслуживан"
+   "доставк" "груз" "перевозк" "аренд.*авто" "аренд.*техник"
+   "гаранти" "запчаст" "высотн" "кровл" "фасад"
+   "газоблок" "блок" "кирпич" "бетон" "плитк" "керамзит"
+   "свекл" "овощ" "фрукт" "продукт" "питан"
+   "сдаю.*квартир" "сдаю.*комнат" "сдаю.*мест"
+   "кондиционер" "сплит-систем" "климат"
+   "торгов.*оборудован" "витрин" "полк" "стеллаж"
+   "экспопанель" "мдф" "пластик" "аксессуар"
+   "комнаты.*собственник" "квартир.*аренд"])
+
+(defn- exclude-service?
+  "True if item title looks like a service, not actual premises."
+  [title]
+  (let [t (str/lower-case (or title ""))]
+    (some #(str/includes? t %) exclude-keywords)))
+
 (def ^:private max-notifications-per-check
   "Max new items to notify per filter per check cycle."
   5)
@@ -104,6 +124,7 @@
                               (let [title (get item "title" "")
                                     price (get item "price")]
                                 (and (>= (count title) 10)
+                                     (not (exclude-service? title))
                                      (or (nil? price) (> price 100)))))
                             (take (* 2 max-notifications-per-check) new-items))
         items-to-show (take max-notifications-per-check good-items)
@@ -153,7 +174,10 @@
       ;; Send notification if new items found
       (when (pos? notify-count)
         (if-let [tg-user-id (extract-user-id-from-track user_id)]
-          (let [msg (format-notification title (take notify-count new-items))]
+          (let [items-to-show (take notify-count new-items)
+                _ (log/info :track-notify-items :items (mapv (fn [i] {:title (get i "title") :price (get i "price") :url (get i "url")}) items-to-show))
+                msg (format-notification title items-to-show)]
+            (log/info :track-notify-preview :msg msg)
             (try
               (tg/send-message tg-user-id msg :parse-mode nil)
               (store/increment-notify-count! id)
