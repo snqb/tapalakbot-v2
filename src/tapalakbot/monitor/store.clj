@@ -90,6 +90,9 @@
     ;; Migration: add notify_interval if missing
     (try (jdbc/execute! d ["ALTER TABLE user_tracks ADD COLUMN notify_interval INTEGER DEFAULT 24"])
          (catch Exception _))
+    ;; Migration: add category_id if missing
+    (try (jdbc/execute! d ["ALTER TABLE user_tracks ADD COLUMN category_id INTEGER"])
+         (catch Exception _))
     (jdbc/execute! d ["CREATE TABLE IF NOT EXISTS track_seen_items (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         track_id INTEGER NOT NULL REFERENCES user_tracks(id) ON DELETE CASCADE,
@@ -298,12 +301,12 @@
 
 (defn create-track!
   "Create a tracking filter. Returns the new track record."
-  [{:keys [user-id title queries price-min price-max city-id notify-interval]
+  [{:keys [user-id title queries price-min price-max city-id notify-interval category-id]
     :or {city-id 103184 notify-interval 24}}]
-  (q1! ["INSERT INTO user_tracks (user_id, title, queries, price_min, price_max, city_id, notify_interval)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
+  (q1! ["INSERT INTO user_tracks (user_id, title, queries, price_min, price_max, city_id, notify_interval, category_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
          RETURNING *"
-        user-id title (pr-str queries) price-min price-max city-id notify-interval]))
+        user-id title (pr-str queries) price-min price-max city-id notify-interval category-id]))
 
 (defn update-track-interval!
   "Update notify_interval for a track."

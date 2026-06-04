@@ -167,29 +167,28 @@
 
 (defn- handle-track-quick
   "Handle quick track button — create filter with 24h default.
-   Generates smart queries via LLM at creation time."
+   Matches query to Lalafo category via LLM at creation time."
   [chat-id msg-id user-id short-id]
   (let [uid (str "tg-" user-id)
         query (get @pending-track-queries user-id)
         _ (swap! pending-track-queries dissoc user-id)
         query (or query "товар")  ;; fallback if atom was cleared
-        ;; Step 1: Generate smart queries via LLM (one-time cost)
-        _ (log/info :track-gen-queries :user uid :query query)
-        smart (tracker/generate-track-queries query)
-        queries (or (:queries smart) [query])
-        price-min (or (:price-min smart) nil)
-        price-max (or (:price-max smart) nil)
-        ;; Step 2: Create track with pre-generated queries
+        ;; Step 1: Match query to Lalafo category (one-time cost)
+        _ (log/info :track-match-category :user uid :query query)
+        category (tracker/match-category query)
+        category-id (:category-id category)
+        category-name (:category-name category)
+        ;; Step 2: Create track with category_id
         track (store/create-track! {:user-id uid
                                     :title query
-                                    :queries queries
-                                    :price-min price-min
-                                    :price-max price-max
+                                    :queries [query]
+                                    :category-id category-id
                                     :notify-interval 24})]
-    (log/info :track-created :user uid :track-id (:id track) :query query :queries queries)
+    (log/info :track-created :user uid :track-id (:id track) :query query :category-id category-id :category-name category-name)
     (edit-with-buttons chat-id msg-id
                        (str "✅ Подписался на «" query "»\n\n"
-                            "🔍 Запросы: " (str/join ", " (take 3 queries)) "\n"
+                            (when category-name
+                              (str "📂 Категория: " category-name "\n"))
                             "📅 Проверяю каждые 24 часа\n"
                             "Уведомлю когда появятся новые объявления")
                        (inline-keyboard

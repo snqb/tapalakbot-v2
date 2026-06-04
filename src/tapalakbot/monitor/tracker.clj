@@ -1,6 +1,11 @@
 (ns tapalakbot.monitor.tracker
   "Background tracker: checks user tracking filters against Lalafo,
-   sends Telegram notifications for new items."
+   sends Telegram notifications for new items.
+   
+   Architecture (lalafo-client-first):
+   - At creation: LLM matches user query → category_id via search-categories
+   - At check time: use category_id + user's original query (no LLM for search)
+   - LLM relevance filter on results only"
   (:require [tapalakbot.monitor.store :as store]
             [tapalakbot.lalafo :as lalafo]
             [clj-harness.telegram :as tg]
@@ -24,39 +29,47 @@
 
 (def ^:private per-page 40)
 
-;; ══════════════════════ QUERY GENERATION (called once at track creation) ══════════════════════
+;; ══════════════════════ CATEGORY MATCHING (called once at track creation) ══════════════════════
 
-(def ^:private query-gen-prompt
-  "You are a search query generator for Lalafo.kg marketplace in Kyrgyzstan.
-Given what a user wants to find (for ongoing monitoring), generate optimal search queries.
+(def ^:private category-match-prompt
+  "You are a category matcher for Lalafo.kg marketplace in Kyrgyzstan.
+Given a user's search intent, find the MOST SPECIFIC category_id from the category list.
 
 Rules:
-1. Generate 4-6 query variants with specific terms
-2. Include both English and Russian/Cyrillic variants when relevant
-3. For real estate: use specific terms like kommercheskoe pomeshchenie, arenda ofisa, magazin arenda
-4. For well-known products: use model numbers and names
-5. Price filters: extract min/max if mentioned
-6. Return ONLY a JSON object with keys: queries (array), price_min (number or null), price_max (number or null)")
+1. Pick the DEEPEST (most specific) leaf category
+2. For 'кофейня/кафе помещение' → Restaurant and cafe rentals (2067)
+3. For 'офис' → Office rentals (2068)
+4. For 'магазин' → Retail rentals (2066)
+5. For 'склад' → Warehouse and workshop rentals (2065)
+6. If unsure, return null for category_id and use the original query as text search
+7. Return ONLY a JSON object: {\"category_id\": number|null, \"category_name\": \"string\", \"text_query\": \"string\"}")
 
-(defn generate-track-queries
-  "Use LLM to generate optimal search queries from a tracking filter.
-   Called ONCE at track creation, results stored in DB."
+(defn match-category
+  "Match user query to Lalafo category_id. Called ONCE at track creation.
+   Returns {:category-id N :category-name \"...\" :text-query \"...\"}"
   [track-title]
-  (let [messages [{:role "system" :content query-gen-prompt}
-                  {:role "user" :content (str "User is monitoring: " track-title)}]]
-    (try
-      (let [resp (llm/llm :kimi-k2 messages [] :provider :openrouter :max-tokens 500)
-            content (get-in resp ["choices" 0 "message" "content"])
-            json-str (or (re-find #"(?s)\{.*\}" content) "{}")
-            parsed (try (json/parse-string json-str true)
-                        (catch Exception _ {}))]
-        (when (seq (:queries parsed))
-          {:queries (vec (:queries parsed))
-           :price-min (:price_min parsed)
-           :price-max (:price_max parsed)}))
-      (catch Exception e
-        (log/warn :track-query-gen-failed :track-title track-title :error (.getMessage e))
-        nil))))
+  (try
+    ;; Step 1: Get categories matching the query
+    (let [categories-str (lalafo/search-categories track-title)
+          ;; Step 2: Also get broader context
+          all-categories (lalafo/format-categories-prompt @(lalafo/fetch-categories-raw))
+          prompt (str "User wants: " track-title "\n\n"
+                      "Matching categories:\n" categories-str "\n\n"
+                      "Full category tree (for context):\n" (subs all-categories 0 (min 3000 (count all-categories))) "\n\n"
+                      "Which category_id should we use? Return JSON.")
+          messages [{:role "system" :content category-match-prompt}
+                    {:role "user" :content prompt}]
+          resp (llm/llm :kimi-k2 messages [] :provider :openrouter :max-tokens 200)
+          content (get-in resp ["choices" 0 "message" "content"])
+          json-str (or (re-find #"(?s)\{.*\}" content) "{}")
+          parsed (try (json/parse-string json-str true)
+                      (catch Exception _ {}))]
+      {:category-id (:category_id parsed)
+       :category-name (:category_name parsed)
+       :text-query (or (:text_query parsed) track-title)})
+    (catch Exception e
+      (log/warn :category-match-failed :track-title track-title :error (.getMessage e))
+      {:category-id nil :category-name nil :text-query track-title})))
 
 ;; ══════════════════════ RELEVANCE FILTER (LLM-based) ══════════════════════
 
@@ -72,9 +85,7 @@ Rules:
 5. If nothing is relevant, return empty array []")
 
 (defn filter-relevant
-  "Use LLM to filter items by relevance. Returns only relevant items.
-   Input: track-title + items vector
-   Output: vector of relevant items"
+  "Use LLM to filter items by relevance. Returns only relevant items."
   [track-title items]
   (if (empty? items)
     []
@@ -92,43 +103,42 @@ Rules:
               json-str (or (re-find #"(?s)\[.*\]" content) "[]")
               indices (try (json/parse-string json-str)
                            (catch Exception _ []))
-              ;; Filter to valid indices
               valid-indices (filterv #(and (integer? %) (>= % 0) (< % (count items))) indices)
               relevant (mapv items valid-indices)]
           (log/info :track-relevance :track track-title :total (count items) :relevant (count relevant))
           relevant)
         (catch Exception e
           (log/warn :track-relevance-failed :error (.getMessage e))
-          ;; Fallback: return empty (don't spam user with unfiltered items)
           [])))))
 
-;; ══════════════════════ SEARCH ══════════════════════
+;; ══════════════════════ SEARCH (lalafo-client-first) ══════════════════════
 
 (defn search-track
-  "Search Lalafo with a track's stored queries. No LLM calls — queries come from DB."
-  [{:keys [queries price_min price_max city_id]}]
-  (let [qs (store/parse-track-queries queries)
-        client (#'lalafo/build-client)
+  "Search Lalafo using category_id + text query. No LLM calls.
+   This is the lalafo-client-first approach."
+  [{:keys [queries price_min price_max city_id category_id]} text-query]
+  (let [client (#'lalafo/build-client)
         all-items (atom {})]
-    (log/info :track-search-start :queries qs)
-    (doseq [q (take 6 qs)]
-      (try
-        (let [[found items pages] (#'lalafo/search-all-pages
-                                   client q
-                                   :city-id (or city_id 103184)
-                                   :price-min price_min
-                                   :price-max price_max
-                                   :max-pages max-pages-per-query
-                                   :per-page per-page)]
-          (log/info :track-search :query q :found found :items (count items))
-          (doseq [item items]
-            (let [item-id (get item "id")
-                  price (get item "price")]
-              (when (or (nil? price) (> price 50))
-                (swap! all-items assoc item-id item)))))
-        (catch Exception e
-          (log/warn :track-search-error :query q :error (.getMessage e)))))
-    (log/info :track-search-result :qs (count qs) :items (count @all-items))
+    (log/info :track-search-start :category-id category_id :text-query text-query)
+    ;; Search with category_id + text query
+    (try
+      (let [[found items pages] (#'lalafo/search-all-pages
+                                 client text-query
+                                 :category-id category_id
+                                 :city-id (or city_id 103184)
+                                 :price-min price_min
+                                 :price-max price_max
+                                 :max-pages max-pages-per-query
+                                 :per-page per-page)]
+        (log/info :track-search :query text-query :category-id category_id :found found :items (count items))
+        (doseq [item items]
+          (let [item-id (get item "id")
+                price (get item "price")]
+            (when (or (nil? price) (> price 50))
+              (swap! all-items assoc item-id item)))))
+      (catch Exception e
+        (log/warn :track-search-error :query text-query :error (.getMessage e))))
+    (log/info :track-search-result :items (count @all-items))
     (vals @all-items)))
 
 ;; ══════════════════════ NOTIFICATION ══════════════════════
@@ -169,11 +179,12 @@ Rules:
 
 (defn check-track
   "Check one track: search → filter seen → LLM relevance → notify.
+   Uses category_id + text_query (lalafo-client-first).
    Returns {:new-items N :notified? boolean}."
-  [{:keys [id user_id title] :as track}]
+  [{:keys [id user_id title category_id] :as track}]
   (try
-    ;; Step 1: Search with stored queries (no LLM)
-    (let [items (search-track track)
+    ;; Step 1: Search with category_id + title (no LLM)
+    (let [items (search-track track title)
           ;; Step 2: Filter out already-seen items
           new-items (filterv #(not (store/seen-item? id (get % "id"))) items)]
       (log/info :track-check-detail :track-id id :total-items (count items) :new-items (count new-items))
@@ -184,11 +195,8 @@ Rules:
       (store/mark-track-checked! id)
       ;; Step 5: LLM relevance filter + send notification
       (when (pos? (count new-items))
-        (let [;; Take more candidates for LLM filter (3x the limit)
-              candidates (take (* 3 max-notifications-per-check) new-items)
-              ;; Step 6: LLM relevance check
+        (let [candidates (take (* 3 max-notifications-per-check) new-items)
               relevant (filter-relevant title candidates)
-              ;; Take top N relevant items
               to-send (take max-notifications-per-check relevant)]
           (log/info :track-relevance-result :track-id id :candidates (count candidates) :relevant (count relevant) :sending (count to-send))
           (when (pos? (count to-send))
