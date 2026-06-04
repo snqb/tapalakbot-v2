@@ -91,17 +91,20 @@ Rules:
 
 (defn filter-relevant
   "Use LLM to filter items by relevance. Returns only relevant items.
-   Simple approach: ask LLM to list indices of relevant items."
+   Category-aware prompt that knows the search context."
   [track-title items]
   (if (empty? items)
     []
     (let [item-lines (mapv (fn [i item]
                              (str i ". " (get item "title" "") " | " (get item "price" "нет цены")))
                            (range) items)
-          prompt (str "User searches for: " track-title "\n\n"
-                      "Found items:\n" (str/join "\n" item-lines) "\n\n"
-                      "Return JSON array of indices (0-based) of items user would want to see.\n"
-                      "Include anything loosely related. Empty array [] if nothing fits.")
+          prompt (str "User monitors Lalafo.kg for: " track-title "\n"
+                      "\nItems found:\n" (str/join "\n" item-lines) "\n\n"
+                      "Rules:\n"
+                      "- INCLUDE: items that match the user's search intent\n"
+                      "- EXCLUDE: services, repairs, job postings, vehicle rentals, furniture sales\n"
+                      "- EXCLUDE: residential (квартиры, комнаты) unless user specifically wants them\n"
+                      "- Return JSON array of indices of relevant items")
           messages [{:role "user" :content prompt}]]
       (try
         (let [resp (llm/llm :kimi-k2 messages [] :provider :openrouter :max-tokens 200)
