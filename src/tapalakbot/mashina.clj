@@ -24,7 +24,7 @@
 
 (def ^:private base-url "https://api.mashina.kg")
 (def ^:private site "mashina.kg")
-(def ^:private target-url "https://www.mashina.kg/")
+(def ^:private target-url "https://api.mashina.kg/api/catalog/")
 
 ;; ---------------------------------------------------------------------------
 ;; Session management

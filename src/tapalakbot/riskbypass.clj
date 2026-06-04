@@ -28,7 +28,7 @@
   (Files/createDirectories session-dir (into-array java.nio.file.attribute.FileAttribute [])))
 
 (defn- session-file [site]
-  (.resolve session-dir (str site "_session.json")))
+  (.toFile (.resolve session-dir (str site "_session.json"))))
 
 ;; ---------------------------------------------------------------------------
 ;; API calls
@@ -36,23 +36,36 @@
 
 (defn- api-key []
   (or (System/getenv "RISKBYPASS_API_KEY")
-      (when-let [config (try (read-string (slurp "resources/config.edn"))
+      (when-let [config (try (require 'aero.core)
+                             (let [read-config (resolve 'aero.core/read-config)]
+                               (read-config "resources/config.edn"))
                              (catch Exception _ nil))]
         (:riskbypass-key config))
       ""))
+
+(defn- get-proxy []
+  (or (System/getenv "SMARTPROXY_PROXY")
+      (when-let [config (try (require 'aero.core)
+                             (let [read-config (resolve 'aero.core/read-config)]
+                               (read-config "resources/config.edn"))
+                             (catch Exception _ nil))]
+        (:smartproxy-proxy config))
+      "http://smart-elixir:sukapidr19@proxy.smartproxy.net:3120"))
 
 (defn- submit-task!
   "Submit a Cloudflare challenge to RiskBypass API.
    Returns task-id on success."
   [target-url & {:keys [task-type proxy method] :or {task-type "cloudflare_waf" method "GET"}}]
-  (let [key (api-key)]
+  (let [key (api-key)
+        proxy-string (or proxy (get-proxy))]
     (when (clojure.string/blank? key)
       (log/error "RISKBYPASS_API_KEY not configured")
       (throw (ex-info "RiskBypass API key not configured" {})))
     (let [payload (cond-> {"task_type" task-type
                            "target_url" target-url
                            "target_method" method}
-                    proxy (assoc "proxy" proxy))
+                    proxy-string (assoc "proxy" proxy-string))
+          _ (log/info "RiskBypass payload:" (dissoc payload "proxy") "proxy:" (if proxy-string (str (subs proxy-string 0 (min 30 (count proxy-string))) "...") "none"))
           resp (http/post "https://riskbypass.com/task/submit"
                           {:headers {"Content-Type" "application/json"
                                      "x-api-key" key}
@@ -84,14 +97,24 @@
             status (get-in resp [:body :status])]
         (case status
           ("RUNNING" "QUEUED") (do (Thread/sleep 5000) (recur))
-          "SUCCESS" (let [result (get-in resp [:body :result] {})
-                          cookies (get result "cookies" {})
+          "SUCCESS" (let [body (:body resp)
+                          _ (log/info "RiskBypass response body:" body)
+                          result (get body :result {})
+                          _ (log/info "RiskBypass result:" result)
+                          cookies (let [c (or (get result "cookies")
+                                              (get result :cookies))]
+                                    (if (and c (seq c)) c {}))
+                          _ (log/info "RiskBypass cookies:" cookies)
                           user-agent (or (get result "ua")
+                                         (get result :ua)
                                          (get result "user_agent")
-                                         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")]
+                                         (get result :user_agent)
+                                         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                          cf-clearance (or (get cookies "cf_clearance")
+                                           (get cookies :cf_clearance))]
                       {:cookies cookies
                        :user-agent user-agent
-                       :cf-clearance (get cookies "cf_clearance")})
+                       :cf-clearance cf-clearance})
           ("FAILED" "NOT_FOUND") (do
                                    (log/error "RiskBypass task failed:" status (:body resp))
                                    nil)
@@ -139,6 +162,7 @@
                                           :site site
                                           :refreshed-at (.toString now)
                                           :expires-at (.toString (.plus now (Duration/ofMinutes ttl-minutes))))]
+                  (log/info "Saving session to:" (.getAbsolutePath f))
                   (spit f (json/generate-string session-data {:pretty true}))
                   session-data)))))
         (catch Exception e
@@ -149,6 +173,7 @@
                                       :site site
                                       :refreshed-at (.toString now)
                                       :expires-at (.toString (.plus now (Duration/ofMinutes ttl-minutes))))]
+              (log/info "Saving session to:" (.getAbsolutePath f))
               (spit f (json/generate-string session-data {:pretty true}))
               session-data))))
       (when-let [session (solve-cloudflare! target-url)]
@@ -157,6 +182,7 @@
                                   :site site
                                   :refreshed-at (.toString now)
                                   :expires-at (.toString (.plus now (Duration/ofMinutes ttl-minutes))))]
+          (log/info "Saving session to:" (.getAbsolutePath f))
           (spit f (json/generate-string session-data {:pretty true}))
           session-data)))))
 

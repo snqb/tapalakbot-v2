@@ -46,27 +46,29 @@ Rules:
 
 (defn match-category
   "Match user query to Lalafo category_id. Called ONCE at track creation.
-   Returns {:category-id N :category-name \"...\" :text-query \"...\"}"
+   Uses search-categories to find candidates, then LLM picks the best one."
   [track-title]
   (try
-    ;; Step 1: Get categories matching the query
+    ;; Step 1: Get matching categories from Lalafo
     (let [categories-str (lalafo/search-categories track-title)
-          ;; Step 2: Also get broader context
-          all-categories (lalafo/format-categories-prompt @(lalafo/fetch-categories-raw))
-          prompt (str "User wants: " track-title "\n\n"
+          prompt (str "Match this search to a Lalafo.kg category.\n\n"
+                      "User wants: " track-title "\n\n"
                       "Matching categories:\n" categories-str "\n\n"
-                      "Full category tree (for context):\n" (subs all-categories 0 (min 3000 (count all-categories))) "\n\n"
-                      "Which category_id should we use? Return JSON.")
-          messages [{:role "system" :content category-match-prompt}
-                    {:role "user" :content prompt}]
-          resp (llm/llm :kimi-k2 messages [] :provider :openrouter :max-tokens 200)
+                      "Rules:\n"
+                      "1. Pick the MOST SPECIFIC (deepest) category\n"
+                      "2. For phones/electronics → pick the brand-specific category\n"
+                      "3. For real estate → pick the specific property type\n"
+                      "4. If no good match, return {\"category_id\": null}\n\n"
+                      "Return JSON: {\"category_id\": number|null, \"category_name\": \"string\"}")
+          messages [{:role "user" :content prompt}]
+          resp (llm/llm :kimi-k2 messages [] :provider :openrouter :max-tokens 100)
           content (get-in resp ["choices" 0 "message" "content"])
           json-str (or (re-find #"(?s)\{.*\}" content) "{}")
           parsed (try (json/parse-string json-str true)
                       (catch Exception _ {}))]
       {:category-id (:category_id parsed)
        :category-name (:category_name parsed)
-       :text-query (or (:text_query parsed) track-title)})
+       :text-query track-title})
     (catch Exception e
       (log/warn :category-match-failed :track-title track-title :error (.getMessage e))
       {:category-id nil :category-name nil :text-query track-title})))
