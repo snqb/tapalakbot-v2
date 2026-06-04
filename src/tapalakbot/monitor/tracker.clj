@@ -113,7 +113,7 @@ Rules:
               indices (try (json/parse-string json-str)
                            (catch Exception _ []))
               valid-indices (filterv #(and (integer? %) (>= % 0) (< % (count items))) indices)
-              relevant (mapv items valid-indices)]
+              relevant (mapv #(nth items %) valid-indices)]
           (log/info :track-relevance :track track-title :total (count items) :relevant (count relevant))
           relevant)
         (catch Exception e
