@@ -24,8 +24,27 @@
 
 ;; ══════════════════════ CHECK LOGIC ══════════════════════
 
+(defn- broaden-query
+  "Create broader search variants from a specific query.
+   E.g., 'помещение в центре под кофейню' → ['помещение', 'коммерческое помещение']"
+  [query]
+  (let [words (str/split query #"\s+")
+        ;; Take first 1-2 meaningful words (skip prepositions)
+        stop-words #{"в" "на" "под" "для" "от" "до" "с" "по" "и" "или" "не" "что" "как" "где" "когда"}
+        meaningful (filterv #(not (stop-words (str/lower-case %))) words)
+        ;; Generate variants: 1 word, 2 words, original
+        variants (distinct
+                  (concat
+                   (when (>= (count meaningful) 1) [(first meaningful)])
+                   (when (>= (count meaningful) 2) [(str/join " " (take 2 meaningful))])
+                   ;; Add 'коммерческое' prefix for real estate queries
+                   (when (some #(re-matches #"помещени.*|аренд.*|офис.*|магазин.*" (str/lower-case %)) meaningful)
+                     ["коммерческое помещение" "помещение аренда"])))]
+    (vec variants)))
+
 (defn- search-track
-  "Search Lalafo with a track's filters. Returns items found."
+  "Search Lalafo with a track's filters. Returns items found.
+   Broadens query if original returns 0 results."
   [{:keys [queries price_min price_max city_id]}]
   (let [qs (store/parse-track-queries queries)
         client (#'lalafo/build-client)
@@ -39,13 +58,37 @@
                                :price-max price_max
                                :max-pages max-pages-per-query
                                :per-page per-page)]
+          (log/info :track-search :query q :raw-items (count items))
+          ;; If original query returned 0, try broader variants
+          (when (zero? (count items))
+            (let [broader (broaden-query q)]
+              (log/info :track-broaden :original q :variants broader)
+              (doseq [bq broader]
+                (try
+                  (let [[found broader-items pages] (#'lalafo/search-all-pages
+                                                     client bq
+                                                     :city-id (or city_id 103184)
+                                                     :price-min price_min
+                                                     :price-max price_max
+                                                     :max-pages max-pages-per-query
+                                                     :per-page per-page)]
+                    (log/info :track-broaden-search :query bq :found found :items (count broader-items))
+                    (doseq [item broader-items]
+                      (let [item-id (get item "id")
+                            price (get item "price")]
+                        (when (or (nil? price) (> price 50))
+                          (swap! all-items assoc item-id item)))))
+                  (catch Exception e
+                    (log/warn :track-broaden-error :query bq :error (.getMessage e)))))))
+          ;; Process items from original query
           (doseq [item items]
             (let [item-id (get item "id")
                   price (get item "price")]
-              (when (and price (> price 50))
+              (when (or (nil? price) (> price 50))
                 (swap! all-items assoc item-id item)))))
         (catch Exception e
           (log/warn :track-search-error :query q :error (.getMessage e)))))
+    (log/info :track-search-result :qs (count qs) :items (count @all-items))
     (vals @all-items)))
 
 (defn- format-price [p]
@@ -54,22 +97,37 @@
     "цена неизвестна"))
 
 (defn- format-notification
-  "Format a notification message for new items."
+  "Format a notification message for new items. Clean, useful format."
   [track-title new-items]
-  (let [lines (mapv (fn [item]
+  (let [;; Filter to items with at least a decent title
+        good-items (filterv (fn [item]
+                              (let [title (get item "title" "")
+                                    price (get item "price")]
+                                (and (>= (count title) 10)
+                                     (or (nil? price) (> price 100)))))
+                            (take (* 2 max-notifications-per-check) new-items))
+        items-to-show (take max-notifications-per-check good-items)
+        remaining (- (count new-items) (count items-to-show))
+        lines (mapv (fn [item]
                       (let [title (get item "title" "")
+                            ;; Trim long titles
+                            short-title (if (> (count title) 60)
+                                          (subs title 0 57) "...")
                             price (get item "price")
+                            price-str (format-price price)
                             raw-url (or (get item "url") "")
                             url (if (str/starts-with? raw-url "http")
                                   raw-url
                                   (str "https://lalafo.kg" raw-url))]
-                        (str "• " title "\n  " (format-price price) "\n  🔗 " url)))
-                    (take max-notifications-per-check new-items))
-        remaining (- (count new-items) max-notifications-per-check)]
-    (str "🔔 Новое по фильтру «" track-title "»:\n\n"
+                        (str "• " short-title
+                             (when (and price (> price 0))
+                               (str "\n  💰 " price-str))
+                             "\n  🔗 " url)))
+                    items-to-show)]
+    (str "🔔 *«" track-title "»* — " (count new-items) " новых\n\n"
          (str/join "\n\n" lines)
          (when (pos? remaining)
-           (str "\n\n... и ещё " remaining)))))
+           (str "\n\n... и ещё " remaining " об'явок")))))
 
 (defn- extract-user-id-from-track
   "Extract numeric Telegram user ID from track user-id (format: 'tg-123456')."
@@ -86,6 +144,7 @@
           ;; Filter out already-seen items
           new-items (filterv #(not (store/seen-item? id (get % "id"))) items)
           notify-count (min (count new-items) max-notifications-per-check)]
+      (log/info :track-check-detail :track-id id :total-items (count items) :new-items (count new-items))
       ;; Mark all found items as seen (even beyond notify limit)
       (doseq [item new-items]
         (store/mark-item-seen! id (get item "id")))
@@ -112,15 +171,10 @@
 (defonce ^:private tracker-thread (atom nil))
 
 (defn- should-check-now?
-  "Check if a track is due for checking based on its notify_interval."
-  [{:keys [last_checked_at notify_interval]}]
-  (let [interval-h (or notify_interval 24)
-        interval-ms (* interval-h 60 60 1000)]
-    (if last_checked_at
-      (let [checked-ms (.getTime (java.sql.Timestamp/valueOf last_checked_at))
-            now-ms (System/currentTimeMillis)]
-        (>= (- now-ms checked-ms) interval-ms))
-      true)))
+  "Check if a track is due for checking.
+   Always checks every cycle (2h) — notify_interval only controls notification frequency."
+  [_track]
+  true)
 
 (defn run-check-cycle!
   "Check all active tracks that are due. Returns summary."
