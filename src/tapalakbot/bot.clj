@@ -6,6 +6,7 @@
   (:require [tapalakbot.core :as t]
             [tapalakbot.monitor.client :as monitor]
             [tapalakbot.monitor.store :as store]
+            [tapalakbot.monitor.tracker :as tracker]
             [clj-harness.telegram :as tg]
             [clj-harness.telegram.format :as fmt]
             [clj-harness.core :as hc]
@@ -165,19 +166,30 @@
         :callback_data (str "track_quick:" short-id)}]])))
 
 (defn- handle-track-quick
-  "Handle quick track button — create filter with 24h default."
+  "Handle quick track button — create filter with 24h default.
+   Generates smart queries via LLM at creation time."
   [chat-id msg-id user-id short-id]
   (let [uid (str "tg-" user-id)
         query (get @pending-track-queries user-id)
         _ (swap! pending-track-queries dissoc user-id)
         query (or query "товар")  ;; fallback if atom was cleared
+        ;; Step 1: Generate smart queries via LLM (one-time cost)
+        _ (log/info :track-gen-queries :user uid :query query)
+        smart (tracker/generate-track-queries query)
+        queries (or (:queries smart) [query])
+        price-min (or (:price-min smart) nil)
+        price-max (or (:price-max smart) nil)
+        ;; Step 2: Create track with pre-generated queries
         track (store/create-track! {:user-id uid
                                     :title query
-                                    :queries [query]
+                                    :queries queries
+                                    :price-min price-min
+                                    :price-max price-max
                                     :notify-interval 24})]
-    (log/info :track-created :user uid :track-id (:id track) :query query)
+    (log/info :track-created :user uid :track-id (:id track) :query query :queries queries)
     (edit-with-buttons chat-id msg-id
                        (str "✅ Подписался на «" query "»\n\n"
+                            "🔍 Запросы: " (str/join ", " (take 3 queries)) "\n"
                             "📅 Проверяю каждые 24 часа\n"
                             "Уведомлю когда появятся новые объявления")
                        (inline-keyboard
