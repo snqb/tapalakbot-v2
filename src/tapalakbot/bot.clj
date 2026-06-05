@@ -408,12 +408,12 @@
       (str/replace #"\|[^\n]*\|" "")))
 
 (defn- strip-fake-urls
-  "Remove any URL that is not from lalafo.kg.
+  "Remove any URL that is not from a known marketplace.
    Catches URLs with or without 🔗 prefix. LLMs hallucinate fake links."
   [text]
   (str/replace text #"(🔗\s*)?https?://[^\s)\]>]+"
                (fn [[full-match _prefix]]
-                 (if (re-find #"lalafo\.kg" full-match)
+                 (if (re-find #"lalafo\.kg|mashina\.kg|bazar\.kg" full-match)
                    full-match
                    "🔗 [ссылка недоступна]"))))
 
@@ -429,12 +429,15 @@
       (log/info :citation-sample :first-3 (take 3 url-store)))
     (if (empty? url-store)
       text
-      (str/replace text #"(?:•\s+)([^\n]*?)\s*#(\d+)"
-                   (fn [[_ prefix id]]
-                     (let [url (get url-store id)]
-                       (if url
-                         (str "• [" (str/trimr prefix) "](" url ")")
-                         (str "• " prefix " #" id))))))))
+      (let [;; Strip markdown bold from prefix to avoid <b> inside <a> nesting errors
+            strip-bold (fn [s] (str/replace s #"\*\*([^*]+)\*\*" "$1"))]
+        (str/replace text #"(?:•\s+)([^\n]*?)\s*#(\d+)"
+                     (fn [[_ prefix id]]
+                       (let [url (get url-store id)
+                             clean-prefix (strip-bold (str/trimr prefix))]
+                         (if url
+                           (str "• <a href='" url "'>" clean-prefix "</a>")
+                           (str "• " prefix " #" id)))))))))
 
 (defn- extract-search-query
   "Try to extract the original search query from agent response.
