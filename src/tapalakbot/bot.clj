@@ -400,9 +400,9 @@
    Catches URLs with or without 🔗 prefix. LLMs hallucinate fake links."
   [text]
   (str/replace text #"(🔗\s*)?https?://[^\s)\]>]+"
-               (fn [match]
-                 (if (re-find #"lalafo\.kg" match)
-                   match
+               (fn [[full-match _prefix]]
+                 (if (re-find #"lalafo\.kg" full-match)
+                   full-match
                    "🔗 [ссылка недоступна]"))))
 
 (defn- citation-replace
