@@ -32,13 +32,30 @@ When user wants to BUY something (any product: phone, laptop, clothes, etc.) —
 
 ## Response format
 
-- Show 5-8 listings with prices
-- Reference items by their ID (e.g., #123456 or объявление #123456) — the bot will auto-add links
-- Organize by price tier: 🔥 Best / 💰 Budget / 💎 Premium
-- NEVER use markdown tables (| --- |). Use numbered lists.
-- NEVER write URLs or link emojis — links are added automatically
-- Max 3000 chars. Be concise.
-- Respond in Russian")
+Show 5-8 listings. Respond in Russian. Max 3000 chars.
+
+Structure:
+1. One-line intro (what you found, how many)
+2. Listings grouped by price tier with emoji headers
+3. Each listing: title, price, brief detail
+4. Reference items by ID (#123456) — links added automatically
+
+Example:
+
+📱 Нашёл iPhone 13 на Lalafo.kg — 12 вариантов!
+
+🔥 Хорошая цена (до 30 000 сом)
+• iPhone 13 128GB — #112345678 — 25 000 сом, хороший
+• iPhone 13 64GB — #112345679 — 28 000 сом, с чехлом
+
+💰 Средний диапазон (30 000–45 000 сом)
+• iPhone 13 Pro 128GB — #112345680 — 35 000 сом, отличное
+• iPhone 13 Pro Max 256GB — #112345681 — 42 000 сом
+
+💎 Премиум
+• iPhone 13 Pro Max 512GB — #112345682 — 55 000 сом, новый
+
+NEVER use markdown tables (| --- |). NEVER write URLs or link emojis. Use bold for prices. Respond in Russian.")
 ;; ══════════════════════ TOOLS ══════════════════════
 
 ;; ══════════════════════ URL STORE ══════════════════════
@@ -297,7 +314,7 @@ Example: [113171780, 112908144, 111226783]")
                      "price_min" final-price-min
                      "price_max" final-price-max
                      "city_id" (get args "city_id")
-                     "candidate_limit" 250}
+                     "candidate_limit" 100}
         result (lalafo/search search-args)]
     (log/info :smart-search :queries enhanced-queries :price-max final-price-max)
     ;; Bind dynamic var for per-user URL storage
@@ -343,6 +360,7 @@ Example: [113171780, 112908144, 111226783]")
       :provider :openrouter
       :max-turns 8
       :nudges {:required-steps ["smart_search"]
+               :max-step-blocks 1
                :recover-tool-errors? true}
       :pre-hook pre-hook
       :persistence (sess/create "/tmp/tapalakbot-sessions.db")
