@@ -8,6 +8,7 @@
    - LLM relevance filter on results only"
   (:require [tapalakbot.monitor.store :as store]
             [tapalakbot.lalafo :as lalafo]
+            [tapalakbot.query-builder :as qb]
             [clj-harness.telegram :as tg]
             [clj-harness.llm :as llm]
             [cheshire.core :as json]
@@ -189,37 +190,49 @@ Rules:
 (defn check-track
   "Check one track: search → filter seen → LLM relevance → notify.
    Uses category_id + text_query (lalafo-client-first).
+   Price constraints from QueryBuilder are now stored per-track.
    Returns {:new-items N :notified? boolean}."
-  [{:keys [id user_id title category_id] :as track}]
+  [{:keys [id user_id title category_id price_min price_max] :as track}]
   (try
-    ;; Step 1: Search with category_id + title (no LLM)
-    (let [items (search-track track title)
-          ;; Step 2: Filter out already-seen items
-          new-items (filterv #(not (store/seen-item? id (get % "id"))) items)]
-      (log/info :track-check-detail :track-id id :total-items (count items) :new-items (count new-items))
-      ;; Step 3: Mark all found items as seen
-      (doseq [item new-items]
-        (store/mark-item-seen! id (get item "id")))
-      ;; Step 4: Update check timestamp
-      (store/mark-track-checked! id)
-      ;; Step 5: LLM relevance filter + send notification
-      (when (pos? (count new-items))
-        (let [candidates (take (* 3 max-notifications-per-check) new-items)
-              relevant (filter-relevant title candidates)
-              to-send (take max-notifications-per-check relevant)]
-          (log/info :track-relevance-result :track-id id :candidates (count candidates) :relevant (count relevant) :sending (count to-send))
-          (when (pos? (count to-send))
-            (if-let [tg-user-id (extract-user-id-from-track user_id)]
-              (let [msg (format-notification title to-send)]
-                (log/info :track-notify-preview :msg msg)
-                (try
-                  (tg/send-message tg-user-id msg :parse-mode nil)
-                  (store/increment-notify-count! id)
-                  (log/info :track-notified :track-id id :user user_id :items (count to-send))
-                  (catch Exception e
-                    (log/warn :track-notify-fail :track-id id :error (.getMessage e)))))
-              (log/warn :track-invalid-user-id :track-id id :user-id user_id)))))
-      {:new-items (count new-items) :notified? false})
+    ;; Step 1: Search with category_id + title + price constraints (no LLM)
+    (let [items (search-track track title)]
+      (log/info :track-check-detail :track-id id :total-items (count items)
+                :price [price_min price_max])
+      ;; Step 2: Filter out already-seen items
+      (let [new-items (filterv #(not (store/seen-item? id (get % "id"))) items)
+            ;; Filter by price if user specified budget
+            in-budget (if (or price_min price_max)
+                       (filterv (fn [item]
+                                 (let [p (get item "price")]
+                                   (and p
+                                        (or (nil? price_min) (>= p price_min))
+                                        (or (nil? price_max) (<= p price_max)))))
+                                new-items)
+                       new-items)]
+        (log/info :track-check-budget :track-id id :new-items (count new-items) :in-budget (count in-budget))
+        ;; Step 3: Mark all found items as seen
+        (doseq [item in-budget]
+          (store/mark-item-seen! id (get item "id")))
+        ;; Step 4: Update check timestamp
+        (store/mark-track-checked! id)
+        ;; Step 5: LLM relevance filter + send notification
+        (when (pos? (count in-budget))
+          (let [candidates (take (* 3 max-notifications-per-check) in-budget)
+                relevant (filter-relevant title candidates)
+                to-send (take max-notifications-per-check relevant)]
+            (log/info :track-relevance-result :track-id id :candidates (count candidates) :relevant (count relevant) :sending (count to-send))
+            (when (pos? (count to-send))
+              (if-let [tg-user-id (extract-user-id-from-track user_id)]
+                (let [msg (format-notification title to-send)]
+                  (log/info :track-notify-preview :msg msg)
+                  (try
+                    (tg/send-message tg-user-id msg :parse-mode nil)
+                    (store/increment-notify-count! id)
+                    (log/info :track-notified :track-id id :user user_id :items (count to-send))
+                    (catch Exception e
+                      (log/warn :track-notify-fail :track-id id :error (.getMessage e)))))
+                (log/warn :track-invalid-user-id :track-id id :user-id user_id)))))
+        {:new-items (count in-budget) :notified? false}))
     (catch Exception e
       (log/error :track-check-error :track-id (:id track) :error (.getMessage e))
       {:new-items 0 :notified? false})))

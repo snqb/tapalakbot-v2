@@ -7,6 +7,7 @@
             [tapalakbot.monitor.client :as monitor]
             [tapalakbot.monitor.store :as store]
             [tapalakbot.monitor.tracker :as tracker]
+            [tapalakbot.query-builder :as qb]
             [clj-harness.telegram :as tg]
             [clj-harness.telegram.format :as fmt]
             [clj-harness.core :as hc]
@@ -167,16 +168,29 @@
 
 (defn- handle-track-quick
   "Handle quick track button — create filter with 24h default.
-   Matches query to Lalafo category via LLM at creation time."
+   Uses QueryBuilder to extract price constraints and platform routing."
   [chat-id msg-id user-id short-id]
   (let [uid (str "tg-" user-id)
         query (get @pending-track-queries user-id)
         _ (swap! pending-track-queries dissoc user-id)
         query (or query "товар")  ;; fallback if atom was cleared
-        ]
-    ;; Show immediate feedback
+        ;; Parse with QueryBuilder to extract price constraints
+        qb-result (qb/build query :use-llm? true)
+        price-min (:price-min qb-result)
+        price-max (:price-max qb-result)
+        ;; Determine platform for display
+        platform-str (cond
+                       (:is-auto? qb-result) "🚗 Mashina.kg"
+                       (some #{:bazar} (:platforms qb-result)) "🏪 Lalafo + Bazar"
+                       :else "🔍 Lalafo.kg")]
+    ;; Show immediate feedback with price info
     (edit-with-buttons chat-id msg-id
-                       (str "⏳ Подписываю на «" query "»...")
+                       (str "⏳ Подписываю на «" query "»..."
+                            (when (or price-min price-max)
+                              (str "\n💰 Бюджет: "
+                                   (when price-min (str "от " price-min " сом"))
+                                   (when (and price-min price-max) " \u2014 ")
+                                   (when price-max (str "до " price-max " сом")))))
                        (inline-keyboard
                         [[{:text "📋 Мои подписки" :callback_data "track_list"}]]))
     ;; Do LLM category match + DB write in background
@@ -185,16 +199,27 @@
         (let [category (tracker/match-category query)
               category-id (:category-id category)
               category-name (:category-name category)
+              ;; Store with price constraints
               track (store/create-track! {:user-id uid
                                           :title query
                                           :queries [query]
+                                          :price-min price-min
+                                          :price-max price-max
                                           :category-id category-id
                                           :notify-interval 24})]
-          (log/info :track-created :user uid :track-id (:id track) :query query :category-id category-id :category-name category-name)
+          (log/info :track-created :user uid :track-id (:id track) :query query
+                    :category-id category-id :category-name category-name
+                    :price [price-min price-max] :platforms (:platforms qb-result))
           (edit-with-buttons chat-id msg-id
                              (str "✅ Подписался на «" query "»\n\n"
                                   (when category-name
                                     (str "📂 Категория: " category-name "\n"))
+                                  (when (or price-min price-max)
+                                    (str "💰 Бюджет: "
+                                         (when price-min (str "от " price-min " сом"))
+                                         (when (and price-min price-max) " — ")
+                                         (when price-max (str "до " price-max " сом"))
+                                         "\n"))
                                   "📅 Проверяю каждые 24 часа\n"
                                   "Уведомлю когда появятся новые объявления")
                              (inline-keyboard

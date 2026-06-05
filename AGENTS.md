@@ -1,17 +1,17 @@
-<!-- Updated: 2026-06-01 -->
+<!-- Updated: 2026-06-04 -->
 # tapalakbot-v2
 
-> Clojure Telegram bot for Lalafo.kg marketplace search. DeepSeek LLM + native Clojure HTTP client. Progressive streaming, HTML formatting, anti-table safety net, 53 test scenarios. **Price monitor** tracks 10 categories, serves market intelligence via HTTP API. **Deployed: NixOS VPS 85.239.40.192 (systemd).** See [docs/deployment.md](docs/deployment.md).
+> Clojure Telegram bot for KG marketplace search. DeepSeek LLM + native Clojure HTTP client. Progressive streaming, HTML formatting, anti-table safety net, 53 test scenarios. **Multi-platform search**: Lalafo.kg + Bazar.kg + Mashina.kg. **Price monitor** tracks 10 categories, serves market intelligence via HTTP API. **Deployed: NixOS VPS 85.239.40.192 (systemd).** See [docs/deployment.md](docs/deployment.md).
 
 ## Architecture
 
 ```
 User → Telegram → bot.clj → core.clj → clj-harness → DeepSeek API
                          │         │
-                    clj-harness   └─ lalafo.clj (direct HTTP)
-                    (telegram,         ├─ search → Lalafo API
-                     streaming,        ├─ categories → Lalafo API
-                     format)           └─ exa-research → Exa API
+                    clj-harness  ├─ query_builder.clj (NL → structured params)
+                    (telegram,    ├─ lalafo.clj (Lalafo API)
+                     streaming,   ├─ mashina.clj → Mashina.kg API (public)
+                     format)      └─ bazar.clj → Bazar.kg (HTML scraping)
 
                          ┌─────────────────────────────────────┐
                          │  Price Monitor (same JVM process)   │
@@ -32,8 +32,12 @@ Most Telegram/format/streaming logic lives in `clj-harness`. Tapalakbot files ar
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `core.clj` | ~450 | Agent: system prompt, smart_search tool, pre-hook, REPL |
+| `query_builder.clj` | ~340 | NL→structured params: price, platform, category extraction |
+| `core.clj` | ~460 | Agent: system prompt, smart_search tool, pre-hook, REPL |
 | `lalafo.clj` | ~380 | Direct Lalafo.kg HTTP client + Exa research + healthcheck |
+| `mashina.clj` | ~200 | Mashina.kg API client (public API, no auth needed) |
+| `bazar.clj` | ~180 | Bazar.kg HTML scraper (Schema.org structured data) |
+| `riskbypass.clj` | ~150 | Cloudflare bypass via RiskBypass API + Smartproxy |
 | `bot.clj` | ~140 | Telegram bot: handler, `/start` `/help` `/prices`, streaming agent |
 | `server.clj` | ~65 | Entry point: bot + monitor auto-start + healthcheck |
 | `tg/format.clj` | ~17 | Thin wrapper → `clj-harness.telegram.format` |
@@ -44,8 +48,37 @@ Most Telegram/format/streaming logic lives in `clj-harness`. Tapalakbot files ar
 | **monitor/client.clj** | ~130 | HTTP client for monitor API (used by bot) |
 | **monitor/main.clj** | ~60 | Monitor standalone entry point |
 | **test/tapalakbot/test_scenarios.clj** | ~450 | 53 test scenarios for agent testing |
+| **notebooks/marketplace.clj** | ~100 | Clerk notebook: live search UI for all platforms |
 
-## Key Decisions
+## Marketplace Platforms
+
+### Lalafo.kg (Primary)
+- **Type**: General classifieds (cars, real estate, electronics, services)
+- **API**: Direct HTTP, requires session management
+- **Auth**: cf_clearance cookie via RiskBypass + Smartproxy
+- **Coverage**: All KG regions, ~50K+ active listings
+
+### Mashina.kg (Auto-focused)
+- **Type**: Auto marketplace (cars, motorcycles, parts)
+- **API**: Public REST API at `www.mashina.kg/api` — **no auth needed!**
+- **Endpoints**: `/api/ads/listings`, `/api/categories`, `/api/ads/slug/{slug}`
+- **Coverage**: 136K+ auto listings, rich attributes (year, engine, gearbox, mileage)
+- **Query params**: `?q=hyundai&page=1&size=20`
+
+### Bazar.kg (General goods)
+- **Type**: General classifieds (electronics, home, fashion, auto parts)
+- **API**: None — HTML scraping with Schema.org structured data
+- **Auth**: None needed
+- **Coverage**: ~10K+ listings across categories
+- **Categories**: transport, electronics, real-estate, home-garden, children, etc.
+
+### Platform Comparison
+
+| Platform | Auth | API Type | Best For |
+|----------|------|----------|----------|
+| Lalafo.kg | RiskBypass + proxy | REST | General search, real estate |
+| Mashina.kg | None | Public REST | Auto search, price comparison |
+| Bazar.kg | None | HTML scraping | General goods, electronics |
 
 - **DeepSeek** (`:deepseek-v4-pro`) — adequate Russian + tool calling. Token from `pass deepseek-api/token`. Config: `resources/config.edn` models map.
 - **Direct Clojure search + categories + research** — All tools use Java HttpClient directly. Zero Python shell-outs.
@@ -54,6 +87,23 @@ Most Telegram/format/streaming logic lives in `clj-harness`. Tapalakbot files ar
 - **Progressive streaming** — `handle-message-stream!` with phase tracking (`:initial` → `:streaming` → `:tool` → `:done`). Debounced edits (max once per 1500ms). Status callback for phase changes (🧠 thinking → 🔧 tool).
 - **Monitor in same JVM** — Avoids separate deployment. `server.clj` auto-starts monitor thread if not already running.
 - **Accessory filter** — `scanner.clj` excludes чехол, зарядка, ремонт, установка, etc. from monitor results. Price cap: 500K KGS.
+
+## Notebook (Live Search UI)
+
+Clerk notebook for exploring all marketplace platforms:
+
+```bash
+# Start Clerk notebook server
+./start-notebook.sh
+
+# Open http://localhost:7777/notebooks/marketplace
+```
+
+**Features:**
+- Search across Bazar.kg and Mashina.kg
+- Popular brands comparison
+- Category browser
+- Auto-updates on file save
 
 ## Tools
 

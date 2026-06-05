@@ -10,6 +10,7 @@
    [tapalakbot.lalafo :as lalafo]
    [tapalakbot.mashina :as mashina]
    [tapalakbot.bazar :as bazar]
+   [tapalakbot.query-builder :as qb]
    [cheshire.core :as json]
    [clojure.string :as str]
    [clojure.tools.logging :as log]))
@@ -328,60 +329,66 @@ Example: [113171780, 112908144, 111226783]")
                          (take 8 listings))))))
 
 (defn- smart-search-execute
-  "Smart search pipeline: intent → query generation → optional research → search."
+  "Smart search pipeline: QueryBuilder → platform routing → multi-platform search."
   [args]
   (let [user-id (or (get-thread-user-id) (get args "_user_id") "anonymous")
         user-want (get args "user_want")
-        price-min (get args "price_min")
-        price-max (get args "price_max")
-        ;; Step 1: Generate optimal queries
-        {:keys [queries price-min price-max needs-research research-query]}
+        ;; Step 1: Parse user intent with QueryBuilder
+        qb-result (qb/build user-want :use-llm? true)
+        ;; Step 2: Generate optimal queries (LLM-based)
+        {:keys [queries needs-research research-query]}
         (generate-search-queries user-want)
-        ;; Use user-provided prices or generated ones
-        final-price-min (or (get args "price_min") price-min)
-        final-price-max (or (get args "price_max") price-max)
-        ;; Step 2: Optional research for niche products
+        ;; Merge QueryBuilder price with generated price
+        final-price-min (or (get args "price_min") (:price-min qb-result))
+        final-price-max (or (get args "price_max") (:price-max qb-result))
+        ;; Step 3: Optional research for niche products
         extra-context (when (and needs-research research-query)
                         (do-research research-query))
-        ;; Step 3: If research found more models, add them to queries
+        ;; Step 4: If research found more models, add them to queries
         enhanced-queries (if (and extra-context (not (str/blank? extra-context)))
                            (let [research-terms (str/split (str extra-context) #"\s+" 3)]
                              (vec (concat queries (filter #(> (count %) 2) research-terms))))
                            queries)
-        ;; Step 4: Search Lalafo
-        search-args {"queries" (take 6 enhanced-queries)
-                     "category_id" (get args "category_id")
-                     "price_min" final-price-min
-                     "price_max" final-price-max
-                     "city_id" (get args "city_id")
-                     "candidate_limit" 100}
-        result (lalafo/search search-args)]
-    (log/info :smart-search :queries enhanced-queries :price-max final-price-max)
+        ;; Step 5: Search Lalafo (if in platforms)
+        lalafo-results (when (some #{:lalafo} (:platforms qb-result))
+                         (let [search-args {"queries" (take 6 enhanced-queries)
+                                            "category_id" (or (get args "category_id")
+                                                               (:lalafo-category-id qb-result))
+                                            "price_min" final-price-min
+                                            "price_max" final-price-max
+                                            "city_id" (get args "city_id")
+                                            "candidate_limit" 100}
+                               result (lalafo/search search-args)]
+                           (log/info :smart-search-lalafo :queries enhanced-queries :price [final-price-min final-price-max])
+                           (:text (format-search-results result :user-query user-want))))
+        ;; Step 6: Search Mashina.kg (cars)
+        mashina-results (when (some #{:mashina} (:platforms qb-result))
+                          (try
+                            (let [q (or (:mashina-query qb-result) (first enhanced-queries))
+                                  mr (mashina/search-cars :query q :size 10)]
+                              (log/info :smart-search-mashina :query q :found (:total mr))
+                              (when (seq (:listings mr))
+                                (format-mashina-results mr)))
+                            (catch Exception e
+                              (log/warn :mashina-search-failed (.getMessage e))
+                              nil)))
+        ;; Step 7: Search Bazar.kg (goods)
+        bazar-results (when (some #{:bazar} (:platforms qb-result))
+                        (try
+                          (let [q (first enhanced-queries)
+                                br (bazar/search :category (:bazar-category qb-result) :brand q)]
+                            (log/info :smart-search-bazar :query q :category (:bazar-category qb-result) :found (count (:listings br)))
+                            (when (seq (:listings br))
+                              (format-bazar-results br)))
+                          (catch Exception e
+                            (log/warn :bazar-search-failed (.getMessage e))
+                            nil)))]
     ;; Bind dynamic var for per-user URL storage
     (binding [*current-user-id* user-id]
-      (let [lalafo-text (:text (format-search-results result :user-query user-want))
-            ;; Step 5: Search Mashina.kg (cars only)
-            mashina-results (try
-                              (let [q (first enhanced-queries)
-                                    mr (mashina/search-cars :query q :size 10)]
-                                (when (seq (:listings mr))
-                                  (format-mashina-results mr)))
-                              (catch Exception e
-                                (log/warn :mashina-search-failed (.getMessage e))
-                                nil))
-            ;; Step 6: Search Bazar.kg
-            bazar-results (try
-                            (let [q (first enhanced-queries)
-                                  br (bazar/search :category :transport-cars :brand q)]
-                              (when (seq (:listings br))
-                                (format-bazar-results br)))
-                            (catch Exception e
-                              (log/warn :bazar-search-failed (.getMessage e))
-                              nil))]
-        ;; Combine results
-        (str lalafo-text
-             (when mashina-results (str "\n\n" mashina-results))
-             (when bazar-results (str "\n\n" bazar-results)))))))
+      ;; Combine results
+      (str (when lalafo-results lalafo-results)
+           (when mashina-results (str "\n\n" mashina-results))
+           (when bazar-results (str "\n\n" bazar-results))))))
 
 (def tools
   [{:name "smart_search"
