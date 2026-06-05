@@ -304,7 +304,12 @@
    "Air Conditioners" "кондиционер"
    "Microwave ovens" "микроволновка"
    "Vacuum cleaners" "пылесос"
-   "Electronic cigarettes" "айкос, iqos, электронная сигарета, вейп"})
+   "Electronic cigarettes" "айкос, iqos, электронная сигарета, вейп"
+   "Commercial real estate for rent" "аренда помещение, коммерческая недвижимость, офис аренда, магазин аренда, кафе помещение, кофейня, ресторан"
+   "Office rentals" "офис аренда, аренда офиса, аренда офисных помещений"
+   "Retail rentals" "магазин аренда, аренда магазина, торговое помещение, торговля"
+   "Restaurant and cafe rentals" "кафе, кофейня, ресторан, чайхана, столовая, помещение под кафе"
+   "Warehouse and workshop rentals" "склад, аренда склада, мастерская, гараж аренда"})
 
 (defn fetch-categories-raw
   "Fetch raw category list from Lalafo API.
@@ -368,16 +373,19 @@
 
 (defn search-categories
   "Search categories by name (fuzzy substring match against English names + Russian hints).
+   Also matches individual words from multi-word queries.
    Returns formatted string for LLM."
   [search-term]
   (let [raw (fetch-categories-raw)
-        q (str/lower-case search-term)
+        words (str/split (str/lower-case search-term) #"\s+")
         matches (->> raw
                      (filter (fn [c]
                                (let [name (str/lower-case (get c "name"))
                                      hint (str/lower-case (get russian-hints (get c "name") ""))]
-                                 (or (str/includes? name q)
-                                     (str/includes? hint q)))))
+                                 (some (fn [w]
+                                         (or (str/includes? name w)
+                                             (str/includes? hint w)))
+                                       words))))
                      (sort-by #(get % "depth"))
                      (take 10)
                      vec)]
