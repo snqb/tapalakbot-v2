@@ -43,21 +43,26 @@
         (:riskbypass-key config))
       ""))
 
-(defn- get-proxy []
-  (or (System/getenv "SMARTPROXY_PROXY")
-      (when-let [config (try (require 'aero.core)
-                             (let [read-config (resolve 'aero.core/read-config)]
-                               (read-config "resources/config.edn"))
-                             (catch Exception _ nil))]
-        (:smartproxy-proxy config))
-      "http://smart-elixir:sukapidr19@proxy.smartproxy.net:3120"))
+(defn- get-proxy
+  "Build sticky proxy URL for RiskBypass.
+   Uses session token to ensure same IP for cookie + requests."
+  []
+  (let [session-token (str (java.util.UUID/randomUUID))
+        username (or (System/getenv "SMARTPROXY_USERNAME") "smart-elixir")
+        password (or (System/getenv "SMARTPROXY_PASSWORD") "sukapidr19")
+        endpoint (or (System/getenv "SMARTPROXY_ENDPOINT") "proxy.smartproxy.net:3120")
+        ;; Build sticky session username: user_life-60_session-token
+        sticky-user (str username "_life-60_session-" session-token)]
+    {:proxy (str "http://" sticky-user ":" password "@" endpoint)
+     :session-token session-token}))
 
 (defn- submit-task!
   "Submit a Cloudflare challenge to RiskBypass API.
    Returns task-id on success."
   [target-url & {:keys [task-type proxy method] :or {task-type "cloudflare_waf" method "GET"}}]
   (let [key (api-key)
-        proxy-string (or proxy (get-proxy))]
+        proxy-info (get-proxy)
+        proxy-string (or proxy (:proxy proxy-info))]
     (when (clojure.string/blank? key)
       (log/error "RISKBYPASS_API_KEY not configured")
       (throw (ex-info "RiskBypass API key not configured" {})))
@@ -74,7 +79,9 @@
                            :socket-timeout 60000
                            :conn-timeout 60000})]
       (if (get-in resp [:body :ok])
-        (get-in resp [:body :task_id])
+        {:task-id (get-in resp [:body :task_id])
+         :session-token (:session-token proxy-info)
+         :proxy proxy-string}
         (do
           (log/error "RiskBypass submit failed:" (:body resp))
           nil)))))
@@ -129,16 +136,21 @@
 
 (defn solve-cloudflare!
   "Solve Cloudflare challenge for a target URL.
-   Returns {:cookies {...} :user-agent \"...\" :cf-clearance \"...\"} or nil."
+   Returns {:cookies, :user-agent, :cf-clearance, :proxy} or nil."
   [target-url & {:keys [task-type proxy method timeout-ms]
                  :or {task-type "cloudflare_waf" method "GET" timeout-ms 300000}}]
   (log/info "Solving Cloudflare challenge for:" target-url)
-  (when-let [task-id (submit-task! target-url
-                                   :task-type task-type
-                                   :proxy proxy
-                                   :method method)]
-    (log/info "Task submitted:" task-id "- polling for result...")
-    (poll-result! task-id :timeout-ms timeout-ms)))
+  (let [result (submit-task! target-url
+                             :task-type task-type
+                             :proxy proxy
+                             :method method)]
+    (when result
+      (log/info "Task submitted:" (:task-id result) "- polling for result...")
+      (let [solution (poll-result! (:task-id result) :timeout-ms timeout-ms)]
+        (when solution
+          (assoc solution
+                 :proxy (:proxy result)
+                 :session-token (:session-token result)))))))
 
 (defn get-or-solve-session!
   "Get cached session or solve Cloudflare challenge.

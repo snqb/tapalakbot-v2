@@ -1,8 +1,6 @@
 (ns tapalakbot.core
-  "TapalakBot v2 — Conversational Lalafo.kg search assistant.
-   Uses clj-harness with direct Lalafo HTTP client (Clojure) + Python tools.
-
-   Architecture:
+  "TapalakBot v2 — Multi-platform marketplace search assistant.
+   Uses clj-harness with direct HTTP clients for Lalafo.kg, Mashina.kg, Bazar.kg.
      Agent (Clojure harness) → tapalakbot.lalafo/search (direct HTTP)
                                 → smart_search (query gen + search)"
   (:require
@@ -10,6 +8,8 @@
    [clj-harness.llm :as llm]
    [clj-harness.session.sqlite :as sess]
    [tapalakbot.lalafo :as lalafo]
+   [tapalakbot.mashina :as mashina]
+   [tapalakbot.bazar :as bazar]
    [cheshire.core :as json]
    [clojure.string :as str]
    [clojure.tools.logging :as log]))
@@ -17,7 +17,8 @@
 ;; ══════════════════════ SYSTEM PROMPT ══════════════════════
 
 (def system-prompt
-  "You are TapalakBot — Lalafo.kg search assistant for Kyrgyzstan.
+  "You are TapalakBot — Multi-platform marketplace search assistant for Kyrgyzstan.
+Searches Lalafo.kg, Mashina.kg (cars), and Bazar.kg.
 Speak Russian.
 
 ## CRITICAL RULE — you MUST follow this
@@ -287,6 +288,45 @@ Example: [113171780, 112908144, 111226783]")
       (str/join " " (map #(get % "title" "") (take 3 results))))
     (catch Exception _ "")))
 
+(defn- format-mashina-results
+  "Format Mashina.kg car search results."
+  [result]
+  (let [listings (:listings result)
+        total (:total result)]
+    (str "🚗 **Mashina.kg** — " (count listings) " авто"
+         (when (> total (count listings)) (str " из " total " объявлений")) "\n\n"
+         (str/join "\n"
+                   (mapv (fn [item]
+                           (let [price (get-in item [:price :amount])
+                                 currency (get-in item [:price :currency] "KGS")
+                                 price-str (if price
+                                             (str (format "%,.0f" (double price)) " " currency)
+                                             "цена не указана")]
+                             (str "• " (:title item)
+                                  " — " price-str
+                                  (when (:year item) (str ", " (:year item) " г."))
+                                  (when (:mileage item) (str ", " (:mileage item) " км"))
+                                  (when (:city item) (str " | " (:city item)))
+                                  "\n  " (:url item))))
+                         (take 8 listings))))))
+
+(defn- format-bazar-results
+  "Format Bazar.kg search results."
+  [result]
+  (let [listings (:listings result)]
+    (str "🏪 **Bazar.kg** — " (count listings) " объявлений\n\n"
+         (str/join "\n"
+                   (mapv (fn [item]
+                           (let [price (:price item)
+                                 currency (:currency item "KGS")
+                                 price-str (if price
+                                             (str (format "%,.0f" (double price)) " " currency)
+                                             "цена не указана")]
+                             (str "• " (:title item)
+                                  " — " price-str
+                                  (when (:url item) (str "\n  " (:url item))))))
+                         (take 8 listings))))))
+
 (defn- smart-search-execute
   "Smart search pipeline: intent → query generation → optional research → search."
   [args]
@@ -319,11 +359,33 @@ Example: [113171780, 112908144, 111226783]")
     (log/info :smart-search :queries enhanced-queries :price-max final-price-max)
     ;; Bind dynamic var for per-user URL storage
     (binding [*current-user-id* user-id]
-      (:text (format-search-results result :user-query user-want)))))
+      (let [lalafo-text (:text (format-search-results result :user-query user-want))
+            ;; Step 5: Search Mashina.kg (cars only)
+            mashina-results (try
+                              (let [q (first enhanced-queries)
+                                    mr (mashina/search-cars :query q :size 10)]
+                                (when (seq (:listings mr))
+                                  (format-mashina-results mr)))
+                              (catch Exception e
+                                (log/warn :mashina-search-failed (.getMessage e))
+                                nil))
+            ;; Step 6: Search Bazar.kg
+            bazar-results (try
+                            (let [q (first enhanced-queries)
+                                  br (bazar/search :category :transport-cars :brand q)]
+                              (when (seq (:listings br))
+                                (format-bazar-results br)))
+                            (catch Exception e
+                              (log/warn :bazar-search-failed (.getMessage e))
+                              nil))]
+        ;; Combine results
+        (str lalafo-text
+             (when mashina-results (str "\n\n" mashina-results))
+             (when bazar-results (str "\n\n" bazar-results)))))))
 
 (def tools
   [{:name "smart_search"
-    :description "Intelligent Lalafo search. Takes what user wants to buy, generates optimal search queries, optionally researches niche products, and returns curated results. Use for ANY purchase/search intent."
+    :description "Multi-platform marketplace search. Searches Lalafo.kg + Mashina.kg + Bazar.kg simultaneously. Takes what user wants to buy, generates optimal search queries, and returns curated results from all Kyrgyz marketplaces. Use for ANY purchase/search intent."
     :schema {"type" "object"
              "properties"
              {"user_want" {"type" "string" "description" "What the user wants to buy. Example: 'iphone 13 до 30000', 'планшет со стилусом'"}

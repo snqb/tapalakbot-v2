@@ -5,6 +5,7 @@
         ch.qos.logback/logback-classic {:mvn/version "1.5.12"}
         cheshire/cheshire {:mvn/version "5.13.0"}
         aero/aero {:mvn/version "1.1.6"}
+        clj-http/clj-http {:mvn/version "3.13.0"}
         clj-harness/clj-harness {:git/url "https://github.com/snqb/clj-harness.git"
                                  :git/sha "ebeacc71f0672eb4502ea42c4f9ab39f3bf3eb79"}
         ring/ring-core {:mvn/version "1.13.0"}
