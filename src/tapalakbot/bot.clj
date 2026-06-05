@@ -417,12 +417,12 @@
       (log/info :citation-sample :first-3 (take 3 url-store)))
     (if (empty? url-store)
       text
-      (str/replace text #"(•\s+[^\n]*?)\s*#(\d+)"
+      (str/replace text #"(?:•\s+)([^\n]*?)\s*#(\d+)"
                    (fn [[_ prefix id]]
                      (let [url (get url-store id)]
                        (if url
                          (str "• [" (str/trimr prefix) "](" url ")")
-                         (str prefix " #" id))))))))
+                         (str "• " prefix " #" id))))))))
 
 (defn- extract-search-query
   "Try to extract the original search query from agent response.
