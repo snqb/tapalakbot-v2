@@ -173,27 +173,39 @@
         query (get @pending-track-queries user-id)
         _ (swap! pending-track-queries dissoc user-id)
         query (or query "товар")  ;; fallback if atom was cleared
-        ;; Step 1: Match query to Lalafo category (one-time cost)
-        _ (log/info :track-match-category :user uid :query query)
-        category (tracker/match-category query)
-        category-id (:category-id category)
-        category-name (:category-name category)
-        ;; Step 2: Create track with category_id
-        track (store/create-track! {:user-id uid
-                                    :title query
-                                    :queries [query]
-                                    :category-id category-id
-                                    :notify-interval 24})]
-    (log/info :track-created :user uid :track-id (:id track) :query query :category-id category-id :category-name category-name)
+        ]
+    ;; Show immediate feedback
     (edit-with-buttons chat-id msg-id
-                       (str "✅ Подписался на «" query "»\n\n"
-                            (when category-name
-                              (str "📂 Категория: " category-name "\n"))
-                            "📅 Проверяю каждые 24 часа\n"
-                            "Уведомлю когда появятся новые объявления")
+                       (str "⏳ Подписываю на «" query "»...")
                        (inline-keyboard
-                        [[{:text "📋 Мои подписки" :callback_data "track_list"}
-                          {:text "⚙ Настроить" :callback_data (str "track_settings:" (:id track))}]]))))
+                        [[{:text "📋 Мои подписки" :callback_data "track_list"}]]))
+    ;; Do LLM category match + DB write in background
+    (future
+      (try
+        (let [category (tracker/match-category query)
+              category-id (:category-id category)
+              category-name (:category-name category)
+              track (store/create-track! {:user-id uid
+                                          :title query
+                                          :queries [query]
+                                          :category-id category-id
+                                          :notify-interval 24})]
+          (log/info :track-created :user uid :track-id (:id track) :query query :category-id category-id :category-name category-name)
+          (edit-with-buttons chat-id msg-id
+                             (str "✅ Подписался на «" query "»\n\n"
+                                  (when category-name
+                                    (str "📂 Категория: " category-name "\n"))
+                                  "📅 Проверяю каждые 24 часа\n"
+                                  "Уведомлю когда появятся новые объявления")
+                             (inline-keyboard
+                              [[{:text "📋 Мои подписки" :callback_data "track_list"}
+                                {:text "⚙ Настроить" :callback_data (str "track_settings:" (:id track))}]])))
+        (catch Exception e
+          (log/error e :track-create-failed :query query)
+          (edit-with-buttons chat-id msg-id
+                             (str "❌ Ошибка подписки на «" query "»")
+                             (inline-keyboard
+                              [[{:text "🔄 Попробовать снова" :callback_data (str "track_quick:" short-id)}]])))))))
 
 ;; ══════════════════════ TRACKING — SUBSCRIPTION LIST ══════════════════════
 
@@ -461,7 +473,9 @@
                                      msg-id)
                             (reset! last-edit now)
                             (try
-                              (let [preview (strip-tables (.toString buf))
+                              (let [preview (-> (.toString buf)
+                                                strip-tables
+                                                (citation-replace uid))
                                     html (fmt/md->html preview)]
                                 (tg/edit-message chat-id msg-id html :parse-mode "HTML"))
                               (catch Exception e
