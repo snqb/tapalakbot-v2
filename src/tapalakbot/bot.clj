@@ -455,13 +455,11 @@
     (if (empty? url-store)
       text
       (let [;; Strip markdown bold from prefix to avoid <b> inside <a> nesting errors
-            strip-bold (fn [s] (str/replace s #"\*\*([^*]+)\*\*" "$1"))
-            ;; Strip trailing dashes/commas to avoid double-punctuation in link text
-            clean-suffix (fn [s] (str/replace s #"\s*[—–,-]+\s*$" ""))]
+            strip-bold (fn [s] (str/replace s #"\*\*([^*]+)\*\*" "$1"))]
         (str/replace text #"(?:•\s+)([^\n]*?)\s*#(\d+)"
                      (fn [[_ prefix id]]
                        (let [url (get url-store id)
-                             clean-prefix (-> prefix str/trimr strip-bold clean-suffix)]
+                             clean-prefix (strip-bold (str/trimr prefix))]
                          (if url
                            (str "• <a href='" url "'>" clean-prefix "</a>")
                            (str "• " prefix " #" id)))))))))
