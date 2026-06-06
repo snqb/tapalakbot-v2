@@ -47,19 +47,19 @@ Example:
 📱 Нашёл iPhone 13 на Lalafo.kg — 12 вариантов!
 
 🔥 Хорошая цена (до 30 000 сом)
-• iPhone 13 128GB — #112345678 — 25 000 сом, хороший
-• iPhone 13 64GB — #112345679 — 28 000 сом, с чехлом
+• iPhone 13 128GB — #A — 25 000 сом, хороший
+• iPhone 13 64GB — #B — 28 000 сом, с чехлом
 
 💰 Средний диапазон (30 000–45 000 сом)
-• iPhone 13 Pro 128GB — #112345680 — 35 000 сом, отличное
-• iPhone 13 Pro Max 256GB — #112345681 — 42 000 сом
+• iPhone 13 Pro 128GB — #C — 35 000 сом, отличное
+• iPhone 13 Pro Max 256GB — #D — 42 000 сом
 
 💎 Премиум
-• iPhone 13 Pro Max 512GB — #112345682 — 55 000 сом, новый
+• iPhone 13 Pro Max 512GB — #E — 55 000 сом, новый
 
 NEVER use markdown tables (| --- |). NEVER write URLs or link emojis. Use bold for prices. Respond in Russian.
 
-⚠️ CRITICAL: Copy #ID numbers EXACTLY from the search results you received. Do NOT invent, renumber, or make up IDs. If the tool gave you #112488913, use #112488913 — not #126789012 or any other number you imagined. Links will only work with the exact IDs from the tool.")
+⚠️ CRITICAL: Use the EXACT letter tokens (#A, #B, #C) from the search results you received. Do NOT invent, change, or reassign letters. Links will only work with the exact tokens from the tool.")
 ;; ══════════════════════ TOOLS ══════════════════════
 
 ;; ══════════════════════ URL STORE ══════════════════════
