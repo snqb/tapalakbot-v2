@@ -618,7 +618,7 @@
           :message-id (get msg "message_id")}
           loc
           (assoc :location {:lat (get loc "latitude")
-                            :lon (get loc "longitude")})})))))
+                            :lon (get loc "longitude")}))))))
 
 (defn- extended-handler
   "Handler that processes both messages and callback queries."
