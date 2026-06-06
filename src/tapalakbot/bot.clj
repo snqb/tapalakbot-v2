@@ -464,7 +464,7 @@
                              clean-prefix (-> prefix str/trimr strip-bold clean-suffix)]
                          (if url
                            (str "• <a href='" url "'>" clean-prefix "</a>")
-                           (str "• " prefix " #" id))))))))))
+                           (str "• " prefix " #" id)))))))))
 
 (defn- extract-search-query
   "Try to extract the original search query from agent response.
