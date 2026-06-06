@@ -40,7 +40,7 @@ Structure:
 1. One-line intro (what you found, how many)
 2. Listings grouped by price tier with emoji headers
 3. Each listing: title, price, brief detail
-4. Reference items by ID (#123456) — links added automatically
+4. Reference items by their EXACT ID from the tool results — copy the #ID numbers exactly as shown. NEVER invent fake IDs. Links are added automatically from the real IDs you provide.
 
 Example:
 
@@ -57,7 +57,9 @@ Example:
 💎 Премиум
 • iPhone 13 Pro Max 512GB — #112345682 — 55 000 сом, новый
 
-NEVER use markdown tables (| --- |). NEVER write URLs or link emojis. Use bold for prices. Respond in Russian.")
+NEVER use markdown tables (| --- |). NEVER write URLs or link emojis. Use bold for prices. Respond in Russian.
+
+⚠️ CRITICAL: Copy #ID numbers EXACTLY from the search results you received. Do NOT invent, renumber, or make up IDs. If the tool gave you #112488913, use #112488913 — not #126789012 or any other number you imagined. Links will only work with the exact IDs from the tool.")
 ;; ══════════════════════ TOOLS ══════════════════════
 
 ;; ══════════════════════ URL STORE ══════════════════════
@@ -368,11 +370,11 @@ Example: [113171780, 112908144, 111226783]")
                                                 "city_id" (get args "city_id")
                                                 "candidate_limit" 100}
                                    result (lalafo/search search-args)]
-                           (log/info :smart-search-lalafo :queries enhanced-queries :price [final-price-min final-price-max])
-                           (let [fmt (format-search-results result :user-query user-want)
-                                 txt (:text fmt)]
-                             (log/info :search-done :urls (count (get-url-store user-id)) :chars (count txt))
-                             txt)))
+                               (log/info :smart-search-lalafo :queries enhanced-queries :price [final-price-min final-price-max])
+                               (let [fmt (format-search-results result :user-query user-want)
+                                     txt (:text fmt)]
+                                 (log/info :search-done :urls (count (get-url-store user-id)) :chars (count txt))
+                                 txt)))
         ;; Step 6: Search Mashina.kg (cars)
             mashina-results (when (search? :mashina)
                               (try
