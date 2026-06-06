@@ -20,7 +20,10 @@
 (def system-prompt
   "You are TapalakBot — Multi-platform marketplace search assistant for Kyrgyzstan.
 Searches Lalafo.kg, Mashina.kg (cars), and Bazar.kg.
-Speak Russian.
+
+## LANGUAGE
+
+You are a RUSSIAN bot. Think in Russian. Respond ONLY in Russian. Never use English in your responses. Respond in Russian — even your internal reasoning should be in Russian.
 
 ## CRITICAL RULE — you MUST follow this
 
@@ -31,11 +34,10 @@ When user wants to BUY something (any product: phone, laptop, clothes, etc.) —
 1. **Purchase queries** (user wants to buy something) → IMMEDIATELY call smart_search with what user wants. No preamble, no questions if brand/model given.
 2. **Advice questions** (not buying, just asking) → answer from knowledge. Don't call smart_search.
 3. **Vague queries** (no brand/model at all) → ask ONE clarifying question.
-4. **Exclude accessories** — NEVER show cables, chargers, cases, screen protectors, styluses, Bluetooth gadgets, repair services, or accessory sets. Only show the actual product the user asked for.
 
 ## Response format
 
-Show 8-15 listings when available. Drop to 5-8 only if few real products exist. Respond in Russian. Max 3000 chars.
+Show 5-8 listings. Respond in Russian. Max 3000 chars.
 
 Structure:
 1. One-line intro (what you found, how many)
@@ -203,32 +205,36 @@ Example: [113171780, 112908144, 111226783]")
               ]
           (if (zero? found)
             {:text (get data "message" "Nothing found.") :url-store {}}
-            {:text
-             (str "🔍 Showing " (count relevant) " relevant candidates"
-                  (str " (from " raw " raw listings across " pages " pages)")
-                  (when truncated " [truncated]")
-                  (if (>= (count relevant) 7)
-                    "\nSTRICT: show 15-25 listings from these candidates in the final answer. Include older/budget actual items with caveats if needed. Cover as many relevant listings as possible — users want to see the full market."
-                    (str "\nNOTE: Only " (count relevant) " relevant candidates remained after filtering; tell the user the market is thin instead of pretending there are many."))
-                  "\n"
-                  (str/join "\n"
-                            (for [item relevant]
-                              (let [item-id (str (get item "id"))
-                                    url (get item "url" "")
-                                    price (get item "price")
-                                    price-str (if price
-                                                (str (format "%,.0f" (double price)) " " (get item "currency" "KGS"))
-                                                "price unknown")
-                                    desc (get item "desc" "")]
+            (do
+              (log/info :format-search :found found :raw raw :safe-items (count safe-items) :relevant (count relevant))
+              (when (pos? (count relevant))
+                (log/info :format-sample :first-item (-> (first relevant) (select-keys ["id" "title" "price"]))))
+              {:text}
+              (str "🔍 Showing " (count relevant) " relevant candidates"
+                   (str " (from " raw " raw listings across " pages " pages)")
+                   (when truncated " [truncated]")
+                   (if (>= (count relevant) 7)
+                     "\nSTRICT: show 15-25 listings from these candidates in the final answer. Include older/budget actual items with caveats if needed. Cover as many relevant listings as possible — users want to see the full market."
+                     (str "\nNOTE: Only " (count relevant) " relevant candidates remained after filtering; tell the user the market is thin instead of pretending there are many."))
+                   "\n"
+                   (str/join "\n"
+                             (for [item relevant]
+                               (let [item-id (str (get item "id"))
+                                     url (get item "url" "")
+                                     price (get item "price")
+                                     price-str (if price
+                                                 (str (format "%,.0f" (double price)) " " (get item "currency" "KGS"))
+                                                 "price unknown")
+                                     desc (get item "desc" "")]
                               ;; Store URL for post-LLM citation (per-user)
-                                (when (and item-id (not (str/blank? url)) *current-user-id*)
-                                  (swap! url-store assoc-in [*current-user-id* item-id] url))
+                                 (when (and item-id (not (str/blank? url)) *current-user-id*)
+                                   (swap! url-store assoc-in [*current-user-id* item-id] url))
                               ;; Format WITHOUT URL — LLM doesn't see it
-                                (str "- #" item-id " " (get item "title" "")
-                                     " | " price-str
-                                     (when (not (str/blank? desc))
-                                       (str " | " desc)))))))
-             :url-store {}}))))))
+                                 (str "- #" item-id " " (get item "title" "")
+                                      " | " price-str
+                                      (when (not (str/blank? desc))
+                                        (str " | " desc)))))))
+              :url-store {})))))))
 
 (defn- format-research-results
   "Format web research results."
@@ -368,9 +374,12 @@ Example: [113171780, 112908144, 111226783]")
                                                 "price_max" final-price-max
                                                 "city_id" (get args "city_id")
                                                 "candidate_limit" 100}
-                                   result (lalafo/search search-args)]
-                               (log/info :smart-search-lalafo :queries enhanced-queries :price [final-price-min final-price-max])
-                               (:text (format-search-results result :user-query user-want))))
+                                   result (lalafo/search search-args)]))
+            (log/info :smart-search-lalafo :queries enhanced-queries :price [final-price-min final-price-max])
+            (let [formatted (format-search-results result :user-query user-want)]
+              (log/info :search-result :url-store-size (count (t/get-url-store user-id))
+                        :text-len (count (:text formatted)))
+              (:text formatted))
         ;; Step 6: Search Mashina.kg (cars)
             mashina-results (when (search? :mashina)
                               (try
@@ -401,14 +410,12 @@ Example: [113171780, 112908144, 111226783]")
 (def tools
   [{:name "smart_search"
     :description "Multi-platform marketplace search. Searches Lalafo.kg + Mashina.kg + Bazar.kg simultaneously. Takes what user wants to buy, generates optimal search queries, and returns curated results from all Kyrgyz marketplaces. Use for ANY purchase/search intent."
-    :schema {"type" "object"
-             "properties"
-             {"user_want" {"type" "string" "description" "What the user wants to buy. Example: 'iphone 13 до 30000', 'планшет со стилусом'"}
-              "price_min" {"type" "integer" "description" "Minimum price in KGS (optional)"}
-              "price_max" {"type" "integer" "description" "Maximum price in KGS (optional)"}
-              "category_id" {"type" "integer" "description" "Lalafo category ID (optional)"}
-              "city_id" {"type" "integer" "description" "City ID (103184=Bishkek, 103244=Osh)"}}
-             "required" ["user_want"]}
+    :schema [:map
+             [:user_want {:optional false} :string]
+             [:price_min {:optional true} :int]
+             [:price_max {:optional true} :int]
+             [:category_id {:optional true} :int]
+             [:city_id {:optional true} :int]]
     :execute smart-search-execute}])
 
 ;; ══════════════════════ PRE-HOOK ══════════════════════
@@ -435,7 +442,7 @@ Example: [113171780, 112908144, 111226783]")
       :tools tools
       :model :kimi-k2
       :provider :openrouter
-      :max-turns 8
+      :max-turns 12
       :nudges {:required-steps ["smart_search"]
                :max-step-blocks 1
                :recover-tool-errors? true}

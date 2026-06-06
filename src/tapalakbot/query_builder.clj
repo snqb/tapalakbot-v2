@@ -25,7 +25,15 @@
     :type :max}
    {:regex #"(?:от|мин|минимум|не менее)\s*(\d[\d\s]*)\s*(?:к|кгс|сом|тенге)?"
     :type :min}
-   {:regex #"(\d[\d\s]*)\s*[-–—]\s*(\d[\d\s]*)\s*(?:к|тыс|кгс|сом)?"
+   ;; Range: "15-30 тыс", "1000-2000 сом" — requires price word or suffix
+   ;; Model numbers like "м2-3" (M2-M3 chips) are NOT prices
+   {:regex #"(?:цена|бюджет|прайс|[оo]т|[дd]о)\s*(\d[\d\s]*)\s*[-–—]\s*(\d[\d\s]*)\s*(?:к|тыс|кгс|сом)?"
+    :type :range}
+   ;; Range with currency suffix (no price word needed): "15000-35000 сом"
+   {:regex #"(\d[\d\s]*)\s*[-–—]\s*(\d[\d\s]*)\s*(?:к|тыс|кгс|сом)"
+    :type :range}
+   ;; Plain range with large numbers (>=1000): "10000-20000" — but NOT "2-3" (model numbers)
+   {:regex #"(\d{4,}[\d\s]*)\s*[-–—]\s*(\d{4,}[\d\s]*)"
     :type :range}
    {:regex #"(?:бюджет|цена|стоимость)\s*(?:до\s*)?(\d[\d\s]*)\s*(?:к|кгс|сом)?"
     :type :max}
