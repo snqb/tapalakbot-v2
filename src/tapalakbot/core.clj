@@ -339,6 +339,9 @@ Example: [113171780, 112908144, 111226783]")
         user-want (get args "user_want")
         ;; Step 1: Parse user intent with QueryBuilder
         qb-result (qb/build user-want :use-llm? true)
+        ;; Helper: check if platform should be searched (handles :all)
+        platforms (:platforms qb-result)
+        search? (fn [p] (or (some #{p} platforms) (some #{:all} platforms)))
         ;; Step 2: Generate optimal queries (LLM-based)
         {:keys [queries needs-research research-query]}
         (generate-search-queries user-want)
@@ -354,10 +357,10 @@ Example: [113171780, 112908144, 111226783]")
                              (vec (concat queries (filter #(> (count %) 2) research-terms))))
                            queries)
         ;; Step 5: Search Lalafo (if in platforms)
-        lalafo-results (when (some #{:lalafo} (:platforms qb-result))
+        lalafo-results (when (search? :lalafo)
                          (let [search-args {"queries" (take 6 enhanced-queries)
                                             "category_id" (or (get args "category_id")
-                                                               (:lalafo-category-id qb-result))
+                                                              (:lalafo-category-id qb-result))
                                             "price_min" final-price-min
                                             "price_max" final-price-max
                                             "city_id" (get args "city_id")
@@ -366,7 +369,7 @@ Example: [113171780, 112908144, 111226783]")
                            (log/info :smart-search-lalafo :queries enhanced-queries :price [final-price-min final-price-max])
                            (:text (format-search-results result :user-query user-want))))
         ;; Step 6: Search Mashina.kg (cars)
-        mashina-results (when (some #{:mashina} (:platforms qb-result))
+        mashina-results (when (search? :mashina)
                           (try
                             (let [q (or (:mashina-query qb-result) (first enhanced-queries))
                                   mr (mashina/search-cars :query q :size 10)]
@@ -377,7 +380,7 @@ Example: [113171780, 112908144, 111226783]")
                               (log/warn :mashina-search-failed (.getMessage e))
                               nil)))
         ;; Step 7: Search Bazar.kg (goods)
-        bazar-results (when (some #{:bazar} (:platforms qb-result))
+        bazar-results (when (search? :bazar)
                         (try
                           (let [q (first enhanced-queries)
                                 br (bazar/search :category (:bazar-category qb-result) :brand q)]

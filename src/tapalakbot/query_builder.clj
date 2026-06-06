@@ -131,31 +131,31 @@
                       (not (re-find #"(стиральная|посудомоечная|швейная|пишущая)\s+машина" text-lower)))
         ;; Electronics keywords
         electronics-words #{"iphone" "samsung" "xiaomi" "apple" "android"
-                           "телефон" "смартфон" "phone" "smartphone"
-                           "ноутбук" "laptop" "macbook" "笔记本"
-                           "планшет" "tablet" "ipad"
-                           "наушники" "headphones" "airpods"
-                           "видеокарта" "gpu" "rtx" "gtx"
-                           "процессор" "cpu" "processor"
-                           "монитор" "monitor" "tv" "телевизор"
-                           "кондиционер" "air conditioner" "сплит"
-                           "холодильник" "refrigerator"
-                           "стиральная" "washing"
-                           "пылесос" "vacuum"
-                           "playstation" "ps5" "ps4" "xbox" "приставка"
-                           "колонка" "speaker" "sonos" "jbl" "marshall"}
+                            "телефон" "смартфон" "phone" "smartphone"
+                            "ноутбук" "laptop" "macbook" "笔记本"
+                            "планшет" "tablet" "ipad"
+                            "наушники" "headphones" "airpods"
+                            "видеокарта" "gpu" "rtx" "gtx"
+                            "процессор" "cpu" "processor"
+                            "монитор" "monitor" "tv" "телевизор"
+                            "кондиционер" "air conditioner" "сплит"
+                            "холодильник" "refrigerator"
+                            "стиральная" "washing"
+                            "пылесос" "vacuum"
+                            "playstation" "ps5" "ps4" "xbox" "приставка"
+                            "колонка" "speaker" "sonos" "jbl" "marshall"}
         is-electronics? (boolean (some electronics-words words))
         ;; Real estate keywords
         real-estate-words #{"квартира" "apartment" "дом" "house" "комната" "room"
-                           "офис" "office" "магазин" "store" "склад" "warehouse"
-                           "аренда" "rent" "продажа" "sale" "купить" "buy"
-                           "снять" "нежилое" "commercial" "коммерческая"}
+                            "офис" "office" "магазин" "store" "склад" "warehouse"
+                            "аренда" "rent" "продажа" "sale" "купить" "buy"
+                            "снять" "нежилое" "commercial" "коммерческая"}
         is-real-estate? (boolean (some real-estate-words words))]
     {:platforms (cond
-                 is-auto? [:mashina :bazar]  ;; Cars: Mashina (primary) + Bazar
-                 is-electronics? [:lalafo :bazar]  ;; Electronics: Lalafo + Bazar
-                 is-real-estate? [:lalafo]  ;; Real estate: Lalafo only
-                 :else [:lalafo :bazar])  ;; Default: Lalafo + Bazar
+                  is-auto? [:mashina :bazar]  ;; Cars: Mashina (primary) + Bazar
+                  is-electronics? [:lalafo :bazar]  ;; Electronics: Lalafo + Bazar
+                  is-real-estate? [:lalafo]  ;; Real estate: Lalafo only
+                  :else [:lalafo :bazar])  ;; Default: Lalafo + Bazar
      :is-auto? is-auto?
      :is-electronics? is-electronics?
      :is-real-estate? is-real-estate?}))
@@ -222,13 +222,18 @@ Rules:
           json-str (or (re-find #"(?s)\{.*\}" content) "{}")
           parsed (try (json/parse-string json-str true) (catch Exception _ {}))]
       (when (seq parsed)
-        {:query (:query parsed)
-         :price-min (:price_min parsed)
-         :price-max (:price_max parsed)
-         :platform (keyword (or (:platform parsed) "lalafo"))
-         :category-hint (:category_hint parsed)
-         :is-auto? (:is_auto parsed false)
-         :mashina-query (:mashina_query parsed)}))
+        (let [llm-platform (some-> (:platform parsed) (str/lower-case))
+              platform-kw (when (and llm-platform
+                                     (not= llm-platform "all")
+                                     (#{"lalafo" "mashina" "bazar"} llm-platform))
+                            (keyword llm-platform))]
+          {:query (:query parsed)
+           :price-min (:price_min parsed)
+           :price-max (:price_max parsed)
+           :platform platform-kw
+           :category-hint (:category_hint parsed)
+           :is-auto? (:is_auto parsed false)
+           :mashina-query (:mashina_query parsed)})))
     (catch Exception e
       (log/warn :query-enrich-failed :error (.getMessage e))
       nil)))
@@ -289,9 +294,15 @@ Rules:
         final-query (or (:query llm-params) clean-query text)
         final-price-min (or (:price-min llm-params) (:price-min price-params))
         final-price-max (or (:price-max llm-params) (:price-max price-params))
-        final-platforms (if (:platform llm-params)
-                          [(:platform llm-params)]
-                          (:platforms platform-params))
+        final-platforms (let [det (:platforms platform-params)
+                              llm-plat (:platform llm-params)]
+                          (cond
+                            ;; LLM overrides with specific platform
+                            llm-plat [llm-plat]
+                            ;; Deterministic detection
+                            det det
+                            ;; Fallback: all platforms
+                            :else [:lalafo :mashina :bazar]))
         ;; Step 6: Bazar category
         bazar-cat (match-bazar-category text)
         ;; Step 7: Mashina query (for cars)
@@ -383,7 +394,7 @@ Rules:
              "кнопк" "button" "клавиш"}
    ;; Score 2: weak signal (frequently co-occurs with real products)
    :weak #{"услуг" "сервис" "service" "аренда" "прокат" "rent"
-            "обмен" "trade" "бартер"}})
+           "обмен" "trade" "бартер"}})
 
 (defn- accessory-score
   "Score 0-5 for how likely an item title is an accessory/service.
@@ -433,30 +444,30 @@ Rules:
   ;; Price extraction tests
   (extract-price "кондиционер до 20к")
   ;; => {:price-max 20000}
-  
+
   (extract-price "iphone от 15000 до 30000")
   ;; => {:price-min 15000 :price-max 30000}
-  
+
   (extract-price "ноутбук бюджет 25000")
   ;; => {:price-max 25000}
-  
+
   (extract-price "macbook 5-10 тыс")
   ;; => {:price-min 5000 :price-max 10000}
-  
+
   ;; Platform detection
   (detect-platform "hyundai solaris 2020")
   ;; => {:platforms [:mashina :bazar], :is-auto? true, ...}
-  
+
   (detect-platform "iphone 13")
   ;; => {:platforms [:lalafo :bazar], :is-electronics? true, ...}
-  
+
   (detect-platform "квартира в бишкеке")
   ;; => {:platforms [:lalafo], :is-real-estate? true, ...}
-  
+
   ;; Full build
   (build "кондиционер до 20к")
   (build "hyundai solaris 2020 до 800000")
   (build "iphone 13 pro max")
-  
+
   ;; Without LLM
   (parse "roутер до 4000"))
