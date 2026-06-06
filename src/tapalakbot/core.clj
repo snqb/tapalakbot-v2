@@ -40,7 +40,7 @@ Structure:
 1. One-line intro (what you found, how many)
 2. Listings grouped by price tier with emoji headers
 3. Each listing: title, price, brief detail
-4. Reference items by their EXACT ID from the tool results — copy the #ID numbers exactly as shown. NEVER invent fake IDs. Links are added automatically from the real IDs you provide.
+4. Reference items by their token (#A, #B, #C) — links added automatically. Each item in the search results has a letter token. Use THAT letter, not a different one.
 
 Example:
 
@@ -223,14 +223,17 @@ Example: [113171780, 112908144, 111226783]")
                                     desc (get item "desc" "")]
                               ;; Store URL + title for post-LLM citation (per-user)
                                 (when (and item-id (not (str/blank? url)) *current-user-id*)
-                                  (swap! url-store assoc-in [*current-user-id* item-id]
-                                         {:url url
-                                          :title (get item "title" "")}))
-                              ;; Format WITHOUT URL — LLM doesn't see it
-                                (str "- #" item-id " " (get item "title" "")
-                                     " | " price-str
-                                     (when (not (str/blank? desc))
-                                       (str " | " desc)))))))
+                                  (let [letter (str (char (+ 65 (count (get @url-store *current-user-id* {})))))]
+                                    (swap! url-store assoc-in [*current-user-id* letter]
+                                           {:url url
+                                            :title (get item "title" "")
+                                            :item-id item-id})))
+                              ;; Format with letter token — LLM uses #A, #B etc
+                                (let [letter (str (char (+ 65 (count (get-in @url-store [*current-user-id*] {})))))]
+                                  (str "- #" letter " " (get item "title" "")
+                                       " | " price-str
+                                       (when (not (str/blank? desc))
+                                         (str " | " desc))))))))
              :url-store {}}))))))
 
 (defn- format-research-results

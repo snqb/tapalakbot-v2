@@ -454,61 +454,23 @@
       (log/info :citation-sample :first-3 (take 3 url-store)))
     (if (empty? url-store)
       text
-      (let [;; Strip markdown bold from prefix to avoid <b> inside <a> nesting errors
-            strip-bold (fn [s] (str/replace s #"\*\*([^*]+)\*\*" "$1"))
-            ;; Strip trailing dashes/commas to avoid double-punctuation
+      (let [strip-bold (fn [s] (str/replace s #"\*\*([^*]+)\*\*" "$1"))
             clean-suffix (fn [s] (str/replace s #"\s*[—–,-]+\s*$" ""))
-            ;; Build keyword index for title-based fallback matching
-            ;; {lowercase-keyword → [id url title]}
-            keyword-index
-            (reduce-kv (fn [idx id entry]
-                         (let [entry (if (string? entry) {:url entry} entry)
-                               title-lower (str/lower-case (:title entry ""))
-                               keywords (str/split title-lower #"\s+")]
-                           (reduce (fn [idx kw]
-                                     (if (> (count kw) 3)
-                                       (update idx kw (fnil conj []) {:id id :url (:url entry) :title title-lower})
-                                       idx))
-                                   idx keywords)))
-                       {} url-store)
-            ;; Track which IDs were found/missing
             missing-ids (atom [])]
         (let [result
-              (str/replace text #"(?:•\s+)([^\n]*?)\s*#(\d+)"
-                           (fn [[_ prefix id]]
-                             (let [entry (get url-store id)
+              ;; Replace #A, #B, #C etc. with clickable links
+              (str/replace text #"(?:•\s+)([^\n]*?)\s*#([A-Z])"
+                           (fn [[_ prefix letter]]
+                             (let [entry (get url-store letter)
                                    entry (when entry (if (string? entry) {:url entry} entry))
                                    url (:url entry)
-                                   clean-prefix (-> prefix str/trimr strip-bold clean-suffix)]
+                                   cp (-> prefix str/trimr strip-bold clean-suffix)]
                                (if url
-                                 (do
-                                   (str "• <a href='" url "'>" clean-prefix "</a>"))
-                                 ;; Fallback: try title-based matching
-                                 (let [prefix-lower (str/lower-case (str/trimr prefix))
-                                       prefix-words (str/split prefix-lower #"\s+")
-                                       ;; Find best match by counting shared keywords
-                                       matches (reduce
-                                                (fn [best word]
-                                                  (if-let [candidates (get keyword-index word)]
-                                                    (reduce (fn [b c]
-                                                              (let [overlap (count (filter #(str/includes? (:title c) %) prefix-words))]
-                                                                (if (> overlap (:score b 0))
-                                                                  {:id (:id c) :url (:url c) :score overlap}
-                                                                  b)))
-                                                            best candidates)
-                                                    best))
-                                                {:score 0}
-                                                prefix-words)]
-                                   (if (pos? (:score matches 0))
-                                     (do
-                                       (log/info :citation-fallback-match :used-id id :matched-id (:id matches) :score (:score matches))
-                                       (str "• <a href='" (:url matches) "'>" clean-prefix "</a>"))
-                                     (do
-                                       (swap! missing-ids conj id)
-                                       (str "• " prefix " #" id))))))))]
+                                 (str "• <a href='" url "'>" cp "</a>")
+                                 (do (swap! missing-ids conj letter)
+                                     (str "• " prefix " #" letter)))))))]
           (when (seq @missing-ids)
-            (log/info :citation-missing-ids :count (count @missing-ids) :ids @missing-ids
-                      :store-sample (take 3 (keys url-store))))
+            (log/info :citation-missing :ids @missing-ids :store-sample (take 5 (keys url-store))))
           result)))))
 
 (defn- extract-search-query
