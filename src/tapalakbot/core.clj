@@ -371,8 +371,8 @@ Example: [113171780, 112908144, 111226783]")
                            (log/info :smart-search-lalafo :queries enhanced-queries :price [final-price-min final-price-max])
                            (let [fmt (format-search-results result :user-query user-want)
                                  txt (:text fmt)]
-                             (log/info :search-done :urls (count (t/get-url-store user-id)) :chars (count txt))
-                             txt))
+                             (log/info :search-done :urls (count (get-url-store user-id)) :chars (count txt))
+                             txt)))
         ;; Step 6: Search Mashina.kg (cars)
             mashina-results (when (search? :mashina)
                               (try
