@@ -11,6 +11,7 @@
             [clj-harness.telegram :as tg]
             [clj-harness.telegram.format :as fmt]
             [clj-harness.core :as hc]
+            [clojure.core.async :refer [<!!]]
             [clojure.string :as str]
             [clojure.tools.logging :as log]))
 
@@ -473,7 +474,8 @@
     (str/trim user-text)))
 
 (defn- process-agent-message
-  "Process a single agent message with streaming. Returns nil."
+  "Process a single agent message with streaming. Uses event bus for phase tracking.
+   Returns nil."
   [{:keys [chat-id user-id text]}]
   (let [uid (str "tg-" user-id)
         bot @t/tapalakbot
@@ -481,48 +483,71 @@
         buf (StringBuilder.)
         last-edit (atom 0)
         last-typing (atom 0)
-        phase (atom :initial)]
+        events-ch (hc/event-source)]
+    ;; Send initial thinking placeholder
     (let [msg (tg/send-message chat-id "💭 ..." :parse-mode nil)]
       (reset! thinking-msg-id (some-> msg (get "result") (get "message_id"))))
-    (try
-      (let [stream-cb (fn [delta]
+    ;; Event consumer thread — processes typed events as they arrive
+    (let [consumer
+          (future
+            (try
+              (loop []
+                (let [ev (<!! events-ch)]
+                  (when ev
+                    (case (:type ev)
+                      :text/delta
+                      (when-let [delta (:text ev)]
                         (.append buf delta)
                         (log/info :stream-delta :len (count delta) :total (.length buf))
-                        (reset! phase :streaming)
                         (let [now (System/currentTimeMillis)]
                           (when (> (- now @last-typing) 4000)
                             (reset! last-typing now)
-                            (try (tg/send-typing chat-id) (catch Exception _))))
-                        (let [now (System/currentTimeMillis)
-                              elapsed (- now @last-edit)
-                              msg-id @thinking-msg-id]
-                          (when (and (> elapsed 1500)
-                                     (> (.length buf) 30)
-                                     msg-id)
-                            (reset! last-edit now)
-                            (try
-                              (let [preview (-> (.toString buf)
-                                                strip-tables
-                                                (citation-replace uid))
-                                    html (fmt/md->html preview)]
-                                (tg/edit-message chat-id msg-id html :parse-mode "HTML"))
-                              (catch Exception e
-                                (log/warn e :stream-edit-fail))))))
-            status-cb (fn [status]
-                        (reset! phase :tool)
+                            (try (tg/send-typing chat-id) (catch Exception _)))
+                          (let [elapsed (- now @last-edit)]
+                            (when (and (> elapsed 1500)
+                                       (> (.length buf) 30)
+                                       @thinking-msg-id)
+                              (reset! last-edit now)
+                              (try
+                                (let [preview (-> (.toString buf) strip-tables (citation-replace uid))
+                                      html (fmt/md->html preview)]
+                                  (tg/edit-message chat-id @thinking-msg-id html :parse-mode "HTML"))
+                                (catch Exception e
+                                  (log/warn e :stream-edit-fail)))))))
+
+                      :phase/starting
+                      (when @thinking-msg-id
+                        (try (tg/edit-message chat-id @thinking-msg-id "🧠 Анализирую запрос..." :parse-mode nil)
+                             (catch Exception _)))
+
+                      :tool/start
+                      (let [label (case (:tool-name ev)
+                                    "smart_search" "🔍 Ищу на Lalafo..."
+                                    (str "🔧 " (:tool-name ev) "..."))]
                         (.setLength buf 0)
-                        (when-let [msg-id @thinking-msg-id]
-                          (try
-                            (tg/edit-message chat-id msg-id status :parse-mode nil)
-                            (catch Exception e
-                              (log/warn e :status-edit-fail)))))
-            result (do
+                        (when @thinking-msg-id
+                          (try (tg/edit-message chat-id @thinking-msg-id label :parse-mode nil)
+                               (catch Exception _))))
+
+                      (:phase/done :phase/max-turns :error/fatal)
+                      nil
+
+                      nil)
+                    (recur))))
+              (catch Exception e
+                (log/warn e :event-consumer-error))))]
+      ;; Run the agent — blocks until done
+      (let [result (do
                      (t/set-thread-user-id! uid)
                      (try
-                       (hc/handle-message-stream! bot uid text stream-cb :status-cb status-cb)
+                       (hc/handle-message-stream! bot uid text
+                                                   (fn [_] nil)  ;; deltas handled by events
+                                                   :events> events-ch)
                        (finally
                          (t/clear-thread-user-id!))))]
-        (reset! phase :done)
+        ;; Wait brief moment for final events to flush
+        (Thread/sleep 100)
+        ;; Final edit with full formatted result
         (if-let [msg-id @thinking-msg-id]
           (let [safe-text (-> (str result)
                               (str/replace #"👉 Смотри\b" "🔗")
@@ -531,9 +556,7 @@
                               strip-fake-urls)
                 html (fmt/md->html safe-text)]
             (try
-              ;; Edit with search results
               (tg/edit-message chat-id msg-id html :parse-mode "HTML")
-              ;; Add contextual track button after a short delay
               (when-let [query (extract-search-query (str result) text)]
                 (log/info :track-button-prepare :query query :user user-id)
                 (try
@@ -547,12 +570,7 @@
               (catch Exception e
                 (log/error e :final-edit-fail)
                 (tg/send-message chat-id html :parse-mode "HTML"))))
-          (tg/send-md chat-id (str result))))
-      (catch Exception e
-        (log/error e :agent-error {:user-id uid})
-        (if-let [msg-id @thinking-msg-id]
-          (tg/edit-message chat-id msg-id "❌ Ошибка. Попробуйте ещё раз." :parse-mode nil)
-          (tg/send-message chat-id "❌ Ошибка. Попробуйте ещё раз." :parse-mode nil))))))
+          (tg/send-md chat-id (str result))))))
 
 (defn- handle-agent
   "Handle agent message with per-user lock and pending queue."
