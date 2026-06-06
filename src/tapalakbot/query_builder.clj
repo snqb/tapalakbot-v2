@@ -394,7 +394,11 @@ Rules:
              "кнопк" "button" "клавиш"}
    ;; Score 2: weak signal (frequently co-occurs with real products)
    :weak #{"услуг" "сервис" "service" "аренда" "прокат" "rent"
-           "обмен" "trade" "бартер"}})
+           "обмен" "trade" "бартер"
+           "совместим" "compatible" "аналог" "analog"
+           "набор" "комплект" "set" "kit"
+           "bluetooth" "блютуз"
+           "ручк" "стилус" "stylus" "pencil" "перо"}})
 
 (defn- accessory-score
   "Score 0-5 for how likely an item title is an accessory/service.

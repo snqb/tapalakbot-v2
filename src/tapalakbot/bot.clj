@@ -455,11 +455,13 @@
     (if (empty? url-store)
       text
       (let [;; Strip markdown bold from prefix to avoid <b> inside <a> nesting errors
-            strip-bold (fn [s] (str/replace s #"\*\*([^*]+)\*\*" "$1"))]
+            strip-bold (fn [s] (str/replace s #"\*\*([^*]+)\*\*" "$1"))
+            ;; Strip trailing dashes/commas to avoid double-punctuation in link text
+            clean-suffix (fn [s] (str/replace s #"\s*[—–,-]+\s*$" ""))]
         (str/replace text #"(?:•\s+)([^\n]*?)\s*#(\d+)"
                      (fn [[_ prefix id]]
                        (let [url (get url-store id)
-                             clean-prefix (strip-bold (str/trimr prefix))]
+                             clean-prefix (-> prefix str/trimr strip-bold clean-suffix)]
                          (if url
                            (str "• <a href='" url "'>" clean-prefix "</a>")
                            (str "• " prefix " #" id)))))))))
@@ -613,10 +615,10 @@
           :user-id    (get user "id")
           :first-name (get user "first_name" "друг")
           :text       (get msg "text")
-          :message-id (get msg "message_id")}
+          :message-id (get msg "message_id")
           loc
           (assoc :location {:lat (get loc "latitude")
-                            :lon (get loc "longitude")}))))))
+                            :lon (get loc "longitude")})})))))
 
 (defn- extended-handler
   "Handler that processes both messages and callback queries."
