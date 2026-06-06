@@ -697,7 +697,7 @@
         (let [resp (get-updates-extended :offset @offset :timeout 1)
               updates (get resp "result" [])]
           (when (seq updates)
-            (log/info :poll-received :count (count updates)))
+            (log/info :poll-got-updates :count (count updates)))
           (doseq [u updates]
             (when-let [parsed (parse-update-extended u)]
               (handler-future
