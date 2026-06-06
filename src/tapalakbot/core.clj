@@ -190,10 +190,14 @@ Example: [113171780, 112908144, 111226783]")
               pages (get-in data ["stats" "pages"] 0)
               truncated (get data "truncated" false)
               items (get data "items" [])
+              ;; Pre-filter: remove obvious accessories/services deterministically
+              safe-items (if (and user-query (not (str/blank? user-query)))
+                           (qb/filter-accessories items user-query)
+                           items)
               ;; Apply relevance filter if we have many items
-              relevant (if (and user-query (not (str/blank? user-query)) (> (count items) 100))
-                         (relevance-filter items user-query)
-                         items)
+              relevant (if (and user-query (not (str/blank? user-query)) (> (count safe-items) 100))
+                         (relevance-filter safe-items user-query)
+                         safe-items)
               ;; Build url-store locally (not global atom)
               ]
           (if (zero? found)

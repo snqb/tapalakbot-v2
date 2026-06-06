@@ -208,16 +208,18 @@ Rules:
                                         (or (nil? price_min) (>= p price_min))
                                         (or (nil? price_max) (<= p price_max)))))
                                 new-items)
-                       new-items)]
+                       new-items)
+        ;; Step 2.5: Deterministic accessory pre-filter
+        clean-items (qb/filter-accessories in-budget title)]
         (log/info :track-check-budget :track-id id :new-items (count new-items) :in-budget (count in-budget))
         ;; Step 3: Mark all found items as seen
-        (doseq [item in-budget]
+        (doseq [item clean-items]
           (store/mark-item-seen! id (get item "id")))
         ;; Step 4: Update check timestamp
         (store/mark-track-checked! id)
         ;; Step 5: LLM relevance filter + send notification
-        (when (pos? (count in-budget))
-          (let [candidates (take (* 3 max-notifications-per-check) in-budget)
+        (when (pos? (count clean-items))
+          (let [candidates (take (* 3 max-notifications-per-check) clean-items)
                 relevant (filter-relevant title candidates)
                 to-send (take max-notifications-per-check relevant)]
             (log/info :track-relevance-result :track-id id :candidates (count candidates) :relevant (count relevant) :sending (count to-send))
@@ -232,7 +234,7 @@ Rules:
                     (catch Exception e
                       (log/warn :track-notify-fail :track-id id :error (.getMessage e)))))
                 (log/warn :track-invalid-user-id :track-id id :user-id user_id)))))
-        {:new-items (count in-budget) :notified? false}))
+        {:new-items (count clean-items) :notified? false}))
     (catch Exception e
       (log/error :track-check-error :track-id (:id track) :error (.getMessage e))
       {:new-items 0 :notified? false})))

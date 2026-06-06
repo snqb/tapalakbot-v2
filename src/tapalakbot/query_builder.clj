@@ -235,6 +235,29 @@ Rules:
 
 ;; ════════════════════════════ MAIN BUILDER ════════════════════════════
 
+(def ^:private condition-patterns
+  "Patterns for detecting product condition (new/used) from query text.
+   Uses simple string matching to avoid escaping issues."
+  [["новый" :new] ["новая" :new] ["новое" :new] ["новые" :new]
+   ["новьё" :new] ["запечатан" :new] ["brand new" :new]
+   ["б/у" :used] ["б.у." :used] ["бу " :used] [" бу" :used]
+   ["подержан" :used] ["бэушн" :used] ["used" :used]
+   ["с пробегом" :used]
+   ["как новый" :like-new] ["отличное состояние" :like-new]
+   ["идеальное состояние" :like-new]
+   ["восстановлен" :refurbished] ["refurbished" :refurbished]
+   ["требует ремонта" :broken] ["на запчасти" :broken]
+   ["не работает" :broken] ["битый" :broken]])
+
+(defn extract-condition
+  "Extract product condition from natural language query.
+   Returns :new, :used, :like-new, :refurbished, :broken, or nil."
+  [text]
+  (let [t (str/lower-case (or text ""))]
+    (some (fn [[pattern condition]]
+            (when (str/includes? t pattern) condition))
+          condition-patterns)))
+
 (defn build
   "Build structured search params from natural language input.
    
@@ -285,6 +308,7 @@ Rules:
                   :lalafo-category-name (:category-hint llm-params)
                   :mashina-query mashina-query
                   :bazar-category bazar-cat
+                  :condition (extract-condition text)
                   :raw-text text}]
       (log/info :query-builder-result
                 :query final-query
@@ -329,6 +353,79 @@ Rules:
    Used for agent and track creation."
   [text]
   (build text :use-llm? true))
+
+;; ════════════════════════════ ACCESSORY FILTER ════════════════════════════
+
+(def ^:private accessory-keywords
+  "Keywords in title that indicate this item is an accessory, case, charger,
+   repair service, or part — NOT the actual product the user wants.
+   Higher score = more likely to be junk. Used as deterministic pre-filter
+   before LLM relevance filtering."
+  ;; Score 5: strong accessory signal (almost certainly not the product)
+  {:strong #{"зарядк" "зарядное" "зарядный" "charger" "кабел" "кабель"
+             "адаптер" "adapter" "стекло защитное" "стекло" "плeнк"
+             "чехол" "чехоль" "case" "обложк" "ремонт" "починк"
+             "установка" "установк" "монтаж" "настройк" "прошивк"
+             "гравировк" "замена" "восстановлен"
+             "коробка" "упаковка" "box" "packaging"
+             "гарантия" "страховка" "insurance" "warranty"
+             "подарочный сертификат" "gift card"
+             "схема" "инструкция" "manual"}
+   ;; Score 3: medium signal (could be accessory but need context)
+   :medium #{"держател" "холдер" "holder" "подставк" "stand"
+             "кронштейн" "mount" "креплен" "bracket"
+             "наклейк" "стикер" "sticker" "скин" "skin"
+             "заглушк" "plug" "колпачек" "cap"
+             "аксессуар" "accessory" "дополнительн"
+             "запчаст" "spare part" "комплектующ"
+             "батарейк" "battery" "аккумулятор"
+             "переходник" "коннектор" "connector"
+             "кнопк" "button" "клавиш"}
+   ;; Score 2: weak signal (frequently co-occurs with real products)
+   :weak #{"услуг" "сервис" "service" "аренда" "прокат" "rent"
+            "обмен" "trade" "бартер"}})
+
+(defn- accessory-score
+  "Score 0-5 for how likely an item title is an accessory/service.
+   0 = seems like the real product, 5 = definitely junk.
+   Returns integer score."
+  [title]
+  (let [t (str/lower-case (or title ""))
+        strong-hits (count (filter #(str/includes? t %) (:strong accessory-keywords)))
+        medium-hits (count (filter #(str/includes? t %) (:medium accessory-keywords)))
+        weak-hits (count (filter #(str/includes? t %) (:weak accessory-keywords)))]
+    (-> 0
+        (+ (* strong-hits 5))
+        (+ (* medium-hits 3))
+        (+ (* weak-hits 2))
+        (min 15))))
+
+(defn filter-accessories
+  "Pre-filter items to remove obvious accessories/services.
+   Returns vector of items with accessory-score < threshold.
+   Default threshold: filter items scoring >=5 (strong accessory signals).
+   
+   Keeps items even with high scores if user WAS looking for accessories.
+   Example: 'чехол iphone 13' → user wants an accessory, don't filter cases."
+  ([items user-query]
+   (filter-accessories items user-query 5))
+  ([items user-query threshold]
+   (let [;; Check if user is looking FOR an accessory (not a product)
+         user-wants-accessory? (and user-query
+                                    (some #(str/includes? (str/lower-case user-query) %)
+                                          ["чехол" "зарядк" "кабел" "наушник"
+                                           "кейс" "стекло" "пленк" "адаптер"
+                                           "батарейк" "аккумулятор"]))
+         scored (mapv (fn [item]
+                        (let [title (or (get item "title") (get item :title ""))]
+                          (assoc item :_accessory-score (accessory-score title))))
+                      items)
+         filtered (if user-wants-accessory?
+                    scored  ;; User wants an accessory — show everything
+                    (filterv #(< (:_accessory-score % 0) threshold) scored))]
+     (log/info :accessory-filter :total (count items) :kept (count filtered)
+               :user-wants-accessory? user-wants-accessory?)
+     filtered)))
 
 ;; ════════════════════════════ TESTS ════════════════════════════
 
