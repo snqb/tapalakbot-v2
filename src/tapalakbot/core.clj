@@ -221,9 +221,11 @@ Example: [113171780, 112908144, 111226783]")
                                                 (str (format "%,.0f" (double price)) " " (get item "currency" "KGS"))
                                                 "price unknown")
                                     desc (get item "desc" "")]
-                              ;; Store URL for post-LLM citation (per-user)
+                              ;; Store URL + title for post-LLM citation (per-user)
                                 (when (and item-id (not (str/blank? url)) *current-user-id*)
-                                  (swap! url-store assoc-in [*current-user-id* item-id] url))
+                                  (swap! url-store assoc-in [*current-user-id* item-id]
+                                         {:url url
+                                          :title (get item "title" "")}))
                               ;; Format WITHOUT URL — LLM doesn't see it
                                 (str "- #" item-id " " (get item "title" "")
                                      " | " price-str
