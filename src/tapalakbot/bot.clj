@@ -455,7 +455,7 @@
     (if (empty? url-store)
       text
       (let [strip-bold (fn [s] (str/replace s #"\*\*([^*]+)\*\*" "$1"))
-            clean-suffix (fn [s] (str/replace s #"[—–,\s-]+$" ""))
+            clean-suffix (fn [s] (str/replace s #"\s*[—–,-]+\s*$" ""))
             missing-ids (atom [])]
         (let [result
               ;; Replace #A, #B, #C etc. with clickable links
@@ -625,7 +625,7 @@
           :message-id (get msg "message_id")}
           loc
           (assoc :location {:lat (get loc "latitude")
-                            :lon (get loc "longitude")})})))))
+                            :lon (get loc "longitude")}))))))
 
 (defn- extended-handler
   "Handler that processes both messages and callback queries."
