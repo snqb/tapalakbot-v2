@@ -368,8 +368,11 @@ Example: [113171780, 112908144, 111226783]")
                                                 "city_id" (get args "city_id")
                                                 "candidate_limit" 100}
                                    result (lalafo/search search-args)]
-                               (log/info :smart-search-lalafo :queries enhanced-queries :price [final-price-min final-price-max])
-                               (:text (format-search-results result :user-query user-want))))
+                           (log/info :smart-search-lalafo :queries enhanced-queries :price [final-price-min final-price-max])
+                           (let [fmt (format-search-results result :user-query user-want)
+                                 txt (:text fmt)]
+                             (log/info :search-done :urls (count (t/get-url-store user-id)) :chars (count txt))
+                             txt))
         ;; Step 6: Search Mashina.kg (cars)
             mashina-results (when (search? :mashina)
                               (try
@@ -400,14 +403,12 @@ Example: [113171780, 112908144, 111226783]")
 (def tools
   [{:name "smart_search"
     :description "Multi-platform marketplace search. Searches Lalafo.kg + Mashina.kg + Bazar.kg simultaneously. Takes what user wants to buy, generates optimal search queries, and returns curated results from all Kyrgyz marketplaces. Use for ANY purchase/search intent."
-    :schema {"type" "object"
-             "properties"
-             {"user_want" {"type" "string" "description" "What the user wants to buy. Example: 'iphone 13 до 30000', 'планшет со стилусом'"}
-              "price_min" {"type" "integer" "description" "Minimum price in KGS (optional)"}
-              "price_max" {"type" "integer" "description" "Maximum price in KGS (optional)"}
-              "category_id" {"type" "integer" "description" "Lalafo category ID (optional)"}
-              "city_id" {"type" "integer" "description" "City ID (103184=Bishkek, 103244=Osh)"}}
-             "required" ["user_want"]}
+    :schema [:map
+             [:user_want {:optional false} :string]
+             [:price_min {:optional true} :int]
+             [:price_max {:optional true} :int]
+             [:category_id {:optional true} :int]
+             [:city_id {:optional true} :int]]
     :execute smart-search-execute}])
 
 ;; ══════════════════════ PRE-HOOK ══════════════════════
@@ -434,7 +435,7 @@ Example: [113171780, 112908144, 111226783]")
       :tools tools
       :model :kimi-k2
       :provider :openrouter
-      :max-turns 8
+      :max-turns 12
       :nudges {:required-steps ["smart_search"]
                :max-step-blocks 1
                :recover-tool-errors? true}
