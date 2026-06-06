@@ -455,7 +455,7 @@
     (if (empty? url-store)
       text
       (let [strip-bold (fn [s] (str/replace s #"\*\*([^*]+)\*\*" "$1"))
-            clean-suffix (fn [s] (str/replace s #"\s*[—–,-]+\s*$" ""))
+            clean-suffix (fn [s] (str/replace s #"[—–,\s-]+$" ""))
             missing-ids (atom [])]
         (let [result
               ;; Replace #A, #B, #C etc. with clickable links
