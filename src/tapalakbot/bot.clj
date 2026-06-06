@@ -443,20 +443,22 @@
                    "🔗 [ссылка недоступна]"))))
 
 (defn- citation-replace
-  "Replace #ID patterns with actual URLs from the url-store.
+  "Replace #A, #B, #C letter tokens with clickable links from url-store.
+   Strips any tokens not in url-store (LLM hallucination prevention).
    str/replace with capturing group passes a vector [full-match group1]."
   [text user-id]
   (let [url-store (t/get-url-store user-id)
         store-count (count url-store)
-        id-count (count (re-seq #"#\d+" text))]
-    (log/info :citation-replace :store-size store-count :ids-in-text id-count)
+        letter-count (count (re-seq #"#[A-Z]" text))]
+    (log/info :citation-replace :store-size store-count :tokens-in-text letter-count)
     (when (pos? store-count)
       (log/info :citation-sample :first-3 (take 3 url-store)))
     (if (empty? url-store)
       text
       (let [strip-bold (fn [s] (str/replace s #"\*\*([^*]+)\*\*" "$1"))
-            clean-suffix (fn [s] (str/replace s #"\s*[—–,-]+\s*$" ""))
-            missing-ids (atom [])]
+            clean-suffix (fn [s] (str/replace s #"[—–,\s-]+$" ""))
+            missing-ids (atom [])
+            invented-ids (atom [])]
         (let [result
               ;; Replace #A, #B, #C etc. with clickable links
               (str/replace text #"(?:•\s+)([^\n]*?)\s*#([A-Z])"
@@ -468,10 +470,20 @@
                                (if url
                                  (str "• <a href='" url "'>" cp "</a>")
                                  (do (swap! missing-ids conj letter)
-                                     (str "• " prefix " #" letter))))))]
+                                     (str "• " prefix " #" letter))))))
+              ;; Pass 2: strip any #X tokens not in url-store (LLM invented them)
+              final-result (str/replace result #"#[A-Z]"
+                                        (fn [token]
+                                          (let [letter (subs token 1)]
+                                            (if (contains? url-store letter)
+                                              token
+                                              (do (swap! invented-ids conj letter)
+                                                  "[нет данных]")))))]
           (when (seq @missing-ids)
-            (log/info :citation-missing :ids @missing-ids :store-sample (take 5 (keys url-store))))
-          result)))))
+            (log/warn :citation-missing-ids :ids @missing-ids))
+          (when (seq @invented-ids)
+            (log/warn :citation-hallucination-detected :invented-tokens @invented-ids))
+          final-result)))))
 
 (defn- extract-search-query
   "Try to extract the original search query from agent response.

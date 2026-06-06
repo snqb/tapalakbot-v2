@@ -1,8 +1,7 @@
 (ns tapalakbot.core
-  "TapalakBot v2 — Multi-platform marketplace search assistant.
+  "TapalakBot v2 — Multi-platform marketplace intelligence agent.
    Uses clj-harness with direct HTTP clients for Lalafo.kg, Mashina.kg, Bazar.kg.
-     Agent (Clojure harness) → tapalakbot.lalafo/search (direct HTTP)
-                                → smart_search (query gen + search)"
+     Agent (Clojure harness) → research · market_stats · search"
   (:require
    [clj-harness.core :as h]
    [clj-harness.llm :as llm]
@@ -11,6 +10,7 @@
    [tapalakbot.mashina :as mashina]
    [tapalakbot.bazar :as bazar]
    [tapalakbot.query-builder :as qb]
+   [tapalakbot.monitor.store :as monitor-store]
    [cheshire.core :as json]
    [clojure.string :as str]
    [clojure.tools.logging :as log]))
@@ -22,15 +22,18 @@
 Searches Lalafo.kg, Mashina.kg (cars), and Bazar.kg.
 Speak Russian.
 
-## CRITICAL RULE — you MUST follow this
+## TOOL WORKFLOW — MANDATORY
 
-When user wants to BUY something (any product: phone, laptop, clothes, etc.) — you MUST call the smart_search tool FIRST. Do NOT answer from your own knowledge. Do NOT say 'I will help you find...' without calling the tool. The tool searches real Lalafo.kg listings with actual prices and links. Without it, you cannot show real products.
+⚠️ **YOU CANNOT ANSWER WITHOUT TOOLS**. Any answer that doesn't use tools will be REJECTED.
 
-## Rules
+For EVERY purchase query:
 
-1. **Purchase queries** (user wants to buy something) → IMMEDIATELY call smart_search with what user wants. No preamble, no questions if brand/model given.
-2. **Advice questions** (not buying, just asking) → answer from knowledge. Don't call smart_search.
-3. **Vague queries** (no brand/model at all) → ask ONE clarifying question.
+1. **FIRST call market_stats** — always. Even if you think you know the market.
+2. **THEN call search** — always. Your training data has NO listings.
+3. **research** — only for unfamiliar products.
+
+Do NOT answer until tools return data. Do NOT use your own knowledge for prices.
+The only exception: pure greetings, pure advice questions.
 
 ## Response format
 
@@ -56,6 +59,21 @@ Example:
 
 💎 Премиум
 • iPhone 13 Pro Max 512GB — #E — 55 000 сом, новый
+
+## ANTI-HALLUCINATION RULES
+
+**NEVER fabricate:**
+- URLs or links (lalafo.kg/..., https://...)
+- Listing IDs not in tool results
+- Prices not shown in tool output
+- Seller names, locations, or conditions not in data
+
+**Letter tokens (#A, #B, #C):**
+- Copy EXACTLY as shown in search results
+- NEVER change, renumber, or reassign letters
+- If no token in results → don't add one
+
+**If you don't have data → say so. Do not invent.**
 
 NEVER use markdown tables (| --- |). NEVER write URLs or link emojis. Use bold for prices. Respond in Russian.
 
@@ -300,6 +318,73 @@ Example: [113171780, 112908144, 111226783]")
       (str/join " " (map #(get % "title" "") (take 3 results))))
     (catch Exception _ "")))
 
+(defn- research-execute
+  "Tool: research product knowledge online."
+  [args]
+  (let [topic (get args "topic")
+        query (get args "query" topic)]
+    (try
+      (let [result (lalafo/exa-research query)
+            data (if (string? result) (json/parse-string result false) result)
+            results (get data "results" [])]
+        (if (seq results)
+          (str "🔬 Research for "" topic "":\n\n"
+               (str/join "\n"
+                         (map-indexed
+                          (fn [i r]
+                            (str (inc i) ". " (get r "title" "")
+                                 (when-let [s (get r "snippet")]
+                                   (str " — " (subs s 0 (min 200 (count s)))))))
+                          (take 5 results))))
+          "No research results found. Proceed."))
+      (catch Exception e
+        (str "Research error: " (.getMessage e))))))
+
+(def ^:private category-name-map
+  {"ноутбук" "Ноутбуки" "ноутбуки" "Ноутбуки" "laptop" "Ноутбуки"
+   "телефон" "Телефоны" "телефоны" "Телефоны" "смартфон" "Телефоны"
+   "phone" "Телефоны" "iphone" "Телефоны" "айфон" "Телефоны"
+   "планшет" "Планшеты" "планшеты" "Планшеты" "tablet" "Планшеты" "ipad" "Планшеты"
+   "телевизор" "Телевизоры" "телевизоры" "Телевизоры" "tv" "Телевизоры"
+   "авто" "Автомобили" "автомобиль" "Автомобили" "car" "Автомобили"
+   "фотоаппарат" "Фототехника" "камера" "Фототехника" "camera" "Фототехника"
+   "наушники" "Наушники" "headphones" "Наушники"
+   "роутер" "Роутеры" "роутеры" "Роутеры" "router" "Роутеры"
+   "монитор" "Мониторы" "мониторы" "Мониторы" "monitor" "Мониторы"})
+
+(defn- find-matching-category
+  [product-type]
+  (when product-type
+    (let [lower (str/lower-case product-type)]
+      (or (get category-name-map lower)
+          (some (fn [[k v]] (when (or (str/includes? lower k) (str/includes? k lower)) v))
+                category-name-map)))))
+
+(defn- market-stats-execute
+  "Tool: get real-time market price data from monitor DB."
+  [args]
+  (let [product-type (get args "product_type")
+        budget-max (get args "budget_max")
+        category-name (find-matching-category product-type)]
+    (try
+      (let [category-summaries (monitor-store/get-category-summary)
+            matching (when category-name
+                       (some #(when (= (:name %) category-name) %) category-summaries))]
+        (if matching
+          (let [avg-price (:avg_price matching)
+                min-price (:min_price matching)
+                max-price (:max_price matching)
+                item-count (:item_count matching)]
+            (str "📊 Market: " category-name "\n"
+                 "• Avg price: " (format "%,.0f" (double avg-price)) " KGS\n"
+                 "• Range: " (format "%,.0f" (double min-price)) " — " (format "%,.0f" (double max-price)) " KGS\n"
+                 "• Items: " item-count "\n"
+                 "Use this data to assess deal quality."))
+          (str "📊 No exact market data for \"" product-type "\".\n"
+               "Available categories: " (str/join ", " (map :name category-summaries)))))
+      (catch Exception e
+        (str "Market stats unavailable: " (.getMessage e))))))
+
 (defn- format-mashina-results
   "Format Mashina.kg car search results."
   [result]
@@ -339,7 +424,7 @@ Example: [113171780, 112908144, 111226783]")
                                   (when (:url item) (str "\n  " (:url item))))))
                          (take 8 listings))))))
 
-(defn- smart-search-execute
+(defn- search-execute
   "Smart search pipeline: QueryBuilder → platform routing → multi-platform search."
   [args]
   (let [user-id (or (get-thread-user-id) (get args "_user_id") "anonymous")
@@ -375,7 +460,7 @@ Example: [113171780, 112908144, 111226783]")
                                                 "city_id" (get args "city_id")
                                                 "candidate_limit" 100}
                                    result (lalafo/search search-args)]
-                               (log/info :smart-search-lalafo :queries enhanced-queries :price [final-price-min final-price-max])
+                               (log/info :search-lalafo :queries enhanced-queries :price [final-price-min final-price-max])
                                (let [fmt (format-search-results result :user-query user-want)
                                      txt (:text fmt)]
                                  (log/info :search-done :urls (count (get-url-store user-id)) :chars (count txt))
@@ -408,15 +493,29 @@ Example: [113171780, 112908144, 111226783]")
              (when bazar-results (str "\n\n" bazar-results)))))))
 
 (def tools
-  [{:name "smart_search"
-    :description "Multi-platform marketplace search. Searches Lalafo.kg + Mashina.kg + Bazar.kg simultaneously. Takes what user wants to buy, generates optimal search queries, and returns curated results from all Kyrgyz marketplaces. Use for ANY purchase/search intent."
+  [{:name "research"
+    :description "Research product knowledge online. Finds model names, specs, and buying advice. Use BEFORE searching when: the product is unfamiliar, user asks for alternatives, or user asks for advice. Skip when user names an exact model."
+    :schema [:map
+             [:topic {:optional false} :string]
+             [:query {:optional true} :string]]
+    :execute research-execute}
+
+   {:name "market_stats"
+    :description "Get real-time market price data from Kyrgyzstan marketplaces. Shows average price, price range, and item counts. Use for EVERY purchase query to assess value."
+    :schema [:map
+             [:product_type {:optional false} :string]
+             [:budget_max {:optional true} :int]]
+    :execute market-stats-execute}
+
+   {:name "search"
+    :description "Search for actual listings on Lalafo.kg, Mashina.kg, and Bazar.kg. Returns curated results with letter tokens (#A, #B, #C). Use after research and market_stats."
     :schema [:map
              [:user_want {:optional false} :string]
              [:price_min {:optional true} :int]
              [:price_max {:optional true} :int]
              [:category_id {:optional true} :int]
              [:city_id {:optional true} :int]]
-    :execute smart-search-execute}])
+    :execute search-execute}])
 
 ;; ══════════════════════ PRE-HOOK ══════════════════════
 
@@ -443,8 +542,7 @@ Example: [113171780, 112908144, 111226783]")
       :model :kimi-k2
       :provider :openrouter
       :max-turns 12
-      :nudges {:required-steps ["smart_search"]
-               :max-step-blocks 1
+      :nudges {:max-step-blocks 2
                :recover-tool-errors? true}
       :pre-hook pre-hook
       :persistence (sess/create "/tmp/tapalakbot-sessions.db")
@@ -460,8 +558,8 @@ Example: [113171780, 112908144, 111226783]")
 
 (defn- run-interactive []
   (println "╔═════════════════════════════════════════════════╗")
-  (println "║  🔍 TapalakBot v2 — Lalafo.kg AI Assistant      ║")
-  (println "║  Model: Claude Sonnet 4 | Tools: search, browse, research ║")
+  (println "║  🔍 TapalakBot v2 — Marketplace Intelligence Agent      ║")
+  (println "║  Tools: research · market_stats · search ║")
   (println "╚═════════════════════════════════════════════════╝")
   (println)
   (println "Type your question or /q to quit.")
