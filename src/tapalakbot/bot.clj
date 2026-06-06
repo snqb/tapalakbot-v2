@@ -457,14 +457,22 @@
       (let [;; Strip markdown bold from prefix to avoid <b> inside <a> nesting errors
             strip-bold (fn [s] (str/replace s #"\*\*([^*]+)\*\*" "$1"))
             ;; Strip trailing dashes/commas to avoid double-punctuation
-            clean-suffix (fn [s] (str/replace s #"\s*[—–,-]+\s*$" ""))]
-        (str/replace text #"(?:•\s+)([^\n]*?)\s*#(\d+)"
-                     (fn [[_ prefix id]]
-                       (let [url (get url-store id)
-                             clean-prefix (-> prefix str/trimr strip-bold clean-suffix)]
-                         (if url
-                           (str "• <a href='" url "'>" clean-prefix "</a>")
-                           (str "• " prefix " #" id)))))))))
+            clean-suffix (fn [s] (str/replace s #"\s*[—–,-]+\s*$" ""))
+            ;; Track which IDs were found/missing
+            missing-ids (atom [])]
+        (let [result
+              (str/replace text #"(?:•\s+)([^\n]*?)\s*#(\d+)"
+                           (fn [[_ prefix id]]
+                             (let [url (get url-store id)
+                                   clean-prefix (-> prefix str/trimr strip-bold clean-suffix)]
+                               (when-not url (swap! missing-ids conj id))
+                               (if url
+                                 (str "• <a href='" url "'>" clean-prefix "</a>")
+                                 (str "• " prefix " #" id)))))]
+          (when (seq @missing-ids)
+            (log/info :citation-missing-ids :count (count @missing-ids) :ids @missing-ids
+                      :store-sample (take 3 (keys url-store))))
+          result)))))
 
 (defn- extract-search-query
   "Try to extract the original search query from agent response.
