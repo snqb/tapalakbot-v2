@@ -81,7 +81,7 @@ NEVER use markdown tables (| --- |). NEVER write URLs or link emojis. Use bold f
 
 ;; ══════════════════════ URL STORE ══════════════════════
 
-(def ^:private url-store
+(def url-store
   "Map of user-id → {item-id url}. Populated by format-search-results, consumed by bot.clj post-processing.
    Per-user to prevent race conditions between concurrent searches."
   (atom {}))
