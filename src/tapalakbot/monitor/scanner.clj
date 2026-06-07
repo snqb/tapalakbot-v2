@@ -25,11 +25,28 @@
    "аксессуар" "дополнительн" "запчаст" "комплектующ" "service"
    "аренда" "прокат"])
 
+;; Category-identity guards: keywords that disqualify an item from a category
+;; e.g. iPad category should never contain MacBooks, iPhone shouldn't contain cases
+(def ^:private category-guards
+  {"iPad"     ["macbook" "макбук" "ноутбук" "laptop" "mac book" "imac"]
+   "iPhone"   ["macbook" "макбук" "ноутбук" "laptop" "чехол" "case" "стекло" "пленк"]
+   "MacBook"  ["ipad" "айпад" "iphone" "айфон" "чехол" "case"]
+   "Samsung"  ["чехол" "case" "стекло" "пленк"]
+   "Наушники" ["чехол" "case" "подставка" "stand"]})
+
 (defn- exclude-accessory?
   "True if item title looks like an accessory or service, not the real product."
   [title]
   (let [t (str/lower-case (or title ""))]
     (some #(str/includes? t %) exclude-keywords)))
+
+(defn- wrong-category?
+  "True if item title suggests it belongs to a different category.
+   e.g. MacBook in iPad results, case in iPhone results."
+  [title category-name]
+  (when-let [guards (get category-guards category-name)]
+    (let [t (str/lower-case (or title ""))]
+      (some #(str/includes? t %) guards))))
 
 ;; ════════════════════════════ SCAN LOGIC ════════════════════════════
 
@@ -61,7 +78,8 @@
                   price (get item "price")
                   title (get item "title" "")]
               (when (and price (> price 50) (< price 500000)
-                         (not (exclude-accessory? title)))
+                         (not (exclude-accessory? title))
+                         (not (wrong-category? title name)))
                 (swap! all-items assoc item-id item)))))
         (catch Exception e
           (log/warn :scan-query-error :category name :query q :error (.getMessage e)))))
