@@ -483,14 +483,25 @@
             invented-ids (atom [])]
         (let [result
               ;; Replace #A, #B, #C etc. with clickable links
+              ;; ALWAYS use the real title from url-store — LLM's text is just organizational
               (str/replace text #"(?:•\s+)([^\n]*?)\s*#([A-Z])"
                            (fn [[_ prefix letter]]
                              (let [entry (get url-store letter)
                                    entry (when entry (if (string? entry) {:url entry} entry))
                                    url (:url entry)
-                                   cp (-> prefix str/trimr strip-bold clean-suffix)]
+                                   real-title (:title entry "")
+                                   llm-text (-> prefix str/trimr strip-bold clean-suffix)]
+                               ;; Log if LLM fabricated a different title
+                               (when (and (not (str/blank? real-title))
+                                         (not (str/blank? llm-text))
+                                         (> (count llm-text) 3)
+                                         (not (str/includes? (str/lower-case llm-text)
+                                                             (str/lower-case (subs real-title 0 (min 10 (count real-title)))))))
+                                 (log/warn :citation-title-mismatch :letter letter
+                                           :llm-text llm-text :real-title real-title))
                                (if url
-                                 (str "• <a href='" url "'>" cp "</a>")
+                                 ;; Use real title from url-store, not LLM's potentially fabricated text
+                                 (str "• <a href='" url "'>" real-title "</a>")
                                  (do (swap! missing-ids conj letter)
                                      (str "• " prefix " #" letter))))))
               ;; Pass 2: strip any #X tokens not in url-store (LLM invented them)

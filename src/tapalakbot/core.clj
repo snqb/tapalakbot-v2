@@ -175,7 +175,7 @@ Example: [113171780, 112908144, 111226783]")
                                          "content" (str "User is looking for: " user-query "\n\nListings:\n" items-text
                                                         "\n\nReturn JSON array of relevant listing IDs.")}]]
                           (try
-                            (let [resp (llm/llm :kimi-k2 messages [] :provider :openrouter :max-tokens 1000)
+                            (let [resp (llm/llm :deepseek-v4-pro messages [] :provider :openrouter :max-tokens 2000)
                                   content (get-in resp ["choices" 0 "message" "content"])
                                   id-set (set (parse-id-array content))]
                               (filter #(contains? id-set (get % "id")) chunk))
@@ -209,25 +209,19 @@ Example: [113171780, 112908144, 111226783]")
               pages (get-in data ["stats" "pages"] 0)
               truncated (get data "truncated" false)
               items (get data "items" [])
-              ;; Pre-filter: remove obvious accessories/services deterministically
-              safe-items (if (and user-query (not (str/blank? user-query)))
-                           (qb/filter-accessories items user-query)
-                           items)
-              ;; Apply relevance filter if we have many items
-              relevant (if (and user-query (not (str/blank? user-query)) (> (count safe-items) 100))
-                         (relevance-filter safe-items user-query)
-                         safe-items)
+              ;; Use LLM-based relevance filter (not regexes) — LLM understands context better
+              relevant (if (and user-query (not (str/blank? user-query)) (> (count items) 3))
+                         (relevance-filter items user-query)
+                         items)
               ;; Build url-store locally (not global atom)
               ]
           (if (zero? found)
             {:text (get data "message" "Nothing found.") :url-store {}}
             {:text
-             (str "🔍 Showing " (count relevant) " relevant candidates"
+              (str "🔍 Showing " (count relevant) " relevant candidates"
                   (str " (from " raw " raw listings across " pages " pages)")
                   (when truncated " [truncated]")
-                  (if (>= (count relevant) 7)
-                    "\nSTRICT: show 15-25 listings from these candidates in the final answer. Include older/budget actual items with caveats if needed. Cover as many relevant listings as possible — users want to see the full market."
-                    (str "\nNOTE: Only " (count relevant) " relevant candidates remained after filtering; tell the user the market is thin instead of pretending there are many."))
+                  ". STRICT: Use the title in [brackets] for each item. Each item has a real Lalafo URL — include it. DO NOT invent iPhones for items that are MacBooks/accessories. Check the URL slug."
                   "\n"
                   (str/join "\n"
                             (for [item relevant]
@@ -245,10 +239,12 @@ Example: [113171780, 112908144, 111226783]")
                                            {:url url
                                             :title (get item "title" "")
                                             :item-id item-id})))
-                              ;; Format with letter token — LLM uses #A, #B etc
+                              ;; Format with letter token — include REAL URL so LLM/User can verify
                                 (let [letter (str (char (+ 65 (count (get-in @url-store [*current-user-id*] {})))))]
-                                  (str "- #" letter " " (get item "title" "")
+                                  (str "- #" letter " [" (get item "title" "") "]"
                                        " | " price-str
+                                       (when (not (str/blank? url))
+                                         (str " | " url))
                                        (when (not (str/blank? desc))
                                          (str " | " desc))))))))
              :url-store {}}))))))
@@ -284,7 +280,7 @@ Example: [113171780, 112908144, 111226783]")
         (log/warn :query-gen-all-attempts-failed :user-want user-want))
       (let [result
             (try
-              (let [resp (llm/llm :kimi-k2 messages [] :provider :openrouter :max-tokens 500)
+              (let [resp (llm/llm :deepseek-v4-pro messages [] :provider :openrouter :max-tokens 500)
                     content (get-in resp ["choices" 0 "message" "content"])]
                 (if (or (nil? content) (str/blank? content))
                   (do (log/warn :query-gen-empty-content :attempt attempts)
@@ -316,6 +312,36 @@ Example: [113171780, 112908144, 111226783]")
           results (get data "results" [])]
       (str/join " " (map #(get % "title" "") (take 3 results))))
     (catch Exception _ "")))
+
+(def ^:private category-picker-prompt
+  "You are a category matcher for Lalafo.kg classifieds in Kyrgyzstan.
+Given a user's search intent and available categories, return the EXACT category_id.
+
+Rules:
+1. Pick the MOST SPECIFIC matching category (e.g. 'Mobile Phones', not 'Electronics')
+2. If no good match, return null
+3. Return ONLY: {\"category_id\": N} or {\"category_id\": null}")
+
+(defn- resolve-category
+  "Use LLM to find the right Lalafo category for a user query."
+  [user-query]
+  (try
+    (let [categories (lalafo/search-categories user-query)
+          messages [{:role "system" :content category-picker-prompt}
+                    {:role "user" :content (str "Query: " user-query "\n\n" categories)}]
+          resp (llm/llm :deepseek-v4-pro messages [] :provider :openrouter :max-tokens 300)
+          content (get-in resp ["choices" 0 "message" "content"])]
+      (when content
+        (let [cat-id (some-> content
+                            (re-find #"\"category_id\":\s*(\d+)")
+                            second
+                            parse-long)]
+          (when cat-id
+            (log/info :category-resolved :query user-query :category-id cat-id)
+            cat-id))))
+    (catch Exception e
+      (log/warn :category-resolution-failed :error (ex-message e))
+      nil)))
 
 (defn- research-execute
   "Tool: research product knowledge online."
@@ -409,7 +435,9 @@ Example: [113171780, 112908144, 111226783]")
                                   " — #" letter " " price-str
                                   (when (:year item) (str ", " (:year item) " г."))
                                   (when (:mileage item) (str ", " (:mileage item) " км"))
-                                  (when (:city item) (str " | " (:city item))))))
+                                  (when (:city item) (str " | " (:city item)))
+                                  (when (and url (not (str/blank? url)))
+                                    (str "\n  " url)))))
                          (take 8 listings))))))
 
 (defn- search-execute
@@ -417,11 +445,11 @@ Example: [113171780, 112908144, 111226783]")
   [args]
   (let [user-id (or (get-thread-user-id) (get args "_user_id") "anonymous")
         user-want (get args "user_want")]
-    ;; Bind dynamic var BEFORE let bindings so format-search-results can store URLs
     (binding [*current-user-id* user-id]
-      ;; Clear previous url-store for this user (fresh start)
       (let [_ (swap! url-store dissoc user-id)
-            ;; Step 1: Parse user intent with QueryBuilder
+            ;; Step 0: LLM-based category resolution
+            category-id (resolve-category user-want)
+            ;; Step 1: Parse user intent with QueryBuilder (price, platform)
             qb-result (qb/build user-want :use-llm? true)
         ;; Helper: check if platform should be searched (handles :all)
             platforms (:platforms qb-result)
@@ -443,7 +471,8 @@ Example: [113171780, 112908144, 111226783]")
         ;; Step 5: Search Lalafo (if in platforms)
             lalafo-results (when (search? :lalafo)
                              (let [search-args {"queries" (take 6 enhanced-queries)
-                                                "category_id" (or (get args "category_id")
+                                                "category_id" (or category-id
+                                                                  (get args "category_id")
                                                                   (:lalafo-category-id qb-result))
                                                 "price_min" final-price-min
                                                 "price_max" final-price-max
@@ -548,7 +577,7 @@ Example: [113171780, 112908144, 111226783]")
      {:name "tapalakbot"
       :prompt system-prompt
       :tools tools
-      :model :kimi-k2
+      :model :deepseek-v4-pro
       :provider :openrouter
       :max-turns 20
       :nudges {:max-step-blocks 3
