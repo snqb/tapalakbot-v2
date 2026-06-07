@@ -62,7 +62,7 @@ Rules:
                       "4. If no good match, return {\"category_id\": null}\n\n"
                       "Return JSON: {\"category_id\": number|null, \"category_name\": \"string\"}")
           messages [{:role "user" :content prompt}]
-          resp (llm/llm :deepseek-v4-pro messages [] :provider :openrouter :max-tokens 100)
+          resp (llm/llm :kimi-k2 messages [] :provider :openrouter :max-tokens 100)
           content (get-in resp ["choices" 0 "message" "content"])
           json-str (or (re-find #"(?s)\{.*\}" content) "{}")
           parsed (try (json/parse-string json-str true)
@@ -108,7 +108,7 @@ Rules:
                       "- Return JSON array of indices of relevant items")
           messages [{:role "user" :content prompt}]]
       (try
-        (let [resp (llm/llm :deepseek-v4-pro messages [] :provider :openrouter :max-tokens 200)
+        (let [resp (llm/llm :kimi-k2 messages [] :provider :openrouter :max-tokens 200)
               content (get-in resp ["choices" 0 "message" "content"])
               json-str (or (re-find #"(?s)\[.*\]" content) "[]")
               indices (try (json/parse-string json-str)
