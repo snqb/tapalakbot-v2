@@ -393,17 +393,23 @@ Example: [113171780, 112908144, 111226783]")
          (when (> total (count listings)) (str " из " total " объявлений")) "\n\n"
          (str/join "\n"
                    (mapv (fn [item]
-                           (let [price (get-in item [:price :amount])
+                           (let [idx (count (get @url-store *current-user-id* {}))
+                                 letter (str (char (+ 65 idx)))
+                                 price (get-in item [:price :amount])
                                  currency (get-in item [:price :currency] "KGS")
                                  price-str (if price
                                              (str (format "%,.0f" (double price)) " " currency)
-                                             "цена не указана")]
+                                             "цена не указана")
+                                 url (:url item)]
+                             ;; Store in url-store for anti-hallucination citation validation
+                             (when (and *current-user-id* url (not (str/blank? url)))
+                               (swap! url-store assoc-in [*current-user-id* letter]
+                                      {:url url :title (:title item) :item-id (str (:id item))}))
                              (str "• " (:title item)
-                                  " — " price-str
+                                  " — #" letter " " price-str
                                   (when (:year item) (str ", " (:year item) " г."))
                                   (when (:mileage item) (str ", " (:mileage item) " км"))
-                                  (when (:city item) (str " | " (:city item)))
-                                  "\n  " (:url item))))
+                                  (when (:city item) (str " | " (:city item))))))
                          (take 8 listings))))))
 
 (defn- search-execute
