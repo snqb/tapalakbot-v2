@@ -230,9 +230,8 @@ Example: [113171780, 112908144, 111226783]")
                     (str "\nNOTE: Only " (count relevant) " relevant candidates remained after filtering; tell the user the market is thin instead of pretending there are many."))
                   "\n"
                   (str/join "\n"
-                            (map-indexed
-                             (fn [i item]
-                               (let [item-id (str (get item "id"))
+                            (for [item relevant]
+                              (let [item-id (str (get item "id"))
                                     url (get item "url" "")
                                     price (get item "price")
                                     price-str (if price
@@ -241,17 +240,17 @@ Example: [113171780, 112908144, 111226783]")
                                     desc (get item "desc" "")]
                               ;; Store URL + title for post-LLM citation (per-user)
                                 (when (and item-id (not (str/blank? url)) *current-user-id*)
-                                  (let [letter (str (char (+ 65 i)))]
+                                  (let [letter (str (char (+ 65 (count (get @url-store *current-user-id* {})))))]
                                     (swap! url-store assoc-in [*current-user-id* letter]
                                            {:url url
                                             :title (get item "title" "")
                                             :item-id item-id})))
                               ;; Format with letter token — LLM uses #A, #B etc
-                                (let [letter (str (char (+ 65 i)))]
+                                (let [letter (str (char (+ 65 (count (get-in @url-store [*current-user-id*] {})))))]
                                   (str "- #" letter " " (get item "title" "")
                                        " | " price-str
                                        (when (not (str/blank? desc))
-                                         (str " | " desc)))))))))
+                                         (str " | " desc))))))))
              :url-store {}}))))))
 
 (defn- format-research-results
@@ -446,10 +445,15 @@ Example: [113171780, 112908144, 111226783]")
                                                 "candidate_limit" 100}
                                    result (lalafo/search search-args)]
                                (log/info :search-lalafo :queries enhanced-queries :price [final-price-min final-price-max])
-                               (let [fmt (format-search-results result :user-query user-want)
-                                     txt (:text fmt)]
-                                 (log/info :search-done :urls (count (get-url-store user-id)) :chars (count txt))
-                                 txt)))
+                               (try
+                                 (let [fmt (format-search-results result :user-query user-want)
+                                       txt (:text fmt)]
+                                   (log/info :search-done :urls (count (get-url-store user-id)) :chars (count txt))
+                                   txt)
+                                 (catch Exception e
+                                   (log/error :search-format-failed (.getMessage e)
+                                             :result-preview (subs result 0 (min 200 (count result))))
+                                   (str "Search error: " (.getMessage e))))))
         ;; Step 6: Search Mashina.kg (cars)
             mashina-results (when (search? :mashina)
                               (try
@@ -496,12 +500,38 @@ Example: [113171780, 112908144, 111226783]")
 (def ^:private categories-cache
   (delay (lalafo/format-categories-prompt (lalafo/fetch-categories-raw))))
 
+(def ^:private purchase-intent-pattern
+  "Patterns indicating a purchase/search intent."
+  #"(?i)(найди|ищ[уе]|купи[ть]|сколько стоит|цена|в продаже|покажи|хочу|ищу|надо|нужен|нужна|нужно|прода[ею]|до \d+|от \d+|б/у|подерж|бу\b|нов[аы]я|планшет|ноут|телефон|айфо|iphone|samsung|xiaomi|макбук|пылесос|роутер|телевиз|монитор|наушник|мышк[аи]|клавиатур|видеокарт|процессор|холодильник|стирал|велосипед|самокат|hyundai|toyota|honda|bmw|mercedes|lexus|квартир|участ[ко])")
+
+(def ^:private greeting-pattern
+  "Patterns that are just greetings (skip auto-search)."
+  #"(?i)^\s*(привет|здрав|добр[оы]й|хай|hello|hi|/start|/help)\s*$")
+
 (defn pre-hook
-  "Called before each message. Adds category info to system prompt."
+  "Called before each message. Auto-executes search for purchase queries
+   and appends real marketplace data to the system prompt."
   [user-id text session]
   (try
-    (let [categories @categories-cache]
-      categories)
+    (let [is-purchase? (and (re-find purchase-intent-pattern text)
+                            (not (re-find greeting-pattern text)))]
+      (if is-purchase?
+        (try
+          (log/info :pre-hook-auto-search :user-id user-id :query text)
+          (let [search-result (search-execute {"user_want" text})
+                has-data? (and search-result (> (count search-result) 20))]
+            (if has-data?
+              (do
+                (log/info :pre-hook-search-done :chars (count search-result))
+                (str "\n\n[REAL MARKETPLACE DATA — use ONLY these listings, do NOT invent]\n\n"
+                     search-result))
+              (do
+                (log/warn :pre-hook-search-empty :query text)
+                nil)))
+          (catch Exception e
+            (log/warn :pre-hook-search-failed (.getMessage e))
+            nil))
+        nil))
     (catch Exception _ nil)))
 
 ;; ══════════════════════ BOT FACTORY ══════════════════════
