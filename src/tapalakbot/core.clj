@@ -231,8 +231,9 @@ Example: [113171780, 112908144, 111226783]")
                     (str "\nNOTE: Only " (count relevant) " relevant candidates remained after filtering; tell the user the market is thin instead of pretending there are many."))
                   "\n"
                   (str/join "\n"
-                            (for [item relevant]
-                              (let [item-id (str (get item "id"))
+                            (map-indexed
+                             (fn [i item]
+                               (let [item-id (str (get item "id"))
                                     url (get item "url" "")
                                     price (get item "price")
                                     price-str (if price
@@ -241,17 +242,17 @@ Example: [113171780, 112908144, 111226783]")
                                     desc (get item "desc" "")]
                               ;; Store URL + title for post-LLM citation (per-user)
                                 (when (and item-id (not (str/blank? url)) *current-user-id*)
-                                  (let [letter (str (char (+ 65 (count (get @url-store *current-user-id* {})))))]
+                                  (let [letter (str (char (+ 65 i)))]
                                     (swap! url-store assoc-in [*current-user-id* letter]
                                            {:url url
                                             :title (get item "title" "")
                                             :item-id item-id})))
                               ;; Format with letter token — LLM uses #A, #B etc
-                                (let [letter (str (char (+ 65 (count (get-in @url-store [*current-user-id*] {})))))]
+                                (let [letter (str (char (+ 65 i)))]
                                   (str "- #" letter " " (get item "title" "")
                                        " | " price-str
                                        (when (not (str/blank? desc))
-                                         (str " | " desc))))))))
+                                         (str " | " desc)))))))))
              :url-store {}}))))))
 
 (defn- format-research-results
@@ -431,7 +432,9 @@ Example: [113171780, 112908144, 111226783]")
         user-want (get args "user_want")]
     ;; Bind dynamic var BEFORE let bindings so format-search-results can store URLs
     (binding [*current-user-id* user-id]
-      (let [        ;; Step 1: Parse user intent with QueryBuilder
+      ;; Clear previous url-store for this user (fresh start)
+      (let [_ (swap! url-store dissoc user-id)
+            ;; Step 1: Parse user intent with QueryBuilder
             qb-result (qb/build user-want :use-llm? true)
         ;; Helper: check if platform should be searched (handles :all)
             platforms (:platforms qb-result)
@@ -541,8 +544,8 @@ Example: [113171780, 112908144, 111226783]")
       :tools tools
       :model :kimi-k2
       :provider :openrouter
-      :max-turns 12
-      :nudges {:max-step-blocks 2
+      :max-turns 20
+      :nudges {:max-step-blocks 3
                :recover-tool-errors? true}
       :pre-hook pre-hook
       :persistence (sess/create "/tmp/tapalakbot-sessions.db")
@@ -602,7 +605,12 @@ Example: [113171780, 112908144, 111226783]")
       (println)
       @tapalakbot
       (let [result (ask query)]
-        (println result)))
+        ;; Anti-hallucination: check url-store
+        (let [url-count (count (get-url-store "terminal"))
+              has-listings? (re-find #"(?:•|-)\s+[^#]*#" result)]
+          (when (and has-listings? (zero? url-count))
+            (println "⚠️ WARNING: Response contains listings but no search was performed. May contain hallucinations."))
+          (println result))))
     ;; Interactive mode
     (run-interactive)))
 

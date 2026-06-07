@@ -433,14 +433,36 @@
       (str/replace #"\|[^\n]*\|" "")))
 
 (defn- strip-fake-urls
-  "Remove any URL that is not from a known marketplace.
-   Catches URLs with or without 🔗 prefix. LLMs hallucinate fake links."
-  [text]
-  (str/replace text #"(🔗\s*)?https?://[^\s)\]>]+"
-               (fn [[full-match _prefix]]
-                 (if (re-find #"lalafo\.kg|mashina\.kg|bazar\.kg" full-match)
-                   full-match
-                   "🔗 [ссылка недоступна]"))))
+  "Remove any URL that is not from a known marketplace AND any hallucinated listings.
+   Multi-pass protection:
+   1. Strip markdown links [text](url)
+   2. Strip raw non-marketplace URLs
+   3. Strip listing bullets without valid citation links"
+  [text user-id]
+  (let [url-store (t/get-url-store user-id)
+        valid-urls (set (map :url (vals url-store)))
+        marketplace? #(re-find #"lalafo\\.kg|mashina\\.kg|bazar\\.kg" %)
+        ;; Pass 1: Strip markdown links [text](url)
+        t1 (str/replace text #"\[([^\]]+)\]\(https?://[^\s\)]+\s*" "$1")
+        ;; Pass 2: Strip raw URLs not from marketplaces and not in url-store
+        t2 (str/replace t1 #"(🔗\s*)?https?://[^\s\)\]>]+"
+                        (fn [[full-match _prefix]]
+                          (if (or (marketplace? full-match)
+                                  (valid-urls full-match)
+                                  (valid-urls (str/replace full-match #"^🔗\s*" "")))
+                            full-match
+                            (str/replace full-match #"https?://" "⚠️"))))
+        ;; Pass 3: Strip listing bullets without valid citation
+        ;; A listing MUST have <a href="..."> to be real.
+        ;; "• Item — price" without a link tag is hallucinated.
+        t3 (str/replace t2 #"(?m)^•\s+(?!.*<a href=)([^\n]*?\d[\d\s,]*\s*(?:сом|KGS|сомов)[^\n]*)"
+                        (fn [[_ content]]
+                          (str "⚠️ [проверьте] " (str/trim content))))
+        ;; Pass 4: Strip orphaned markdown bold that looks like a fake listing
+        ;; (Bold prices without links = hallucination)
+        t4 (str/replace t3 #"\*\*([\d\s,]+)\s*(сом|KGS|сомов)\*\*"
+                        "$1 $2")]
+    t4))
 
 (defn- citation-replace
   "Replace #A, #B, #C letter tokens with clickable links from url-store.
@@ -549,7 +571,7 @@
                               (str/replace #"👉 Смотри\b" "🔗")
                               strip-tables
                               (citation-replace uid)
-                              strip-fake-urls)
+                              (strip-fake-urls uid))
                 html (fmt/md->html safe-text)]
             (try
               ;; Edit with search results
