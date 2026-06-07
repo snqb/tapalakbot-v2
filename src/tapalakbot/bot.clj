@@ -471,7 +471,7 @@
   [text user-id]
   (let [url-store (t/get-url-store user-id)
         store-count (count url-store)
-        letter-count (count (re-seq #"#[A-Z]" text))]
+        letter-count (count (re-seq #"#[A-Z]+" text))]
     (log/info :citation-replace :store-size store-count :tokens-in-text letter-count)
     (when (pos? store-count)
       (log/info :citation-sample :first-3 (take 3 url-store)))
@@ -484,7 +484,7 @@
         (let [result
               ;; Replace #A, #B, #C etc. with clickable links
               ;; ALWAYS use the real title from url-store — LLM's text is just organizational
-              (str/replace text #"(?:•\s+)([^\n]*?)\s*#([A-Z])"
+              (str/replace text #"(?:•\s+)([^\n]*?)\s*#([A-Z]+)"
                            (fn [[_ prefix letter]]
                              (let [entry (get url-store letter)
                                    entry (when entry (if (string? entry) {:url entry} entry))
@@ -505,7 +505,7 @@
                                  (do (swap! missing-ids conj letter)
                                      (str "• " prefix " #" letter))))))
               ;; Pass 2: strip any #X tokens not in url-store (LLM invented them)
-              final-result (str/replace result #"#[A-Z]"
+              final-result (str/replace result #"#[A-Z]+"
                                         (fn [token]
                                           (let [letter (subs token 1)]
                                             (if (contains? url-store letter)

@@ -82,9 +82,21 @@ NEVER use markdown tables (| --- |). NEVER write URLs or link emojis. Use bold f
 ;; ══════════════════════ URL STORE ══════════════════════
 
 (def url-store
-  "Map of user-id → {item-id url}. Populated by format-search-results, consumed by bot.clj post-processing.
-   Per-user to prevent race conditions between concurrent searches."
+  "Map of user-id → {letter-token {:url :title :item-id}}. Populated by format-search-results, consumed by bot.clj.
+   Per-user for concurrent searches. Tokens: A-Z, AA-AZ, BA-BZ, ... (base-26 like spreadsheet columns)."
   (atom {}))
+
+(defn- col-letter
+  "Convert 0-based index to spreadsheet-style column letter. 0→A, 25→Z, 26→AA, ..."
+  [n]
+  (loop [n n
+         result []]
+    (let [r (rem n 26)
+          c (char (+ 65 r))
+          q (quot n 26)]
+      (if (zero? q)
+        (apply str (cons c result))
+        (recur (dec q) (cons c result))))))
 
 (defn get-item-url
   "Get the real URL for an item ID. Returns nil if not found."
@@ -218,7 +230,7 @@ Example: [113171780, 112908144, 111226783]")
           (if (zero? found)
             {:text (get data "message" "Nothing found.") :url-store {}}
             {:text
-              (str "🔍 Showing " (count relevant) " relevant candidates"
+             (str "🔍 Showing " (count relevant) " relevant candidates"
                   (str " (from " raw " raw listings across " pages " pages)")
                   (when truncated " [truncated]")
                   ". STRICT: Use the title in [brackets] for each item. Each item has a real Lalafo URL — include it. DO NOT invent iPhones for items that are MacBooks/accessories. Check the URL slug."
@@ -234,13 +246,13 @@ Example: [113171780, 112908144, 111226783]")
                                     desc (get item "desc" "")]
                               ;; Store URL + title for post-LLM citation (per-user)
                                 (when (and item-id (not (str/blank? url)) *current-user-id*)
-                                  (let [letter (str (char (+ 65 (count (get @url-store *current-user-id* {})))))]
+                                  (let [letter (col-letter (count (get @url-store *current-user-id* {})))]
                                     (swap! url-store assoc-in [*current-user-id* letter]
                                            {:url url
                                             :title (get item "title" "")
                                             :item-id item-id})))
                               ;; Format with letter token — include REAL URL so LLM/User can verify
-                                (let [letter (str (char (+ 65 (count (get-in @url-store [*current-user-id*] {})))))]
+                                (let [letter (col-letter (count (get-in @url-store [*current-user-id*] {})))]
                                   (str "- #" letter " [" (get item "title" "") "]"
                                        " | " price-str
                                        (when (not (str/blank? url))
@@ -333,9 +345,9 @@ Rules:
           content (get-in resp ["choices" 0 "message" "content"])]
       (when content
         (let [cat-id (some-> content
-                            (re-find #"\"category_id\":\s*(\d+)")
-                            second
-                            parse-long)]
+                             (re-find #"\"category_id\":\s*(\d+)")
+                             second
+                             parse-long)]
           (when cat-id
             (log/info :category-resolved :query user-query :category-id cat-id)
             cat-id))))
@@ -353,7 +365,7 @@ Rules:
             data (if (string? result) (json/parse-string result false) result)
             results (get data "results" [])]
         (if (seq results)
-          (str "🔬 Research for "" topic "":\n\n"
+          (str "🔬 Research for " " topic " ":\n\n"
                (str/join "\n"
                          (map-indexed
                           (fn [i r]
@@ -420,7 +432,7 @@ Rules:
          (str/join "\n"
                    (mapv (fn [item]
                            (let [idx (count (get @url-store *current-user-id* {}))
-                                 letter (str (char (+ 65 idx)))
+                                 letter (col-letter idx)
                                  price (get-in item [:price :amount])
                                  currency (get-in item [:price :currency] "KGS")
                                  price-str (if price
@@ -487,7 +499,7 @@ Rules:
                                    txt)
                                  (catch Exception e
                                    (log/error :search-format-failed (.getMessage e)
-                                             :result-preview (subs result 0 (min 200 (count result))))
+                                              :result-preview (subs result 0 (min 200 (count result))))
                                    (str "Search error: " (.getMessage e))))))
         ;; Step 6: Search Mashina.kg (cars)
             mashina-results (when (search? :mashina)

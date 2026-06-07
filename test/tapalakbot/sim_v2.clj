@@ -44,7 +44,7 @@
   "Check if response contains invented listings (no real URLs).
    Returns {:pass? bool :score 0-1 :issues [...]}"
   [text url-store user-id]
-  (let [refs (re-seq #"#([A-Za-z])" text)
+        refs (re-seq #"#([A-Za-z]+)" text)
         ref-letters (set (map second refs))
         stored-letters (set (keys (get url-store user-id {})))
         ;; Any #X token not in url-store = hallucination
