@@ -67,15 +67,18 @@
      :bullet-items bullet-items}))
 
 (defn url-check
-  "Check if response contains real marketplace URLs."
+  "Check if response contains real marketplace URLs or citation tokens."
   [text url-store user-id]
   (let [stored (get url-store user-id {})
         url-count (count stored)
         marketplace-urls (re-seq #"https?://(www\.)?(lalafo\.kg|mashina\.kg)[^\s)]*" text)
-        has-direct-urls? (seq marketplace-urls)]
-    {:pass? (or (pos? url-count) has-direct-urls?)
+        has-direct-urls? (seq marketplace-urls)
+        ;; Citation tokens #A-#Z indicate real data will be linked
+        has-citations? (boolean (re-find #"#[A-Za-z]" text))]
+    {:pass? (or (pos? url-count) has-direct-urls? has-citations?)
      :url-count url-count
-     :direct-urls (count marketplace-urls)}))
+     :direct-urls (count marketplace-urls)
+     :has-citations? has-citations?}))
 
 (defn streaming-check
   "Estimate streaming quality from output."
