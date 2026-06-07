@@ -181,7 +181,7 @@
         ;; Determine platform for display
         platform-str (cond
                        (:is-auto? qb-result) "🚗 Mashina.kg"
-                       (some #{:bazar} (:platforms qb-result)) "🏪 Lalafo + Bazar"
+                       false nil
                        :else "🔍 Lalafo.kg")]
     ;; Show immediate feedback with price info
     (edit-with-buttons chat-id msg-id
@@ -441,7 +441,7 @@
   [text user-id]
   (let [url-store (t/get-url-store user-id)
         valid-urls (set (map :url (vals url-store)))
-        marketplace? #(re-find #"lalafo\\.kg|mashina\\.kg|bazar\\.kg" %)
+        marketplace? #(re-find #"lalafo\\.kg|mashina\\.kg" %)
         ;; Pass 1: Strip markdown links [text](url)
         t1 (str/replace text #"\[([^\]]+)\]\(https?://[^\s\)]+\s*" "$1")
         ;; Pass 2: Strip raw URLs not from marketplaces and not in url-store

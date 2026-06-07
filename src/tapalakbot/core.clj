@@ -1,6 +1,6 @@
 (ns tapalakbot.core
   "TapalakBot v2 — Multi-platform marketplace intelligence agent.
-   Uses clj-harness with direct HTTP clients for Lalafo.kg, Mashina.kg, Bazar.kg.
+   Uses clj-harness with direct HTTP clients for Lalafo.kg and Mashina.kg.
      Agent (Clojure harness) → research · market_stats · search"
   (:require
    [clj-harness.core :as h]
@@ -8,7 +8,6 @@
    [clj-harness.session.sqlite :as sess]
    [tapalakbot.lalafo :as lalafo]
    [tapalakbot.mashina :as mashina]
-   [tapalakbot.bazar :as bazar]
    [tapalakbot.query-builder :as qb]
    [tapalakbot.monitor.store :as monitor-store]
    [cheshire.core :as json]
@@ -19,7 +18,7 @@
 
 (def system-prompt
   "You are TapalakBot — Multi-platform marketplace search assistant for Kyrgyzstan.
-Searches Lalafo.kg, Mashina.kg (cars), and Bazar.kg.
+Searches Lalafo.kg and Mashina.kg (cars).
 Speak Russian.
 
 ## TOOL WORKFLOW — MANDATORY
@@ -408,23 +407,6 @@ Example: [113171780, 112908144, 111226783]")
                                   "\n  " (:url item))))
                          (take 8 listings))))))
 
-(defn- format-bazar-results
-  "Format Bazar.kg search results."
-  [result]
-  (let [listings (:listings result)]
-    (str "🏪 **Bazar.kg** — " (count listings) " объявлений\n\n"
-         (str/join "\n"
-                   (mapv (fn [item]
-                           (let [price (:price item)
-                                 currency (:currency item "KGS")
-                                 price-str (if price
-                                             (str (format "%,.0f" (double price)) " " currency)
-                                             "цена не указана")]
-                             (str "• " (:title item)
-                                  " — " price-str
-                                  (when (:url item) (str "\n  " (:url item))))))
-                         (take 8 listings))))))
-
 (defn- search-execute
   "Smart search pipeline: QueryBuilder → platform routing → multi-platform search."
   [args]
@@ -478,22 +460,10 @@ Example: [113171780, 112908144, 111226783]")
                                     (format-mashina-results mr)))
                                 (catch Exception e
                                   (log/warn :mashina-search-failed (.getMessage e))
-                                  nil)))
-        ;; Step 7: Search Bazar.kg (goods)
-            bazar-results (when (search? :bazar)
-                            (try
-                              (let [q (first enhanced-queries)
-                                    br (bazar/search :category (:bazar-category qb-result) :brand q)]
-                                (log/info :smart-search-bazar :query q :category (:bazar-category qb-result) :found (count (:listings br)))
-                                (when (seq (:listings br))
-                                  (format-bazar-results br)))
-                              (catch Exception e
-                                (log/warn :bazar-search-failed (.getMessage e))
-                                nil)))]
+                                  nil)))]
         ;; Combine results
         (str (when lalafo-results lalafo-results)
-             (when mashina-results (str "\n\n" mashina-results))
-             (when bazar-results (str "\n\n" bazar-results)))))))
+             (when mashina-results (str "\n\n" mashina-results)))))))
 
 (def tools
   [{:name "research"
@@ -511,7 +481,7 @@ Example: [113171780, 112908144, 111226783]")
     :execute market-stats-execute}
 
    {:name "search"
-    :description "Search for actual listings on Lalafo.kg, Mashina.kg, and Bazar.kg. Returns curated results with letter tokens (#A, #B, #C). Use after research and market_stats."
+    :description "Search for actual listings on Lalafo.kg and Mashina.kg. Returns curated results with letter tokens (#A, #B, #C). Use after research and market_stats."
     :schema [:map
              [:user_want {:optional false} :string]
              [:price_min {:optional true} :int]

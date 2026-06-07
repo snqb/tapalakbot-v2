@@ -3,7 +3,7 @@
    
    Extracts structured search params from natural language:
    - Price constraints (min/max in KGS)
-   - Platform routing (Lalafo, Mashina, Bazar)
+   - Platform routing (Lalafo, Mashina)
    - Category matching
    - Optimal search queries
    
@@ -125,7 +125,7 @@
 
 (defn detect-platform
   "Detect which platform(s) to search based on user query.
-   Returns {:platforms [:lalafo :mashina :bazar] :is-auto? bool :is-electronics? bool}."
+   Returns {:platforms [:lalafo :mashina] :is-auto? bool :is-electronics? bool}."
   [text]
   (let [text-lower (str/lower-case text)
         words (set (str/split text-lower #"\s+"))
@@ -160,39 +160,15 @@
                             "снять" "нежилое" "commercial" "коммерческая"}
         is-real-estate? (boolean (some real-estate-words words))]
     {:platforms (cond
-                  is-auto? [:mashina :bazar]  ;; Cars: Mashina (primary) + Bazar
-                  is-electronics? [:lalafo :bazar]  ;; Electronics: Lalafo + Bazar
+                  is-auto? [:mashina]  ;; Cars: Mashina
+                  is-electronics? [:lalafo :mashina]  ;; Electronics: Lalafo
                   is-real-estate? [:lalafo]  ;; Real estate: Lalafo only
-                  :else [:lalafo :bazar])  ;; Default: Lalafo + Bazar
+                  :else [:lalafo :mashina])  ;; Default: Lalafo
      :is-auto? is-auto?
      :is-electronics? is-electronics?
      :is-real-estate? is-real-estate?}))
 
 ;; ════════════════════════════ CATEGORY MATCHING ════════════════════════════
-
-(def ^:private bazar-category-map
-  "Map of intent keywords to Bazar.kg category keys."
-  {"авто" :transport-cars "машина" :transport-cars "car" :transport-cars
-   "мото" :transport-moto "мoto" :transport-moto "мотоцикл" :transport-moto
-   "запчасти" :transport-parts "запчаст" :transport-parts
-   "электроника" :electronics "телефон" :electronics "phone" :electronics
-   "ноутбук" :electronics "laptop" :electronics
-   "дом" :home-garden "home" :home-garden "сад" :home-garden
-   "дети" :children "детское" :children "child" :children
-   "одежда" :clothing "clothes" :clothing "обувь" :clothing
-   "услуги" :services "service" :services
-   "работа" :jobs "job" :jobs
-   "животные" :animals "pet" :animals "animals" :animals
-   "недвижимость" :real-estate "квартира" :real-estate})
-
-(defn match-bazar-category
-  "Match user query to Bazar.kg category key."
-  [text]
-  (let [text-lower (str/lower-case text)]
-    (or (some (fn [[kw cat]]
-                (when (str/includes? text-lower kw) cat))
-              bazar-category-map)
-        :electronics)))  ;; Default to electronics
 
 ;; ════════════════════════════ LLM-BASED ENRICHMENT ════════════════════════════
 
@@ -205,7 +181,7 @@ Return ONLY a JSON object:
   \"query\": \"clean search term (Russian/English)\",
   \"price_min\": number|null,
   \"price_max\": number|null,
-  \"platform\": \"lalafo\"|\"mashina\"|\"bazar\"|\"all\",
+  \"platform\": \"lalafo\"|\"mashina\"|\"all\",
   \"category_hint\": \"suggested Lalafo category name or null\",
   \"is_auto\": bool,
   \"mashina_query\": \"car-specific query for mashina.kg or null\"
@@ -233,7 +209,7 @@ Rules:
         (let [llm-platform (some-> (:platform parsed) (str/lower-case))
               platform-kw (when (and llm-platform
                                      (not= llm-platform "all")
-                                     (#{"lalafo" "mashina" "bazar"} llm-platform))
+                                     (#{"lalafo" "mashina"} llm-platform))
                             (keyword llm-platform))]
           {:query (:query parsed)
            :price-min (:price_min parsed)
@@ -278,12 +254,12 @@ Rules:
    - :query — clean search term
    - :price-min — minimum price in KGS (or nil)
    - :price-max — maximum price in KGS (or nil)
-   - :platforms — vector of platform keywords [:lalafo :mashina :bazar]
+   - :platforms — vector of platform keywords [:lalafo :mashina]
    - :is-auto? — true if searching for cars
    - :lalafo-category-id — matched Lalafo category ID (or nil)
    - :lalafo-category-name — matched category name (or nil)
    - :mashina-query — car-specific query for Mashina (or nil)
-   - :bazar-category — Bazar.kg category key
+   
    - :raw-text — original input text"
   [text & {:keys [use-llm?] :or {use-llm? true}}]
   (log/info :query-builder-start :text text :use-llm? use-llm?)
@@ -310,9 +286,7 @@ Rules:
                             ;; Deterministic detection
                             det det
                             ;; Fallback: all platforms
-                            :else [:lalafo :mashina :bazar]))
-        ;; Step 6: Bazar category
-        bazar-cat (match-bazar-category text)
+                            :else [:lalafo :mashina]))
         ;; Step 7: Mashina query (for cars)
         mashina-query (or (:mashina-query llm-params)
                           (when (:is-auto? platform-params) text))]
@@ -326,7 +300,7 @@ Rules:
                   :lalafo-category-id nil  ;; Will be filled by tracker at creation time
                   :lalafo-category-name (:category-hint llm-params)
                   :mashina-query mashina-query
-                  :bazar-category bazar-cat
+                  :some-cat :none
                   :condition (extract-condition text)
                   :raw-text text}]
       (log/info :query-builder-result
@@ -353,11 +327,6 @@ Rules:
   {"query" (or mashina-query query)
    "size" 20})
 
-(defn to-bazar-params
-  "Convert QueryBuilder result to Bazar API params."
-  [{:keys [query bazar-category]}]
-  {:category bazar-category
-   :brand query})
 
 ;; ════════════════════════════ CONVENIENCE ════════════════════════════
 
@@ -468,10 +437,10 @@ Rules:
 
   ;; Platform detection
   (detect-platform "hyundai solaris 2020")
-  ;; => {:platforms [:mashina :bazar], :is-auto? true, ...}
+  ;; => {:platforms [:mashina :mashina], :is-auto? true, ...}
 
   (detect-platform "iphone 13")
-  ;; => {:platforms [:lalafo :bazar], :is-electronics? true, ...}
+  ;; => {:platforms [:lalafo :mashina], :is-electronics? true, ...}
 
   (detect-platform "квартира в бишкеке")
   ;; => {:platforms [:lalafo], :is-real-estate? true, ...}
