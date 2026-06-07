@@ -243,22 +243,22 @@ Example: [113171780, 112908144, 111226783]")
                                     price-str (if price
                                                 (str (format "%,.0f" (double price)) " " (get item "currency" "KGS"))
                                                 "price unknown")
-                                    desc (get item "desc" "")]
-                              ;; Store URL + title for post-LLM citation (per-user)
+                                    desc (get item "desc" "")
+                                    ;; Compute letter ONCE — used for both store and display (fixes off-by-one)
+                                    letter (col-letter (count (get @url-store *current-user-id* {})))]
+                                ;; Store URL + title for post-LLM citation (per-user)
                                 (when (and item-id (not (str/blank? url)) *current-user-id*)
-                                  (let [letter (col-letter (count (get @url-store *current-user-id* {})))]
-                                    (swap! url-store assoc-in [*current-user-id* letter]
-                                           {:url url
-                                            :title (get item "title" "")
-                                            :item-id item-id})))
-                              ;; Format with letter token — include REAL URL so LLM/User can verify
-                                (let [letter (col-letter (count (get-in @url-store [*current-user-id*] {})))]
-                                  (str "- #" letter " [" (get item "title" "") "]"
-                                       " | " price-str
-                                       (when (not (str/blank? url))
-                                         (str " | " url))
-                                       (when (not (str/blank? desc))
-                                         (str " | " desc))))))))
+                                  (swap! url-store assoc-in [*current-user-id* letter]
+                                         {:url url
+                                          :title (get item "title" "")
+                                          :item-id item-id}))
+                                ;; Format with SAME letter token — no second read of the atom
+                                (str "- #" letter " [" (get item "title" "") "]"
+                                     " | " price-str
+                                     (when (not (str/blank? url))
+                                       (str " | " url))
+                                     (when (not (str/blank? desc))
+                                       (str " | " desc)))))))
              :url-store {}}))))))
 
 (defn- format-research-results

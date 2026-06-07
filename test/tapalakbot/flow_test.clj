@@ -77,9 +77,10 @@
 
 (defn- test-citation-replace []
   (try
-    (let [text "• Item — #12345 — 1000 KGS"]
-      ;; Test that the regex matches
-      (if (re-find #"(?:•\s+)([^\n]*?)\s*#(\d+)" text)
+    (let [text "- #A Item — 1000 KGS"]
+      ;; Test that the regex matches both dash and bullet formats
+      (if (and (re-find #"(?:[-•]\s+)([^\n]*?)\s*#([A-Z]+)" text)
+               (re-find #"#[A-Z]+" text))
         {:ok true}
         {:ok false :error "Regex did not match"}))
     (catch Exception e

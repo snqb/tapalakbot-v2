@@ -441,7 +441,7 @@
   [text user-id]
   (let [url-store (t/get-url-store user-id)
         valid-urls (set (map :url (vals url-store)))
-        marketplace? #(re-find #"lalafo\\.kg|mashina\\.kg" %)
+        marketplace? #(re-find #"lalafo\.kg|mashina\.kg" %)
         ;; Pass 1: Strip markdown links [text](url)
         t1 (str/replace text #"\[([^\]]+)\]\(https?://[^\s\)]+\s*" "$1")
         ;; Pass 2: Strip raw URLs not from marketplaces and not in url-store
@@ -484,7 +484,7 @@
         (let [result
               ;; Replace #A, #B, #C etc. with clickable links
               ;; ALWAYS use the real title from url-store — LLM's text is just organizational
-              (str/replace text #"(?:•\s+)([^\n]*?)\s*#([A-Z]+)"
+              (str/replace text #"(?:[-•]\s+)([^\n]*?)\s*#([A-Z]+)"
                            (fn [[_ prefix letter]]
                              (let [entry (get url-store letter)
                                    entry (when entry (if (string? entry) {:url entry} entry))
@@ -504,12 +504,13 @@
                                  (str "• <a href='" url "'>" real-title "</a>")
                                  (do (swap! missing-ids conj letter)
                                      (str "• " prefix " #" letter))))))
-              ;; Pass 2: strip any #X tokens not in url-store (LLM invented them)
+              ;; Pass 2: convert any remaining #X tokens to links, or strip invented ones
               final-result (str/replace result #"#[A-Z]+"
                                         (fn [token]
                                           (let [letter (subs token 1)]
-                                            (if (contains? url-store letter)
-                                              token
+                                            (if-let [entry (get url-store letter)]
+                                              (let [entry (if (string? entry) {:url entry} entry)]
+                                                (str " <a href='" (:url entry) "'>" (:title entry "") "</a>"))
                                               (do (swap! invented-ids conj letter)
                                                   "[нет данных]")))))]
           (when (seq @missing-ids)

@@ -41,7 +41,7 @@
   [text url-store]
   (let [strip-bold (fn [s] (str/replace s #"\*\*([^*]+)\*\*" "$1"))
         clean-suffix (fn [s] (str/replace s #"[—–,\s-]+$" ""))]
-    (str/replace text #"(?:•\s+)([^\n]*?)\s*#([A-Z])"
+    (str/replace text #"(?:[-•]\s+)([^\n]*?)\s*#([A-Z]+)"
                  (fn [[_ prefix letter]]
                    (let [entry (get url-store letter)
                          url (:url entry)
