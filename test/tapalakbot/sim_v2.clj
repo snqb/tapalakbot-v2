@@ -44,7 +44,7 @@
   "Check if response contains invented listings (no real URLs).
    Returns {:pass? bool :score 0-1 :issues [...]}"
   [text url-store user-id]
-        refs (re-seq #"#([A-Za-z]+)" text)
+  (let [refs (re-seq #"#([A-Za-z]+)" text)
         ref-letters (set (map second refs))
         stored-letters (set (keys (get url-store user-id {})))
         ;; Any #X token not in url-store = hallucination
@@ -54,10 +54,10 @@
         has-urls? (pos? (count stored-letters))
         ;; Score
         score (cond
-                (zero? (count refs)) 1.0              ;; No citations needed = no hallucination
-                (seq invented) (max 0 (- 1.0 (/ (count invented) (max 1 (count refs)))))  ;; % invented
+                (zero? (count refs)) 1.0
+                (seq invented) (max 0 (- 1.0 (/ (count invented) (max 1 (count refs)))))
                 has-urls? 1.0
-                (pos? bullet-items) 0.3              ;; Lists but no urls = suspicious
+                (pos? bullet-items) 0.3
                 :else 1.0)]
     {:pass? (>= score 0.8)
      :score score
@@ -182,12 +182,12 @@
         (.write w "|-----|------|-------|------|------|-------|----|\n")
         (doseq [r (sort-by :query-id all)]
           (.write w (str "| " (:query-id r)
-                        " | " (:text r "?")
-                        " | " (format "%.2f" (get r :overall-score 0))
-                        " | " (format "%.1f" (get-in r [:hallucination :score] 0))
-                        " | " (get-in r [:urls :url-count] 0)
-                        " | " (get-in r [:relevance :char-count] 0)
-                        " | " (:elapsed-ms r 0) " |\n")))
+                         " | " (:text r "?")
+                         " | " (format "%.2f" (get r :overall-score 0))
+                         " | " (format "%.1f" (get-in r [:hallucination :score] 0))
+                         " | " (get-in r [:urls :url-count] 0)
+                         " | " (get-in r [:relevance :char-count] 0)
+                         " | " (:elapsed-ms r 0) " |\n")))
 
         ;; Failed details
         (when (seq failed)
@@ -213,9 +213,9 @@
                   avg (when (seq cat-results)
                         (/ (reduce + (keep :overall-score cat-results)) (count cat-results)))]
               (.write w (str "| " (name cat)
-                            " | " (count qs)
-                            " | " (format "%.2f" (or avg 0))
-                            " |\n"))))))
+                             " | " (count qs)
+                             " | " (format "%.2f" (or avg 0))
+                             " |\n"))))))
 
       (println "Report written to file://" out-file)
 

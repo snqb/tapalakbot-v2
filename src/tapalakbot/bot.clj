@@ -493,10 +493,10 @@
                                    llm-text (-> prefix str/trimr strip-bold clean-suffix)]
                                ;; Log if LLM fabricated a different title
                                (when (and (not (str/blank? real-title))
-                                         (not (str/blank? llm-text))
-                                         (> (count llm-text) 3)
-                                         (not (str/includes? (str/lower-case llm-text)
-                                                             (str/lower-case (subs real-title 0 (min 10 (count real-title)))))))
+                                          (not (str/blank? llm-text))
+                                          (> (count llm-text) 3)
+                                          (not (str/includes? (str/lower-case llm-text)
+                                                              (str/lower-case (subs real-title 0 (min 10 (count real-title)))))))
                                  (log/warn :citation-title-mismatch :letter letter
                                            :llm-text llm-text :real-title real-title))
                                (if url
