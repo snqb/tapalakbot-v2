@@ -201,7 +201,7 @@ Rules:
   (try
     (let [messages [{:role "system" :content enrich-prompt}
                     {:role "user" :content text}]
-          resp (llm/llm :kimi-k2 messages [] :provider :openrouter :max-tokens 300)
+          resp (llm/llm :kimi-k2 messages [] :provider :openrouter :max-tokens 300 :timeout-ms 20000)
           content (get-in resp ["choices" 0 "message" "content"])
           json-str (or (re-find #"(?s)\{.*\}" content) "{}")
           parsed (try (json/parse-string json-str true) (catch Exception _ {}))]

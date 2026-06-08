@@ -570,10 +570,13 @@
       (reset! thinking-msg-id (some-> m (get "result") (get "message_id"))))
     (try
       (let [cfg (-> @t/tapalakbot :config)
-            reply (orch/orchestrate text session
-                    :model (or (:model cfg) :kimi-k2)
-                    :provider (or (:provider cfg) :openrouter)
-                    :status-cb status-cb)]
+            ;; Wrap orchestrator in a future with 45s timeout
+            orch-future (future
+                         (orch/orchestrate text session
+                           :model (or (:model cfg) :kimi-k2)
+                           :provider (or (:provider cfg) :openrouter)
+                           :status-cb status-cb))
+            reply (deref orch-future 45000 :timeout)]
         (case (:mode reply)
           ;; Reset
           :reset
@@ -597,12 +600,16 @@
               (log-transcript! user-id text reply)
               nil)
 
-          ;; Unknown — ask user to clarify
+          ;; Unknown — fall back to old LLM agent
           :unknown
+          (do (handle-agent msg) nil)
+
+          ;; Timeout — show error and fall back to agent
+          :timeout
           (do (when-let [msg-id @thinking-msg-id]
-                (try (tg/edit-message chat-id msg-id "🤔 Не совсем понял. Попробуйте описать что ищете — например «найди iphone 13»" :parse-mode nil)
+                (try (tg/edit-message chat-id msg-id "⏳ Поиск занимает больше обычного. Пробую через ИИ..." :parse-mode nil)
                      (catch Exception _)))
-              nil)
+              (handle-agent msg) nil)
 
           ;; Fallback
           (do (when-let [msg-id @thinking-msg-id]

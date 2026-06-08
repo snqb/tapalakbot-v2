@@ -123,7 +123,7 @@ Rules:
                        "Results (" (count cards) " items):\n" results-text)
           messages [{"role" "system" "content" curator-prompt}
                     {"role" "user" "content" context}]
-          resp    (llm/llm model messages [] :provider provider :max-tokens 500)
+          resp    (llm/llm model messages [] :provider provider :max-tokens 500 :timeout-ms 30000)
           content (get-in resp ["choices" 0 "message" "content"])]
       (parse-curated-response content (count cards)))
     (catch Exception e
@@ -164,7 +164,7 @@ Return ONLY valid JSON:
                                             (take 5 (:cards result2)))))
           messages [{"role" "system" "content" compare-prompt}
                     {"role" "user" "content" context}]
-          resp    (llm/llm model messages [] :provider provider :max-tokens 500)
+          resp    (llm/llm model messages [] :provider provider :max-tokens 500 :timeout-ms 30000)
           content (get-in resp ["choices" 0 "message" "content"])
           json-str (or (re-find #"(?s)\{.*\}" (or content "{}")) "{}")
           parsed (try (cheshire.core/parse-string json-str true) (catch Exception _ {}))]
