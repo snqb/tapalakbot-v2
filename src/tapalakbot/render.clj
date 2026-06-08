@@ -1,9 +1,10 @@
 (ns tapalakbot.render
   "Deterministic card renderer for Telegram HTML.
-   Replaces LLM-generated HTML with structured Clojure rendering."
+   Multi-line blocks, bold titles, location chips, separators.
+   LLM never touches this."
   (:require [clojure.string :as str]))
 
-;; ══════════════════════ TIER ASSIGNMENT ══════════════════════
+;; ════════════════════ TIER ASSIGNMENT ════════════════════
 
 (defn assign-tier
   "Assign :great/:good/:premium based on price vs market avg ratio.
@@ -27,7 +28,7 @@
     :premium "💎"
     "•"))
 
-;; ══════════════════════ PRICE FORMATTING ══════════════════════
+;; ════════════════════ PRICE FORMATTING ════════════════════
 
 (defn format-price
   "Format long price with space-separated thousands.
@@ -40,7 +41,7 @@
           (str/replace #"(\d{3})(?=\d)" "$1 ")
           (str/reverse)))))
 
-;; ══════════════════════ SINGLE CARD RENDERING ══════════════════════
+;; ════════════════════ HTML ESCAPING ════════════════════
 
 (defn- escape-html
   "Escape HTML special chars for Telegram."
@@ -51,37 +52,52 @@
       (str/replace ">" "&gt;")
       (str/replace "\"" "&quot;")))
 
-(defn render-card
-  "Render a single card to Telegram HTML.
-   Input: {:title :price :currency :url :platform :condition :year :mileage :city :tier}
-   Returns: single HTML-formatted line."
-  [{:keys [title price currency url platform condition year mileage city tier]
-    :or {currency "сом"}}]
-  (let [emoji   (tier-emoji tier)
-        price-s (format-price price)
-        parts   (cond-> []
-                  true      (conj (str emoji " " (escape-html title)))
-                  price-s   (conj (str "<b>" price-s " " (escape-html currency) "</b>"))
-                  condition (conj (str (escape-html condition)))
-                  year      (conj (str year))
-                  mileage   (conj (str (format-price mileage) " км"))
-                  city      (conj (str "📍 " (escape-html city)))
-                  platform  (conj (str "(" (escape-html (name platform)) ")")))]
-    (str (str/join " — " parts)
-         (when (and url (not (str/blank? url)))
-           (str "\n    <a href=\"" url "\">открыть</a>")))))
+;; ════════════════════ SINGLE CARD RENDERING ════════════════════
 
-;; ══════════════════════ GROUPED CARD RENDERING ══════════════════════
+(defn render-card
+  "Render a single card to Telegram HTML. Multi-line block format:
+   🔥 <b>Title</b>
+   💰 25 000 сом · 📍 Бишкек
+   📋 Отличное состояние
+   <i>Description snippet…</i>
+   <a href=\"url\">Открыть на lalafo →</a>"
+  [{:keys [title price currency url platform condition year mileage city tier desc]
+    :or {currency "сом"}}]
+  (let [emoji    (tier-emoji tier)
+        price-s  (when price
+                   (str "<b>" (format-price price) " " (escape-html currency) "</b>"))
+        ;; Detail chips: location, year, mileage, condition
+        chips    (cond-> []
+                   city     (conj (str "📍 " (escape-html city)))
+                   year     (conj (str year " г."))
+                   mileage  (conj (str (format-price mileage) " км"))
+                   condition (conj (str "📋 " (escape-html condition))))
+        chip-str (when (seq chips) (str/join " · " chips))
+        ;; Desc snippet (first 80 chars)
+        desc-snip (when (and desc (> (count desc) 10))
+                    (let [d (subs desc 0 (min 80 (count desc)))]
+                      (str "<i>" (escape-html d)
+                           (when (> (count desc) 80) "…") "</i>")))]
+    (str emoji " <b>" (escape-html title) "</b>\n"
+         (when price-s (str price-s "\n"))
+         (when chip-str (str chip-str "\n"))
+         (when desc-snip (str desc-snip "\n"))
+         (when (and url (not (str/blank? url)))
+           (str "<a href=\"" url "\">Открыть"
+                (when platform (str " на " (escape-html (name platform))))
+                " →</a>")))))
+
+;; ════════════════════ GROUPED CARD RENDERING ════════════════════
 
 (def tier-order [:great :good :premium])
 
 (def tier-headers
-  {:great   "🔥 Выгодная цена"
+  {:great   "🔥 Лучшая цена"
    :good    "💰 Хорошая цена"
    :premium "💎 Премиум"})
 
 (defn render-cards
-  "Group cards by tier and render each group with header.
+  "Group cards by tier and render with headers and separators.
    Cards without a tier go into :good by default."
   [cards]
   (let [grouped (->> cards
@@ -91,32 +107,33 @@
               (for [tier tier-order
                     :let [group (get grouped tier)]
                     :when (seq group)]
-                (str "<b>" (tier-headers tier) "</b>\n"
-                     (str/join "\n" (map render-card group)))))))
+                (str "<b>" (tier-headers tier) "</b>\n\n"
+                     (str/join "\n\n━━━━━━━━━━━━━━━\n\n"
+                               (map render-card group)))))))
 
-;; ══════════════════════ FULL REPLY RENDERING ══════════════════════
+;; ════════════════════ FULL REPLY RENDERING ════════════════════
 
 (defn render-reply
   "Render full Telegram HTML reply.
    Input: {:mode :intro :cards :cta :assumptions}
-   Modes: :error, :no-results, :clarify, :intro, or nil (full card render)."
+   Modes: :error, :no-results, :clarify, :shortlist, or nil (full card render)."
   [{:keys [mode intro cards cta assumptions]}]
   (case mode
     :error      (str "❌ " (or intro "Произошла ошибка. Попробуйте ещё раз."))
     :no-results (str "🔍 " (or intro "Ничего не найдено по вашему запросу.")
                      (when (seq assumptions)
                        (str "\n\nПредположения: " (if (vector? assumptions) (str/join " · " assumptions) assumptions))))
-     :clarify    (str "❗ " (or intro "Уточните, пожалуйста, ваш запрос."))
-     ;; Default: full card render
-     (str (when (and intro (not (str/blank? intro)))
-            (str intro "\n\n"))
-          (when (seq cards)
-            (render-cards cards))
-          (when (seq assumptions)
-            (let [a (if (vector? assumptions) (str/join " · " assumptions) (str assumptions))]
-              (str "\n\n<i>" a "</i>")))
-          (when (and cta (not (str/blank? cta)))
-            (str "\n\n" cta)))))
+    :clarify    (str "❗ " (or intro "Уточните, пожалуйста, ваш запрос."))
+    ;; Default: full card render
+    (str (when (and intro (not (str/blank? intro)))
+           (str intro "\n\n"))
+         (when (seq cards)
+           (render-cards cards))
+         (when (seq assumptions)
+           (let [a (if (vector? assumptions) (str/join " · " assumptions) (str assumptions))]
+             (str "\n\n<i>" a "</i>")))
+         (when (and cta (not (str/blank? cta)))
+           (str "\n\n💬 " cta)))))
 
 (defn render-welcome
   "Render welcome/greeting message."
