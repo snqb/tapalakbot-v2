@@ -50,6 +50,23 @@
   (is (= :compare (p/classify "что лучше, iphone или samsung" nil)))
   (is (= :compare (p/classify "сравни macbook air и pro" nil))))
 
+;; ════════════════════ REFINE ════════════════════
+
+(deftest test-refine-keyword
+  (is (= :refine (p/classify "дешевле" nil)))
+  (is (= :refine (p/classify "дороже" nil)))
+  (is (= :refine (p/classify "только новые" nil))))
+
+(deftest test-refine-with-session
+  ;; Short context phrase + active session → :refine
+  (is (= :refine (p/classify "а карбон" {:data {:last-search "велосипед"}})))
+  (is (= :refine (p/classify "с ssd" {:data {:last-search "ноутбук"}})))
+  ;; Without session → :unknown
+  (is (= :unknown (p/classify "а карбон" nil)))
+  ;; Long message with session → :search (not refine)
+  (is (= :search (p/classify "найди карбоновый велосипед в бишкеке"
+                              {:data {:last-search "велосипед"}}))))
+
 ;; ════════════════════ UNKNOWN ════════════════════
 
 (deftest test-unknown

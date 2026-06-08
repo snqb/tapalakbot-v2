@@ -67,16 +67,19 @@
       (re-find help-re tl)        :help
       (re-find thanks-re tl)      :thanks
 
-      ;; Refine: short message with refine keyword (works even without session)
-      (and (< (count t) 30)
-           (contains? refine-keywords tl))
-      :refine
-
       ;; Comparison
       (re-find comparison-re tl)  :compare
 
-      ;; Purchase / search
+      ;; Purchase / search — must come BEFORE session-refine so full queries
+      ;; aren't misclassified as refine just because session exists
       (re-find purchase-intent-re tl) :search
+
+      ;; Refine: short message with refine keyword, OR short message with prior session
+      (or (and (< (count t) 30)
+               (contains? refine-keywords tl))
+          (and (< (count t) 40)
+               (get-in session-state [:data :last-search])))
+      :refine
 
       ;; Fallback
       :else

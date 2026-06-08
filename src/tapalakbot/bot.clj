@@ -596,27 +596,38 @@
               (show-tracking-list chat-id user-id)
               nil)
 
-          ;; Search results — render cards deterministically
+          ;; Search / Refine — render cards deterministically
           (:shortlist :refine)
           (do (render-orchestrated chat-id @thinking-msg-id reply user-id (:query reply))
               (log-transcript! user-id text reply)
               nil)
 
-          ;; Unknown — fall back to old LLM agent
-          :unknown
-          (do (handle-agent msg) nil)
+          ;; No results — show intro message
+          :no-results
+          (do (when-let [msg-id @thinking-msg-id]
+                (try (tg/edit-message chat-id msg-id (:intro reply "Ничего не нашлось.") :parse-mode "HTML")
+                     (catch Exception _)))
+              nil)
 
-          ;; Timeout — show error and fall back to agent
+          ;; Compare — LLM-generated comparison
+          :compare
+          (do (when-let [msg-id @thinking-msg-id]
+                (try (tg/edit-message chat-id msg-id (:intro reply "Сравнение:") :parse-mode "HTML")
+                     (catch Exception _)))
+              nil)
+
+          ;; Timeout — orchestrator took too long
           :timeout
           (do (when-let [msg-id @thinking-msg-id]
-                (try (tg/edit-message chat-id msg-id "⏳ Поиск занимает больше обычного. Пробую через ИИ..." :parse-mode nil)
+                (try (tg/edit-message chat-id msg-id "⏳ Поиск занимает слишком много времени. Попробуйте ещё раз." :parse-mode nil)
                      (catch Exception _)))
-              (handle-agent msg) nil)
+              nil)
 
-          ;; Fallback
+          ;; Fallback — unexpected mode
           (do (when-let [msg-id @thinking-msg-id]
-                (tg/edit-message chat-id msg-id "🤔" :parse-mode nil))
-              (handle-agent msg) nil)))
+                (try (tg/edit-message chat-id msg-id "❌ Что-то пошло не так. Попробуйте ещё раз." :parse-mode nil)
+                     (catch Exception _)))
+              nil)))
       (catch Exception e
         (log/error e :orchestrated-error {:user-id uid})
         (when-let [msg-id @thinking-msg-id]

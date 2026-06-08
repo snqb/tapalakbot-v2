@@ -242,6 +242,42 @@ Return ONLY valid JSON:
 
 ;; ════════════════════ ORCHESTRATOR ════════════════════
 
+(defn- do-search
+  "Run full search+curate+render pipeline for a text query.
+   Returns {:mode :shortlist ...} or {:mode :no-results ...}."
+  [text session {:keys [status-cb model provider]}]
+  (let [{:keys [cards stats platforms query] :as result}
+        (search/search text {:use-llm? true})]
+    (if (empty? cards)
+      {:mode :no-results
+       :intro (str "Ничего не нашёл по «" (subs text 0 (min 50 (count text))) "». Попробуйте другой запрос.")
+       :cards [] :cta nil :assumptions []}
+      (let [_           (when status-cb (status-cb (str "📊 Processing " (count cards) " results...")))
+            curated     (call-curator query cards stats model provider)
+            selected    (mapv #(get cards %) (:selected-idx curated))
+            final-cards (mapv (fn [card]
+                                (let [tier (render/assign-tier (:price card) (:avg stats))]
+                                  (assoc card :tier (or tier :good))))
+                              selected)]
+        (patch-session! session {:last-search     query
+                                 :last-platforms   platforms
+                                 :last-price-max   (:price-max result)
+                                 :last-price-min   (:price-min result)
+                                 :last-category    (cond
+                                                     (:is-auto? (:qb-result result)) :auto
+                                                     (:is-electronics? (:qb-result result)) :electronics
+                                                     (:is-real-estate? (:qb-result result)) :real-estate
+                                                     :else :general)
+                                 :last-card-count  (count final-cards)})
+        (when status-cb (status-cb "✨ Curating best picks..."))
+        {:mode           :shortlist
+         :intro          (:intro curated)
+         :cards          final-cards
+         :cta            (:cta curated)
+         :assumptions    (:assumptions curated)
+         :platforms-used platforms
+         :query          query}))))
+
 (defn orchestrate
   "Main entry point. Takes user message + session, returns structured reply.
    Options: :model :provider :status-cb"
@@ -268,70 +304,30 @@ Return ONLY valid JSON:
 
       ;; ── Search ──
       :search
-      (let [{:keys [cards stats platforms query qb-result] :as result}
-            (search/search text {:use-llm? true})]
-        (if (empty? cards)
-          {:mode :no-results
-           :intro "Nothing found. Try a different query."
-           :cards [] :cta nil :assumptions []}
-          (let [_           (when status-cb (status-cb (str "📊 Processing " (count cards) " results...")))
-                curated     (call-curator query cards stats model provider)
-                selected    (mapv #(get cards %) (:selected-idx curated))
-                final-cards (mapv (fn [card]
-                                    (let [tier (render/assign-tier (:price card) (:avg stats))]
-                                      (assoc card :tier (or tier :good))))
-                                  selected)]
-            (patch-session! session {:last-search     query
-                                     :last-platforms   platforms
-                                     :last-price-max   (:price-max qb-result)
-                                     :last-price-min   (:price-min qb-result)
-                                     :last-category    (cond
-                                                         (:is-auto? qb-result) :auto
-                                                         (:is-electronics? qb-result) :electronics
-                                                         (:is-real-estate? qb-result) :real-estate
-                                                         :else :general)
-                                     :last-card-count  (count final-cards)})
-            (when status-cb (status-cb "✨ Curating best picks..."))
-            {:mode           :shortlist
-             :intro          (:intro curated)
-             :cards          final-cards
-             :cta            (:cta curated)
-             :assumptions    (:assumptions curated)
-             :platforms-used platforms
-             :query          query})))
+      (do-search text session {:status-cb status-cb :model model :provider provider})
 
       ;; ── Refine ──
       :refine
-      (let [last-search   (or (:last-search state) text)
-            refined       (apply-refine last-search text state)
-            {:keys [cards stats platforms query]}
-            (search/search (:query refined) {:use-llm? true})]
-        (if (empty? cards)
-          {:mode :no-results
-           :intro "Nothing found after refining. Try broadening."
-           :cards [] :cta nil :assumptions []}
-          (let [_           (when status-cb (status-cb (str "📊 Processing " (count cards) " results...")))
-                curated     (call-curator query cards stats model provider)
-                selected    (mapv #(get cards %) (:selected-idx curated))
-                final-cards (mapv (fn [card]
-                                    (let [tier (render/assign-tier (:price card) (:avg stats))]
-                                      (assoc card :tier (or tier :good))))
-                                  selected)]
-            (patch-session! session {:last-search (:query refined)
-                                     :last-price-max (:price-max refined)})
-            (when status-cb (status-cb "✨ Curating best picks..."))
-            {:mode           :refine
-             :intro          (:intro curated)
-             :cards          final-cards
-             :cta            (:cta curated)
-             :assumptions    (into (vec (:assumptions curated)) (:assumptions refined))
-             :platforms-used platforms
-             :query          (:query refined)})))
+      (let [last-search  (or (:last-search state) text)
+            refined      (apply-refine last-search text state)
+            result       (do-search (:query refined) session
+                                    {:status-cb status-cb :model model :provider provider})]
+        (-> result
+            (assoc :mode :refine)
+            (update :assumptions into (vec (:assumptions refined)))
+            (assoc :query (:query refined))))
 
       ;; ── Compare ──
       :compare
       (compare-products text model provider)
 
       ;; ── Unknown ──
-      {:mode  :unknown
-       :llm-context {:text text :session-state state}})))
+      ;; If session has prior search context, try combining it.
+      ;; Otherwise don't fall back to old agent path (which emits bare #letter markers).
+      (if-let [last-q (:last-search state)]
+        (let [combined (str last-q " " text)]
+          (log/info :unknown-combining-with-session :combined combined)
+          (do-search combined session {:status-cb status-cb :model model :provider provider}))
+        {:mode  :no-results
+         :intro "🤔 Я не совсем понял. Напишите, что ищете — например, «найди iphone 13»."
+         :cards [] :cta nil :assumptions []}))))
