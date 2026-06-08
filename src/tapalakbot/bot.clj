@@ -540,18 +540,36 @@
         (catch Exception e
           (log/warn e :track-button-fail))))))
 
+(defn- log-transcript!
+  "Log a transcript entry for later review."
+  [user-id user-text reply]
+  (try
+    (log/info :transcript {:user-id    user-id
+                           :user-text  user-text
+                           :mode       (:mode reply)
+                           :intro      (:intro reply)
+                           :card-count (count (:cards reply))
+                           :cta        (:cta reply)
+                           :timestamp  (System/currentTimeMillis)})
+    (catch Exception _)))
+
 (defn- handle-orchestrated
   "Handle message via orchestrator pipeline — structured search, deterministic cards."
   [{:keys [chat-id user-id text] :as msg}]
   (let [uid (str "tg-" user-id)
         bot @t/tapalakbot
         session (hc/get-or-create-session bot uid)
-        thinking-msg-id (atom nil)]
+        thinking-msg-id (atom nil)
+        status-cb (fn [status-text]
+                     (when-let [msg-id @thinking-msg-id]
+                       (try
+                         (tg/edit-message chat-id msg-id status-text :parse-mode nil)
+                         (catch Exception _))))]
     ;; Show thinking indicator
     (when-let [m (tg/send-message chat-id "💭 ..." :parse-mode nil)]
       (reset! thinking-msg-id (some-> m (get "result") (get "message_id"))))
     (try
-      (let [reply (orch/orchestrate text session)]
+      (let [reply (orch/orchestrate text session status-cb)]
         (case (:mode reply)
           ;; Reset
           :reset
@@ -572,6 +590,7 @@
           ;; Search results — render cards deterministically
           (:shortlist :refine)
           (do (render-orchestrated chat-id @thinking-msg-id reply user-id (:query reply))
+              (log-transcript! user-id text reply)
               nil)
 
           ;; Unknown — ask user to clarify

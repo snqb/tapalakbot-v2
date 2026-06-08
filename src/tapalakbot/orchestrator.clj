@@ -5,6 +5,7 @@
             [tapalakbot.search :as search]
             [tapalakbot.render :as render]
             [tapalakbot.monitor.store :as monitor-store]
+            [tapalakbot.query-builder :as qb]
             [clj-harness.llm :as llm]
             [clojure.string :as str]
             [clojure.tools.logging :as log]))
@@ -153,6 +154,43 @@
    :intro "Ничего не найдено. Попробуйте изменить запрос."
    :cards [] :cta nil :assumptions []})
 
+
+(defn- apply-refine
+  "Apply refine keyword to existing search state."
+  [last-search refine-text state]
+  (let [t (str/lower-case refine-text)]
+    (cond
+      ;; Price down
+      (some #(str/includes? t %) ["дешевле" "подешевле" "поменьше"])
+      (let [old-max (or (:last-price-max state) 999999)
+            new-max (long (* old-max 0.7))]
+        {:query last-search :price-max new-max
+         :assumptions [(str "Снизил бюджет до " (render/format-price new-max) " сом")]})
+
+      ;; Price up
+      (some #(str/includes? t %) ["дороже" "подороже" "получше"])
+      (let [old-max (or (:last-price-max state) 999999)
+            new-max (long (* old-max 1.5))]
+        {:query last-search :price-max new-max
+         :assumptions [(str "Поднял бюджет до " (render/format-price new-max) " сом")]})
+
+      ;; Location
+      (some #(str/includes? t %) ["в бишкеке" "bishkek"])
+      {:query (str last-search " Бишкек") :assumptions ["Фильтр: Бишкек"]}
+
+      (some #(str/includes? t %) ["в оше" "osh"])
+      {:query (str last-search " Ош") :assumptions ["Фильтр: Ош"]}
+
+      ;; Condition
+      (some #(str/includes? t %) ["только новые" "новые" "новый"])
+      {:query (str last-search " новый") :assumptions ["Фильтр: новые"]}
+
+      (some #(str/includes? t %) ["только б/у" "только бу" "б/у" "бу"])
+      {:query (str last-search " б/у") :assumptions ["Фильтр: б/у"]}
+
+      ;; Default
+      :else {:query (str last-search " " refine-text) :assumptions []})))
+
 ;; ════════════════════ ORCHESTRATOR ════════════════════
 
 (defn orchestrate
@@ -160,7 +198,7 @@
 
    Returns: {:mode :shortlist :intro \"...\" :cards [...] :cta \"...\" :assumptions [...]}
    Or for fast paths: {:mode :shortlist :intro \"...\" :cards []}"
-  [text session]
+  [text session & [status-cb]]
   (let [state (get-session-data session)
         mode  (policy/classify text state)]
     (log/info :orchestrate :mode mode :text (let [t (or text "")]
@@ -168,7 +206,13 @@
     (case mode
 
       ;; ── Fast paths (no search, no LLM) ──
-      :greeting  greeting-reply
+      :greeting
+      (if (:last-search state)
+        {:mode :shortlist
+         :intro (str "👋 Салам! Возвращаемся к «" (:last-search state) "»?\n\n"
+                      "Или напишите новый запрос!")
+         :cards [] :cta nil :assumptions []}
+        greeting-reply)
       :thanks    thanks-reply
       :help      help-reply
       :reset     {:mode :reset}
@@ -176,11 +220,14 @@
 
       ;; ── Search paths ──
       :search
-      (let [{:keys [cards stats platforms query]}
+      (let [_ (when status-cb (status-cb "🔍 Ищу на Lalafo.kg..."))
+            qb-result (try (tapalakbot.query-builder/build text :use-llm? true) (catch Exception _ {}))
+            {:keys [cards stats platforms query]}
             (search/search text {:use-llm? true})]
         (if (empty? cards)
           no-results-reply
-          (let [curated    (call-curator query cards stats)
+          (let [_ (when status-cb (status-cb (str "📊 Обрабатываю " (count cards) " результатов...")))
+                curated    (call-curator query cards stats)
                 selected   (mapv #(get cards %) (:selected-idx curated))
                 ;; Deterministic tier assignment from stats
                 final-cards (mapv
@@ -188,8 +235,17 @@
                                (let [tier (render/assign-tier (:price card) (:avg stats))]
                                  (assoc card :tier (or tier :good))))
                              selected)]
-            (patch-session! session {:last-search  query
-                                    :last-platforms platforms})
+            (patch-session! session {:last-search     query
+                                    :last-platforms   platforms
+                                    :last-price-max   (:price-max qb-result)
+                                    :last-price-min   (:price-min qb-result)
+                                    :last-category    (cond
+                                                        (:is-auto? qb-result) :auto
+                                                        (:is-electronics? qb-result) :electronics
+                                                        (:is-real-estate? qb-result) :real-estate
+                                                        :else :general)
+                                    :last-card-count  (count final-cards)})
+            (when status-cb (status-cb "✨ Подбираю лучшие..."))
             {:mode           :shortlist
              :intro          (:intro curated)
              :cards          final-cards
@@ -199,27 +255,30 @@
              :query          query})))
 
       :refine
-      (let [last-search   (or (:last-search state) text)
-            refined-query (str last-search " " text)
+      (let [_ (when status-cb (status-cb "🔍 Ищу на Lalafo.kg..."))
+            last-search (or (:last-search state) text)
+            refined (apply-refine last-search text state)
             {:keys [cards stats platforms query]}
-            (search/search refined-query {:use-llm? true})]
+            (search/search (:query refined) {:use-llm? true})]
         (if (empty? cards)
           no-results-reply
-          (let [curated  (call-curator query cards stats)
+          (let [_ (when status-cb (status-cb (str "📊 Обрабатываю " (count cards) " результатов...")))
+                curated  (call-curator query cards stats)
                 selected (mapv
                           (fn [card]
                             (let [tier (render/assign-tier (:price card) (:avg stats))]
                               (assoc card :tier (or tier :good))))
                           (mapv #(get cards %) (:selected-idx curated)))]
-            (patch-session! session {:last-search refined-query})
+            (patch-session! session {:last-search (:query refined)
+                                     :last-price-max (:price-max refined)})
+            (when status-cb (status-cb "✨ Подбираю лучшие..."))
             {:mode           :refine
              :intro          (:intro curated)
              :cards          selected
              :cta            (:cta curated)
-             :assumptions    (conj (vec (:assumptions curated))
-                                   (str "Поиск: " refined-query))
+             :assumptions    (into (vec (:assumptions curated)) (:assumptions refined))
              :platforms-used platforms
-             :query          refined-query})))
+             :query          (:query refined)})))
 
       :compare
       {:mode  :shortlist
