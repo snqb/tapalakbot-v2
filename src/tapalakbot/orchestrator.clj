@@ -47,24 +47,30 @@
 ;; ════════════════════ LLM CURATOR ════════════════════
 
 (def ^:private curator-prompt
-  "Ты куратор маркетплейса для бота по поиску товаров на Lalafo.kg (Кыргызстан).
+  "Ты — куратор для Telegram-бота. Верни ТОЛЬКО валидный JSON без markdown, без пояснений, без текста до или после.
 
-Даны результаты поиска. Выбери лучшие 5-8 товаров и напиши краткое вступление + CTA на русском.
-
-Верни ТОЛЬКО JSON:
-{
-  \"selected\": [0, 2, 4, 5, 7],
-  \"intro\": \"Нашёл iPhone 13 на Lalafo.kg — 8 вариантов!\",
-  \"cta\": \"Хотите сузить по бюджету или состоянию?\",
-  \"assumptions\": [\"Цены в сомах\"]
-}
+Формат:
+{\"selected\":[0,2,4],\"intro\":\"Нашёл 5 роутеров на Lalafo.kg\",\"cta\":\"Хотите дешевле?\",\"assumptions\":[\"Цены в сомах\"]}
 
 Правила:
-- selected: индексы лучших товаров (0-based). Пропускай аксессуары и мусор.
-- intro: 1 строка, русский, упомяни платформу и количество. Будь конкретен.
-- cta: 1 строка — предложение следующего действия (фильтр по цене, состоянию, локации)
-- assumptions: 0-2 строки о предположениях (валюта, состояние, регион)
-- Вступление до 100 символов, CTA до 60 символов")
+- selected: массив из 4-6 индексов (0-based). Бери только лучшие. НЕ более 6 товаров.
+- intro: 1 предложение на русском, до 80 символов. Упомяни количество и платформу.
+- cta: 1 короткий вопрос-предложение, до 50 символов
+- assumptions: 0-1 строка о предположениях
+- НЕ используй markdown, bullet points, эмодзи-списки. Только JSON.")
+
+(defn- sanitize-intro
+  "Strip markdown, bullets, and excessive formatting from curator intro.
+   Returns a clean single-line string."
+  [s]
+  (when s
+    (-> (str s)
+        (str/replace #"\*\*" "")           ;; remove **bold**
+        (str/replace #"\*" "")             ;; remove *italic*
+        (str/replace #"^[•\-\d\.]+\s*" "") ;; remove leading bullets/numbers
+        (str/replace #"\n+" " ")           ;; collapse newlines
+        str/trim
+        (subs 0 (min 100 (count s))))))    ;; cap at 100 chars
 
 (defn- parse-curated-response
   "Parse LLM curator response into structured data."
@@ -79,9 +85,12 @@
                    (cheshire.core/parse-string json-str true)
                    (catch Exception _
                      {}))
-          selected-idx (or (:selected parsed)
-                           (vec (range (min 8 cards-count))))]
-     {:intro       (:intro parsed "Нашёл варианты")
+          ;; Cap at 6 items max
+          raw-selected (:selected parsed)
+          selected-idx (if (and (vector? raw-selected) (seq raw-selected))
+                         (vec (take 6 raw-selected))
+                         (vec (range (min 6 cards-count))))]
+     {:intro       (or (sanitize-intro (:intro parsed)) "Нашёл варианты")
       :cta         (:cta parsed "Хотите уточнить?")
       :assumptions (or (:assumptions parsed) [])
       :selected-idx selected-idx})
@@ -121,7 +130,7 @@
       {:intro         (str "Нашёл " (count cards) " вариантов")
        :cta           "Хотите уточнить?"
        :assumptions   []
-       :selected-idx  (vec (range (min 8 (count cards))))
+       :selected-idx  (vec (range (min 6 (count cards))))
        :tiers         {}})))
 
 ;; ════════════════════ FAST PATH REPLIES ════════════════════
