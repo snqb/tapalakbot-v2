@@ -69,15 +69,21 @@
    Returns a vector of card maps."
   [queries price-min price-max]
   (log/info :search-lalafo :queries queries :price [price-min price-max])
-  (let [raw (lalafo/search {"queries"       queries
-                            "price_min"     price-min
-                            "price_max"     price-max
-                            "candidate_limit" 80})
-        parsed (if (string? raw)
-                 (try (json/parse-string raw) (catch Exception _ {}))
-                 raw)
-        items (get parsed "items" [])]
-    (mapv lalafo-item->card items)))
+  (let [raw (try
+              (lalafo/search {"queries"       queries
+                              "price_min"     price-min
+                              "price_max"     price-max
+                              "candidate_limit" 80})
+              (catch Exception e
+                (log/warn :lalafo-search-error (.getMessage e))
+                nil))]
+    (if (or (nil? raw) (and (string? raw) (str/blank? raw)))
+      []
+      (let [parsed (if (string? raw)
+                     (try (json/parse-string raw) (catch Exception _ {}))
+                     raw)
+            items (get parsed "items" [])]
+        (mapv lalafo-item->card items)))))
 
 ;; ════════════════════════════ MASHINA SEARCH ════════════════════════════
 
@@ -86,8 +92,14 @@
    Returns a vector of card maps."
   [query]
   (log/info :search-mashina :query query)
-  (let [result (mashina/search-cars :query query :size 10)]
-    (mapv mashina-item->card (:listings result))))
+  (let [result (try
+                 (mashina/search-cars :query query :size 10)
+                 (catch Exception e
+                   (log/warn :mashina-search-error (.getMessage e))
+                   nil))]
+    (if (or (nil? result) (not (map? result)))
+      []
+      (mapv mashina-item->card (:listings result)))))
 
 ;; ════════════════════════════ STATS ════════════════════════════
 

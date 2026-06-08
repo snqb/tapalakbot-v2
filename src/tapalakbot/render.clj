@@ -48,7 +48,8 @@
   (-> (str s)
       (str/replace "&" "&amp;")
       (str/replace "<" "&lt;")
-      (str/replace ">" "&gt;")))
+      (str/replace ">" "&gt;")
+      (str/replace "\"" "&quot;")))
 
 (defn render-card
   "Render a single card to Telegram HTML.
@@ -65,7 +66,7 @@
                   year      (conj (str year))
                   mileage   (conj (str (format-price mileage) " км"))
                   city      (conj (str "📍 " (escape-html city)))
-                  platform  (conj (str "(" (escape-html platform) ")")))]
+                  platform  (conj (str "(" (escape-html (name platform)) ")")))]
     (str (str/join " — " parts)
          (when (and url (not (str/blank? url)))
            (str "\n    <a href=\"" url "\">открыть</a>")))))

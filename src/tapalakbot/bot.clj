@@ -429,13 +429,19 @@
           (tg/send-md chat-id (monitor/format-search-results results))
           (tg/send-md chat-id (str "🔍 Ничего не найдено по запросу «" query "»")))))))
 
-(defn- strip-tables [text]
+(defn- strip-tables
+  "DEPRECATED: Only used by the :unknown LLM fallback path (process-agent-message).
+   The orchestrated search path uses tapalakbot.render for deterministic card output.
+   This function strips markdown table syntax from LLM responses."
+  [text]
   (-> text
       (str/replace #"\|[-:| ]+\|" "")
       (str/replace #"\|[^\n]*\|" "")))
 
 (defn- strip-fake-urls
-  "Remove any URL that is not from a known marketplace AND any hallucinated listings.
+  "DEPRECATED: Only used by the :unknown LLM fallback path (process-agent-message).
+   The orchestrated search path uses tapalakbot.render for deterministic card output.
+   Remove any URL that is not from a known marketplace AND any hallucinated listings.
    Multi-pass protection:
    1. Strip markdown links [text](url)
    2. Strip raw non-marketplace URLs
@@ -467,7 +473,9 @@
     t4))
 
 (defn- citation-replace
-  "Replace #A, #B, #C letter tokens with clickable links from url-store.
+  "DEPRECATED: Only used by the :unknown LLM fallback path (process-agent-message).
+   The orchestrated search path uses tapalakbot.render for deterministic card output.
+   Replace #A, #B, #C letter tokens with clickable links from url-store.
    Strips any tokens not in url-store (LLM hallucination prevention).
    str/replace with capturing group passes a vector [full-match group1]."
   [text user-id]

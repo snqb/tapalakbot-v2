@@ -70,7 +70,11 @@ Rules:
   "Parse LLM curator response into structured data."
   [content cards-count]
   (try
-    (let [json-str (or (re-find #"(?s)\{.*\}" content) "{}")
+    (let [;; Strip markdown code fences (```json ... ```) before extracting JSON
+          stripped (-> (or content "")
+                       (str/replace #"```json\s*" "")
+                       (str/replace #"```\s*" ""))
+          json-str (or (re-find #"(?s)\{.*\}" stripped) "{}")
           parsed (try
                    (cheshire.core/parse-string json-str true)
                    (catch Exception _
