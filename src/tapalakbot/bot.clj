@@ -429,105 +429,8 @@
           (tg/send-md chat-id (monitor/format-search-results results))
           (tg/send-md chat-id (str "🔍 Ничего не найдено по запросу «" query "»")))))))
 
-(defn- strip-tables
-  "DEPRECATED: Only used by the :unknown LLM fallback path (process-agent-message).
-   The orchestrated search path uses tapalakbot.render for deterministic card output.
-   This function strips markdown table syntax from LLM responses."
-  [text]
-  (-> text
-      (str/replace #"\|[-:| ]+\|" "")
-      (str/replace #"\|[^\n]*\|" "")))
 
-(defn- strip-fake-urls
-  "DEPRECATED: Only used by the :unknown LLM fallback path (process-agent-message).
-   The orchestrated search path uses tapalakbot.render for deterministic card output.
-   Remove any URL that is not from a known marketplace AND any hallucinated listings.
-   Multi-pass protection:
-   1. Strip markdown links [text](url)
-   2. Strip raw non-marketplace URLs
-   3. Strip listing bullets without valid citation links"
-  [text user-id]
-  (let [url-store (t/get-url-store user-id)
-        valid-urls (set (map :url (vals url-store)))
-        marketplace? #(re-find #"lalafo\.kg|mashina\.kg" %)
-        ;; Pass 1: Strip markdown links [text](url)
-        t1 (str/replace text #"\[([^\]]+)\]\(https?://[^\s\)]+\s*" "$1")
-        ;; Pass 2: Strip raw URLs not from marketplaces and not in url-store
-        t2 (str/replace t1 #"(🔗\s*)?https?://[^\s\)\]>]+"
-                        (fn [[full-match _prefix]]
-                          (if (or (marketplace? full-match)
-                                  (valid-urls full-match)
-                                  (valid-urls (str/replace full-match #"^🔗\s*" "")))
-                            full-match
-                            (str/replace full-match #"https?://" "⚠️"))))
-        ;; Pass 3: Strip listing bullets without valid citation
-        ;; A listing MUST have <a href="..."> to be real.
-        ;; "• Item — price" without a link tag is hallucinated.
-        t3 (str/replace t2 #"(?m)^•\s+(?!.*<a href=)([^\n]*?\d[\d\s,]*\s*(?:сом|KGS|сомов)[^\n]*)"
-                        (fn [[_ content]]
-                          (str "⚠️ [проверьте] " (str/trim content))))
-        ;; Pass 4: Strip orphaned markdown bold that looks like a fake listing
-        ;; (Bold prices without links = hallucination)
-        t4 (str/replace t3 #"\*\*([\d\s,]+)\s*(сом|KGS|сомов)\*\*"
-                        "$1 $2")]
-    t4))
 
-(defn- citation-replace
-  "DEPRECATED: Only used by the :unknown LLM fallback path (process-agent-message).
-   The orchestrated search path uses tapalakbot.render for deterministic card output.
-   Replace #A, #B, #C letter tokens with clickable links from url-store.
-   Strips any tokens not in url-store (LLM hallucination prevention).
-   str/replace with capturing group passes a vector [full-match group1]."
-  [text user-id]
-  (let [url-store (t/get-url-store user-id)
-        store-count (count url-store)
-        letter-count (count (re-seq #"#[A-Z]+" text))]
-    (log/info :citation-replace :store-size store-count :tokens-in-text letter-count)
-    (when (pos? store-count)
-      (log/info :citation-sample :first-3 (take 3 url-store)))
-    (if (empty? url-store)
-      text
-      (let [strip-bold (fn [s] (str/replace s #"\*\*([^*]+)\*\*" "$1"))
-            clean-suffix (fn [s] (str/replace s #"[—–,\s-]+$" ""))
-            missing-ids (atom [])
-            invented-ids (atom [])]
-        (let [result
-              ;; Replace #A, #B, #C etc. with clickable links
-              ;; ALWAYS use the real title from url-store — LLM's text is just organizational
-              (str/replace text #"(?:[-•]\s+)([^\n]*?)\s*#([A-Z]+)"
-                           (fn [[_ prefix letter]]
-                             (let [entry (get url-store letter)
-                                   entry (when entry (if (string? entry) {:url entry} entry))
-                                   url (:url entry)
-                                   real-title (:title entry "")
-                                   llm-text (-> prefix str/trimr strip-bold clean-suffix)]
-                               ;; Log if LLM fabricated a different title
-                               (when (and (not (str/blank? real-title))
-                                          (not (str/blank? llm-text))
-                                          (> (count llm-text) 3)
-                                          (not (str/includes? (str/lower-case llm-text)
-                                                              (str/lower-case (subs real-title 0 (min 10 (count real-title)))))))
-                                 (log/warn :citation-title-mismatch :letter letter
-                                           :llm-text llm-text :real-title real-title))
-                               (if url
-                                 ;; Use real title from url-store, not LLM's potentially fabricated text
-                                 (str "• <a href='" url "'>" real-title "</a>")
-                                 (do (swap! missing-ids conj letter)
-                                     (str "• " prefix " #" letter))))))
-              ;; Pass 2: convert any remaining #X tokens to links, or strip invented ones
-              final-result (str/replace result #"#[A-Z]+"
-                                        (fn [token]
-                                          (let [letter (subs token 1)]
-                                            (if-let [entry (get url-store letter)]
-                                              (let [entry (if (string? entry) {:url entry} entry)]
-                                                (str " <a href='" (:url entry) "'>" (:title entry "") "</a>"))
-                                              (do (swap! invented-ids conj letter)
-                                                  "[нет данных]")))))]
-          (when (seq @missing-ids)
-            (log/warn :citation-missing-ids :ids @missing-ids))
-          (when (seq @invented-ids)
-            (log/warn :citation-hallucination-detected :invented-tokens @invented-ids))
-          final-result)))))
 
 (defn- extract-search-query
   "Try to extract the original search query from agent response.
@@ -566,9 +469,7 @@
                                      msg-id)
                             (reset! last-edit now)
                             (try
-                              (let [preview (-> (.toString buf)
-                                                strip-tables
-                                                (citation-replace uid))
+                              (let [preview (.toString buf)
                                     html (fmt/md->html preview)]
                                 (tg/edit-message chat-id msg-id html :parse-mode "HTML"))
                               (catch Exception e
@@ -589,12 +490,8 @@
                          (t/clear-thread-user-id!))))]
         (reset! phase :done)
         (if-let [msg-id @thinking-msg-id]
-          (let [safe-text (-> (str result)
-                              (str/replace #"👉 Смотри\b" "🔗")
-                              strip-tables
-                              (citation-replace uid)
-                              (strip-fake-urls uid))
-                html (fmt/md->html safe-text)]
+          (let [safe-text (str/replace (str result) #"👉 Смотри\b" "🔗")
+               html (fmt/md->html safe-text)]
             (try
               ;; Edit with search results
               (tg/edit-message chat-id msg-id html :parse-mode "HTML")
@@ -618,6 +515,7 @@
         (if-let [msg-id @thinking-msg-id]
           (tg/edit-message chat-id msg-id "❌ Ошибка. Попробуйте ещё раз." :parse-mode nil)
           (tg/send-message chat-id "❌ Ошибка. Попробуйте ещё раз." :parse-mode nil))))))
+
 
 (declare handle-agent)
 
@@ -676,11 +574,12 @@
           (do (render-orchestrated chat-id @thinking-msg-id reply user-id (:query reply))
               nil)
 
-          ;; Unknown — fall back to full LLM agent
+          ;; Unknown — ask user to clarify
           :unknown
           (do (when-let [msg-id @thinking-msg-id]
-                (try (tg/delete-message chat-id msg-id) (catch Exception _)))
-              (handle-agent msg) nil)
+                (try (tg/edit-message chat-id msg-id "🤔 Не совсем понял. Попробуйте описать что ищете — например «найди iphone 13»" :parse-mode nil)
+                     (catch Exception _)))
+              nil)
 
           ;; Fallback
           (do (when-let [msg-id @thinking-msg-id]

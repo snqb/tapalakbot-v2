@@ -80,6 +80,8 @@ NEVER use markdown tables (| --- |). NEVER write URLs or link emojis. Use bold f
 ;; ══════════════════════ TOOLS ══════════════════════
 
 ;; ══════════════════════ URL STORE ══════════════════════
+;; DEPRECATED: url-store and *current-user-id* are only used by the old LLM agent path (format-search-results, citation-replace).
+;; The orchestrated search path uses tapalakbot.render for deterministic card output.
 
 (def url-store
   "Map of user-id → {letter-token {:url :title :item-id}}. Populated by format-search-results, consumed by bot.clj.
