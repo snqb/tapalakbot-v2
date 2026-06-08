@@ -229,7 +229,7 @@ Rules:
                 (let [msg (format-notification title to-send)]
                   (log/info :track-notify-preview :msg msg)
                   (try
-                    (tg/send-message tg-user-id msg :parse-mode nil)
+                    (tg/send-message tg-user-id msg :parse-mode "HTML")
                     (store/increment-notify-count! id)
                     (log/info :track-notified :track-id id :user user_id :items (count to-send))
                     (catch Exception e

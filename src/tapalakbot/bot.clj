@@ -525,12 +525,14 @@
   (let [html (render/render-reply reply)
         track-btn (when (and (seq (:cards reply)) query)
                     (track-context-button user-id query))]
-    (when msg-id
+    (if msg-id
       (try
         (tg/edit-message chat-id msg-id html :parse-mode "HTML")
         (catch Exception e
           (log/error e :orchestrated-edit-fail)
-          (tg/send-message chat-id html :parse-mode "HTML"))))
+          (tg/send-message chat-id html :parse-mode "HTML")))
+      ;; No thinking message — send directly
+      (tg/send-message chat-id html :parse-mode "HTML"))
     (when track-btn
       (try
         (Thread/sleep 300)
