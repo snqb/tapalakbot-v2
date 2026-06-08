@@ -1,44 +1,44 @@
-<!-- Updated: 2026-06-04 -->
+<!-- Updated: 2026-06-08 -->
 # tapalakbot-v2
 
-> Clojure Telegram bot for KG marketplace search. DeepSeek LLM + native Clojure HTTP client. Progressive streaming, HTML formatting, anti-table safety net, 53 test scenarios. **Multi-platform search**: Lalafo.kg + Bazar.kg + Mashina.kg. **Price monitor** tracks 10 categories, serves market intelligence via HTTP API. **Deployed: NixOS VPS 85.239.40.192 (systemd).** See [docs/deployment.md](docs/deployment.md).
+> Clojure Telegram bot for KG marketplace search. **tg-agent architecture**: deterministic search → LLM curator → deterministic card renderer. LLM never touches prices, URLs, or card layout. Progressive streaming, structured reply contracts, anti-hallucination via structure. **Multi-platform search**: Lalafo.kg + Mashina.kg. **Price monitor** tracks 10 categories, serves market intelligence via HTTP API. **Deployed: NixOS VPS 85.239.40.192 (systemd).** See [docs/deployment.md](docs/deployment.md).
 
 ## Architecture
 
 ```
-User → Telegram → bot.clj → core.clj → clj-harness → DeepSeek API
-                         │         │
-                    clj-harness  ├─ query_builder.clj (NL → structured params)
-                    (telegram,    ├─ lalafo.clj (Lalafo API)
-                     streaming,   ├─ mashina.clj → Mashina.kg API (public)
-                     format)      └─ bazar.clj → Bazar.kg (HTML scraping)
-
-                         ┌─────────────────────────────────────┐
-                         │  Price Monitor (same JVM process)   │
-                         │                                     │
-                         │  scanner.clj → lalafo.clj (search)  │
-                         │       ↓                             │
-                         │  store.clj → SQLite (/tmp/*.db)     │
-                         │       ↓                             │
-                         │  api.clj → Ring/Jetty :8787         │
-                         │       ↓                             │
-                         │  client.clj ← bot.clj (/start, /prices) │
-                         └─────────────────────────────────────┘
+User → Telegram → bot.clj → orchestrator.clj → policy.clj (classify)
+                              │                    │
+                              │              search.clj → lalafo/mashina
+                              │                    │
+                              │              LLM curator (pick 5 items + prose)
+                              │                    │
+                              │              render.clj → Telegram HTML
+                              │
+                         :unknown fallback → core.clj (full LLM agent)
+                              │
+                         clj-harness (streaming, sessions, tools)
 ```
 
-Most Telegram/format/streaming logic lives in `clj-harness`. Tapalakbot files are thin app-layer wires. The monitor is a background service embedded in the same JVM — started by `server.clj` via `ensure-monitor!`.
+**Three-layer architecture (tg-agent):**
+1. **Deterministic layer** (search + parse + render): query_builder, lalafo, mashina, render.clj — owns all trust-critical facts
+2. **Agent layer** (LLM): curator only — picks 5-8 items + writes 1-line intro/CTA (~100 tokens output)
+3. **Transport layer** (Telegram): bot.clj — session state, UX, progress messages, structured payload → HTML
+
+**Key insight:** LLM output shrunk from ~2000 tokens to ~100 tokens. LLM never touches prices, URLs, or card layout. Zero hallucinated facts.
 
 ## File Map
 
 | File | Lines | Purpose |
 |------|-------|---------|
+| **orchestrator.clj** | ~260 | The glue: classify → search → LLM curate → structured reply |
+| **policy.clj** | ~110 | Deterministic turn classifier (greeting/search/refine/tracking/unknown) |
+| **search.clj** | ~180 | Structured search pipeline — cards out, no LLM in search path |
+| **render.clj** | ~125 | Deterministic card renderer — tier groups, formatted prices, Telegram HTML |
 | `query_builder.clj` | ~340 | NL→structured params: price, platform, category extraction |
-| `core.clj` | ~460 | Agent: system prompt, smart_search tool, pre-hook, REPL |
+| `core.clj` | ~460 | Agent: system prompt, smart_search tool, pre-hook, REPL (fallback path) |
 | `lalafo.clj` | ~380 | Direct Lalafo.kg HTTP client + Exa research + healthcheck |
 | `mashina.clj` | ~200 | Mashina.kg API client (public API, no auth needed) |
-| `bazar.clj` | ~180 | Bazar.kg HTML scraper (Schema.org structured data) |
-| `riskbypass.clj` | ~150 | Cloudflare bypass via RiskBypass API + Smartproxy |
-| `bot.clj` | ~140 | Telegram bot: handler, `/start` `/help` `/prices`, streaming agent |
+| `bot.clj` | ~840 | Telegram bot: orchestrator dispatch, tracking UI, streaming fallback |
 | `server.clj` | ~65 | Entry point: bot + monitor auto-start + healthcheck |
 | `tg/format.clj` | ~17 | Thin wrapper → `clj-harness.telegram.format` |
 | `tg/channel.clj` | ~17 | Thin wrapper → `clj-harness.telegram` |
@@ -46,9 +46,11 @@ Most Telegram/format/streaming logic lives in `clj-harness`. Tapalakbot files ar
 | **monitor/scanner.clj** | ~150 | Background Lalafo scanner (every 4h), accessory filter |
 | **monitor/api.clj** | ~265 | Ring/Jetty HTTP API (:8787): trending, deals, search, history |
 | **monitor/client.clj** | ~130 | HTTP client for monitor API (used by bot) |
+| **monitor/tracker.clj** | ~290 | User tracking notifications (uses render module) |
 | **monitor/main.clj** | ~60 | Monitor standalone entry point |
-| **test/tapalakbot/test_scenarios.clj** | ~450 | 53 test scenarios for agent testing |
-| **notebooks/marketplace.clj** | ~100 | Clerk notebook: live search UI for all platforms |
+| **test/tapalakbot/render_test.clj** | ~100 | Card renderer tests (11 tests, 34 assertions) |
+| **test/tapalakbot/policy_test.clj** | ~90 | Turn classifier tests (10 tests, 37 assertions) |
+| **test/tapalakbot/orchestrator_test.clj** | ~210 | Orchestrator tests with mocked search/LLM (7 tests, 40 assertions) |
 
 ## Marketplace Platforms
 
@@ -65,59 +67,23 @@ Most Telegram/format/streaming logic lives in `clj-harness`. Tapalakbot files ar
 - **Coverage**: 136K+ auto listings, rich attributes (year, engine, gearbox, mileage)
 - **Query params**: `?q=hyundai&page=1&size=20`
 
-### Bazar.kg (General goods)
-- **Type**: General classifieds (electronics, home, fashion, auto parts)
-- **API**: None — HTML scraping with Schema.org structured data
-- **Auth**: None needed
-- **Coverage**: ~10K+ listings across categories
-- **Categories**: transport, electronics, real-estate, home-garden, children, etc.
-
 ### Platform Comparison
 
 | Platform | Auth | API Type | Best For |
 |----------|------|----------|----------|
 | Lalafo.kg | RiskBypass + proxy | REST | General search, real estate |
 | Mashina.kg | None | Public REST | Auto search, price comparison |
-| Bazar.kg | None | HTML scraping | General goods, electronics |
 
+## Key Design Decisions
+
+- **tg-agent architecture** — Deterministic search + LLM curation + deterministic rendering. LLM never touches trust-critical facts.
+- **Structured reply contract** — `{:mode :shortlist :cards [...] :intro "..." :cta "..." :assumptions [...]}`. Transport layer renders from structured data.
+- **Turn classifier** — `policy.clj` classifies intent deterministically before LLM. Search goes through orchestrator, unknown falls back to full LLM agent.
+- **Monitor notifications** — Use same `render/render-reply` for consistent card formatting.
 - **DeepSeek** (`:deepseek-v4-pro`) — adequate Russian + tool calling. Token from `pass deepseek-api/token`. Config: `resources/config.edn` models map.
-- **Direct Clojure search + categories + research** — All tools use Java HttpClient directly. Zero Python shell-outs.
-- **clj-harness middleware stack** — core-agent → wrap-tools → wrap-retry → wrap-logging. `:nudges` requires `smart_search` before final answers.
-- **HTML parse_mode** — `tg/format.clj` converts LLM markdown to HTML, sent with `parse_mode="HTML"`.
-- **Progressive streaming** — `handle-message-stream!` with phase tracking (`:initial` → `:streaming` → `:tool` → `:done`). Debounced edits (max once per 1500ms). Status callback for phase changes (🧠 thinking → 🔧 tool).
+- **clj-harness** — middleware stack: core-agent → wrap-tools → wrap-retry → wrap-logging. `:nudges` requires tools before final answers.
+- **HTML parse_mode** — `render.clj` builds Telegram HTML deterministically, sent with `parse_mode="HTML"`.
 - **Monitor in same JVM** — Avoids separate deployment. `server.clj` auto-starts monitor thread if not already running.
-- **Accessory filter** — `scanner.clj` excludes чехол, зарядка, ремонт, установка, etc. from monitor results. Price cap: 500K KGS.
-
-## Notebook (Live Search UI)
-
-Clerk notebook for exploring all marketplace platforms:
-
-```bash
-# Start Clerk notebook server
-./start-notebook.sh
-
-# Open http://localhost:7777/notebooks/marketplace
-```
-
-**Features:**
-- Search across Bazar.kg and Mashina.kg
-- Popular brands comparison
-- Category browser
-- Auto-updates on file save
-
-## Tools
-
-### smart_search (single tool for all purchase queries)
-
-Handles the full pipeline internally:
-1. **LLM query generation** — Generates 4-6 optimal search queries from user intent
-2. **Optional research** — For niche products, researches model names first
-3. **Lalafo search** — Searches with generated queries
-4. **Returns curated results** — Formatted for Telegram
-
-**Retry logic:** DeepSeek sometimes returns empty content for query generation. 3-attempt retry with fallback to raw user query.
-
-**Nudge:** `:required-steps ["smart_search"]` — agent must call smart_search before final answer for purchase queries.
 
 ## Running (local/dev)
 
@@ -135,35 +101,21 @@ BOT_TOKEN='...' clojure -M:bot
 # Monitor only (standalone, no Telegram)
 clojure -M:monitor
 
-# Run test suite
-clojure -M -e '(require (quote [tapalakbot.test-scenarios :as ts])) (ts/run-all-tests)'
+# Run tests
+clojure -M:test -d test/tapalakbot/render_test.clj test/tapalakbot/policy_test.clj test/tapalakbot/orchestrator_test.clj
 ```
 
-## Testing Streaming Locally (REPL-first)
+## Testing
 
-**Never debug streaming in prod.** Test in REPL first:
+```bash
+# All new tests (28 tests, 111 assertions)
+clojure -M:test -d test/tapalakbot/render_test.clj test/tapalakbot/policy_test.clj test/tapalakbot/orchestrator_test.clj
 
-```clojure
-;; 1. Start REPL
-clojure -Sdeps '{:deps {nrepl/nrepl {:mvn/version "1.2.0"}}}' -M -m nrepl.cmdline --port 7899
-
-;; 2. Load bot
-(require '[tapalakbot.core :as t])
-(require '[clj-harness.core :as hc])
-
-;; 3. Test streaming to terminal (no Telegram needed)
-(hc/handle-message-stream! @t/tapalakbot "test-user" "найди iphone 13"
-  (fn [delta] (print delta) (flush))
-  :status-cb (fn [s] (println "\nSTATUS:" s)))
-
-;; 4. Check streaming logs
-tail -f /tmp/tapalakbot.log | grep stream-delta
+# Individual test files
+clojure -M:test -d test/tapalakbot/render_test.clj
+clojure -M:test -d test/tapalakbot/policy_test.clj
+clojure -M:test -d test/tapalakbot/orchestrator_test.clj
 ```
-
-**What to look for:**
-- `stream-delta` logs appear incrementally (not all at once)
-- Phase transitions: `:initial` → `:streaming` → `:tool` → `:streaming` → `:done`
-- No gaps >5s between deltas
 
 ## Gotchas
 
@@ -182,10 +134,7 @@ tail -f /tmp/tapalakbot.log | grep stream-delta
 
 ### General
 
-- **DeepSeek empty responses** — DeepSeek sometimes returns `""` for query generation. 3-attempt retry with fallback to raw user query.
-- **Healthcheck at startup** — Bot runs `lalafo/smoke-test` on boot. Logs `:healthcheck-pass` or `:healthcheck-fail`.
-- **Local dev deps.edn** — Uses `:local/root` for clj-harness. Don't commit this — git SHA in committed tree.
-- **Only ONE process per bot token** — Two pollers = 409 Conflict.
-- **Table stripping safety net** — `bot.clj` regex-strips `| --- |` even if LLM ignores rules.
+- **Java (?i) doesn't work for Cyrillic** — `policy.clj` lowercases input before regex matching. Never use `(?i)` with Russian text.
 - **clj-harness pinned** — git dep SHA in deps.edn. `:local/root` for dev, git SHA for deploy.
+- **Only ONE process per bot token** — Two pollers = 409 Conflict.
 - **Lalafo search noise** — Generic queries return junk. Use exact model names.
