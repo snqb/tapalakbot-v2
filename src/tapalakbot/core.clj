@@ -337,23 +337,25 @@ Rules:
 (defn- resolve-category
   "Use LLM to find the right Lalafo category for a user query."
   [user-query]
-  (try
-    (let [categories (lalafo/search-categories user-query)
-          messages [{:role "system" :content category-picker-prompt}
-                    {:role "user" :content (str "Query: " user-query "\n\n" categories)}]
-          resp (llm/llm :kimi-k2 messages [] :provider :openrouter :max-tokens 300)
-          content (get-in resp ["choices" 0 "message" "content"])]
-      (when content
-        (let [cat-id (some-> content
-                             (re-find #"\"category_id\":\s*(\d+)")
-                             second
-                             parse-long)]
-          (when cat-id
-            (log/info :category-resolved :query user-query :category-id cat-id)
-            cat-id))))
-    (catch Exception e
-      (log/warn :category-resolution-failed :error (ex-message e))
-      nil)))
+  (when (and user-query (not (str/blank? user-query)))
+    (try
+      (let [categories (lalafo/search-categories user-query)
+            categories-str (or categories "No categories available")]
+        (let [messages [{:role "system" :content category-picker-prompt}
+                        {:role "user" :content (str "Query: " user-query "\n\n" categories-str)}]
+              resp (llm/llm :kimi-k2 messages [] :provider :openrouter :max-tokens 300)
+              content (get-in resp ["choices" 0 "message" "content"])]
+          (when content
+            (let [cat-id (some-> content
+                                 (re-find #"\"category_id\":\s*(\d+)\"")
+                                 second
+                                 parse-long)]
+              (when cat-id
+                (log/info :category-resolved :query user-query :category-id cat-id)
+                cat-id)))))
+      (catch Exception e
+        (log/warn :category-resolution-failed :error (ex-message e))
+        nil))))
 
 (defn- research-execute
   "Tool: research product knowledge online."
@@ -457,8 +459,12 @@ Rules:
   [args]
   (let [user-id (or (get-thread-user-id) (get args "_user_id") "anonymous")
         user-want (get args "user_want")]
-    (binding [*current-user-id* user-id]
-      (let [_ (swap! url-store dissoc user-id)
+    ;; Guard: if user_want is nil/blank, return error immediately
+    (if (or (nil? user-want) (str/blank? user-want))
+      (str "ERROR: search requires a user_want parameter — the product you want to find. "
+           "Use the exact text the user asked about.")
+      (binding [*current-user-id* user-id]
+        (let [_ (swap! url-store dissoc user-id)
             ;; Step 0: LLM-based category resolution
             category-id (resolve-category user-want)
             ;; Step 1: Parse user intent with QueryBuilder (price, platform)
@@ -514,7 +520,7 @@ Rules:
                                   nil)))]
         ;; Combine results
         (str (when lalafo-results lalafo-results)
-             (when mashina-results (str "\n\n" mashina-results)))))))
+             (when mashina-results (str "\n\n" mashina-results))))))))
 
 (def tools
   [{:name "research"
@@ -549,7 +555,7 @@ Rules:
 
 (def ^:private purchase-intent-pattern
   "Patterns indicating a purchase/search intent."
-  #"(?i)(найди|ищ[уе]|купи[ть]|сколько стоит|цена|в продаже|покажи|хочу|ищу|надо|нужен|нужна|нужно|прода[ею]|до \d+|от \d+|б/у|подерж|бу\b|нов[аы]я|планшет|ноут|телефон|айфо|iphone|samsung|xiaomi|макбук|пылесос|роутер|телевиз|монитор|наушник|мышк[аи]|клавиатур|видеокарт|процессор|холодильник|стирал|велосипед|самокат|hyundai|toyota|honda|bmw|mercedes|lexus|квартир|участ[ко])")
+  #"(?i)(найди|ищ[уе]|купи[ть]|сколько стоит|цена|в продаже|покажи|хочу|ищу|надо|нужен|нужна|нужно|прода[ею]|до \d+|от \d+|б/у|подерж|бу\b|нов[аы]я|планшет|айпад|ipad|ноут|телефон|айфо|iphone|samsung|xiaomi|макбук|пылесос|роутер|телевиз|монитор|наушник|мышк[аи]|клавиатур|видеокарт|процессор|холодильник|стирал|велосипед|самокат|hyundai|toyota|honda|bmw|mercedes|lexus|квартир|участ[ко])")
 
 (def ^:private greeting-pattern
   "Patterns that are just greetings (skip auto-search)."
