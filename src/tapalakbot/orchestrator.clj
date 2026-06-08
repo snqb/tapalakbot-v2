@@ -46,25 +46,24 @@
 ;; ════════════════════ LLM CURATOR ════════════════════
 
 (def ^:private curator-prompt
-  "You are a marketplace assistant curator. Given search results, pick the best 5-8 items
-and write a brief Russian intro + CTA.
+  "Ты куратор маркетплейса для бота по поиску товаров на Lalafo.kg (Кыргызстан).
 
-Return ONLY a JSON object:
+Даны результаты поиска. Выбери лучшие 5-8 товаров и напиши краткое вступление + CTA на русском.
+
+Верни ТОЛЬКО JSON:
 {
   \"selected\": [0, 2, 4, 5, 7],
-  \"tiers\": {\"0\": \"great\", \"2\": \"good\", \"4\": \"good\", \"5\": \"premium\", \"7\": \"premium\"},
   \"intro\": \"Нашёл iPhone 13 на Lalafo.kg — 8 вариантов!\",
   \"cta\": \"Хотите сузить по бюджету или состоянию?\",
   \"assumptions\": [\"Цены в сомах\"]
 }
 
-Rules:
-- selected: indices of best items (0-based) from the results list
-- tiers: \"great\" (best price), \"good\" (fair), \"premium\" (expensive)
-- intro: 1 line, Russian, include platform name and count
-- cta: 1 line suggestion for next action
-- assumptions: 0-2 lines about what you assumed (price currency, condition, etc.)
-- Keep intro under 100 chars, CTA under 60 chars")
+Правила:
+- selected: индексы лучших товаров (0-based). Пропускай аксессуары и мусор.
+- intro: 1 строка, русский, упомяни платформу и количество. Будь конкретен.
+- cta: 1 строка — предложение следующего действия (фильтр по цене, состоянию, локации)
+- assumptions: 0-2 строки о предположениях (валюта, состояние, регион)
+- Вступление до 100 символов, CTA до 60 символов")
 
 (defn- parse-curated-response
   "Parse LLM curator response into structured data."
@@ -80,21 +79,11 @@ Rules:
                    (catch Exception _
                      {}))
           selected-idx (or (:selected parsed)
-                           (vec (range (min 8 cards-count))))
-          tiers (:tiers parsed {})]
-      {:intro       (:intro parsed "Нашёл варианты")
-       :cta         (:cta parsed "Хотите уточнить?")
-       :assumptions (or (:assumptions parsed) [])
-       :selected-idx selected-idx
-       :tiers       (into {}
-                          (map (fn [[k v]]
-                                 (let [key-long (cond
-                                                  (string? k) (parse-long k)
-                                                  (keyword? k) (parse-long (name k))
-                                                  (number? k) (long k)
-                                                  :else nil)]
-                                   [key-long (keyword (str v))]))
-                               tiers))})
+                           (vec (range (min 8 cards-count))))]
+     {:intro       (:intro parsed "Нашёл варианты")
+      :cta         (:cta parsed "Хотите уточнить?")
+      :assumptions (or (:assumptions parsed) [])
+      :selected-idx selected-idx})
     (catch Exception e
       (log/warn :curator-parse-failed (.getMessage e))
       {:intro         "Нашёл варианты"
@@ -193,13 +182,11 @@ Rules:
           no-results-reply
           (let [curated    (call-curator query cards stats)
                 selected   (mapv #(get cards %) (:selected-idx curated))
-                ;; Apply tier overrides from curator
+                ;; Deterministic tier assignment from stats
                 final-cards (mapv
-                             (fn [i card]
-                               (if-let [tier (get (:tiers curated) i)]
-                                 (assoc card :tier tier)
-                                 card))
-                             (:selected-idx curated)
+                             (fn [card]
+                               (let [tier (render/assign-tier (:price card) (:avg stats))]
+                                 (assoc card :tier (or tier :good))))
                              selected)]
             (patch-session! session {:last-search  query
                                     :last-platforms platforms})
@@ -219,7 +206,11 @@ Rules:
         (if (empty? cards)
           no-results-reply
           (let [curated  (call-curator query cards stats)
-                selected (mapv #(get cards %) (:selected-idx curated))]
+                selected (mapv
+                          (fn [card]
+                            (let [tier (render/assign-tier (:price card) (:avg stats))]
+                              (assoc card :tier (or tier :good))))
+                          (mapv #(get cards %) (:selected-idx curated)))]
             (patch-session! session {:last-search refined-query})
             {:mode           :refine
              :intro          (:intro curated)
