@@ -60,7 +60,7 @@
   (let [seen (volatile! #{})]
     (filterv
      (fn [card]
-       (let [key (subs (str/lower-case (or (:title card) "")) 0
+       (let [key (subs (str/lower-case (str (:title card))) 0
                        (min 20 (count (or (:title card) ""))))]
          (if (@seen key)
            false
@@ -204,4 +204,5 @@
      {:cards    (vec sorted)
       :stats    stats
       :platforms platforms
-      :query    query})))
+      :query    query
+      :qb-result qb-result})))

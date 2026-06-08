@@ -569,7 +569,11 @@
     (when-let [m (tg/send-message chat-id "💭 ..." :parse-mode nil)]
       (reset! thinking-msg-id (some-> m (get "result") (get "message_id"))))
     (try
-      (let [reply (orch/orchestrate text session status-cb)]
+      (let [cfg (-> @t/tapalakbot :config)
+            reply (orch/orchestrate text session
+                    :model (or (:model cfg) :kimi-k2)
+                    :provider (or (:provider cfg) :openrouter)
+                    :status-cb status-cb)]
         (case (:mode reply)
           ;; Reset
           :reset

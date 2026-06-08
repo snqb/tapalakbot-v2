@@ -5,10 +5,14 @@
             [tapalakbot.search :as search]
             [tapalakbot.render :as render]
             [tapalakbot.monitor.store :as monitor-store]
-            [tapalakbot.query-builder :as qb]
             [clj-harness.llm :as llm]
             [clojure.string :as str]
             [clojure.tools.logging :as log]))
+
+;; ════════════════════ DEFAULT CONFIG ════════════════════
+
+(def ^:private default-model :kimi-k2)
+(def ^:private default-provider :openrouter)
 
 ;; ════════════════════ SESSION STATE ════════════════════
 
@@ -37,27 +41,27 @@
                          %)
                       categories)]
       (when match
-        {:avg  (:avg_price match)
-         :min  (:min_price match)
-         :max  (:max_price match)
-         :count (:item_count match)
+        {:avg      (:avg_price match)
+         :min      (:min_price match)
+         :max      (:max_price match)
+         :count    (:item_count match)
          :category (:name match)}))
     (catch Exception _ nil)))
 
 ;; ════════════════════ LLM CURATOR ════════════════════
 
 (def ^:private curator-prompt
-  "Ты — куратор для Telegram-бота. Верни ТОЛЬКО валидный JSON без markdown, без пояснений, без текста до или после.
+  "You are a marketplace curator for a Telegram bot. Return ONLY valid JSON — no markdown, no commentary.
 
-Формат:
-{\"selected\":[0,2,4],\"intro\":\"Нашёл 5 роутеров на Lalafo.kg\",\"cta\":\"Хотите дешевле?\",\"assumptions\":[\"Цены в сомах\"]}
+Format:
+{\"selected\":[0,2,4],\"intro\":\"Found 5 routers on Lalafo.kg\",\"cta\":\"Filter by price?\",\"assumptions\":[\"Prices in KGS\"]}
 
-Правила:
-- selected: массив из 4-6 индексов (0-based). Бери только лучшие. НЕ более 6 товаров.
-- intro: 1 предложение на русском, до 80 символов. Упомяни количество и платформу.
-- cta: 1 короткий вопрос-предложение, до 50 символов
-- assumptions: 0-1 строка о предположениях
-- НЕ используй markdown, bullet points, эмодзи-списки. Только JSON.")
+Rules:
+- selected: array of 4-6 indices (0-based). Pick only the best items. MAX 6 items.
+- intro: 1 sentence, up to 80 chars. Mention count and platform. Be specific.
+- cta: 1 short question/suggestion, up to 50 chars
+- assumptions: 0-1 line about what you assumed
+- NO markdown, NO bullet points, NO emoji lists. ONLY JSON.")
 
 (defn- sanitize-intro
   "Strip markdown, bullets, and excessive formatting from curator intro.
@@ -65,83 +69,123 @@
   [s]
   (when s
     (-> (str s)
-        (str/replace #"\*\*" "")           ;; remove **bold**
-        (str/replace #"\*" "")             ;; remove *italic*
-        (str/replace #"^[•\-\d\.]+\s*" "") ;; remove leading bullets/numbers
-        (str/replace #"\n+" " ")           ;; collapse newlines
+        (str/replace #"\*\*" "")              ;; remove **bold**
+        (str/replace #"\*" "")                ;; remove *italic*
+        (str/replace #"^[•\-\d\.]+\s*" "")    ;; remove leading bullets/numbers
+        (str/replace #"\n+" " ")              ;; collapse newlines
         str/trim
-        (subs 0 (min 100 (count s))))))    ;; cap at 100 chars
+        (subs 0 (min 100 (count s))))))       ;; cap at 100 chars
 
 (defn- parse-curated-response
   "Parse LLM curator response into structured data."
   [content cards-count]
   (try
-    (let [;; Strip markdown code fences (```json ... ```) before extracting JSON
-          stripped (-> (or content "")
+    (let [stripped (-> (or content "")
                        (str/replace #"```json\s*" "")
                        (str/replace #"```\s*" ""))
           json-str (or (re-find #"(?s)\{.*\}" stripped) "{}")
           parsed (try
                    (cheshire.core/parse-string json-str true)
-                   (catch Exception _
-                     {}))
+                   (catch Exception _ {}))
           ;; Cap at 6 items max
           raw-selected (:selected parsed)
           selected-idx (if (and (vector? raw-selected) (seq raw-selected))
                          (vec (take 6 raw-selected))
                          (vec (range (min 6 cards-count))))]
-     {:intro       (or (sanitize-intro (:intro parsed)) "Нашёл варианты")
-      :cta         (:cta parsed "Хотите уточнить?")
-      :assumptions (or (:assumptions parsed) [])
-      :selected-idx selected-idx})
+      {:intro       (or (sanitize-intro (:intro parsed)) "Нашёл варианты")
+       :cta         (:cta parsed "Хотите уточнить?")
+       :assumptions (or (:assumptions parsed) [])
+       :selected-idx selected-idx})
     (catch Exception e
       (log/warn :curator-parse-failed (.getMessage e))
-      {:intro         "Нашёл варианты"
-       :cta           "Хотите уточнить?"
-       :assumptions   []
-       :selected-idx  (vec (range (min 8 cards-count)))
-       :tiers         {}})))
+      {:intro        "Нашёл варианты"
+       :cta          "Хотите уточнить?"
+       :assumptions  []
+       :selected-idx (vec (range (min 6 cards-count)))})))
 
 (defn- call-curator
   "Call LLM to curate search results. Returns curated reply map."
-  [user-query cards stats]
+  [user-query cards stats model provider]
   (try
-    (let [market-ctx (get-market-context user-query)
+    (let [market-ctx  (get-market-context user-query)
           results-text (str/join "\n"
-                                 (map-indexed
-                                  (fn [i c]
-                                    (str i ". " (:title c)
-                                         " — " (:price c) " " (or (:currency c) "KGS")
-                                         (when (:url c) (str " | " (:url c)))
-                                         (when (:year c) (str " | " (:year c) " г."))
-                                         (when (:city c) (str " | " (:city c)))))
-                                  cards))
+                        (map-indexed
+                         (fn [i c]
+                           (str i ". " (:title c)
+                                " — " (:price c) " " (or (:currency c) "KGS")
+                                (when (:url c) (str " | " (:url c)))
+                                (when (:year c) (str " | " (:year c) " yr"))
+                                (when (:city c) (str " | " (:city c)))))
+                         cards))
           context (str "User query: " user-query "\n"
                        (when market-ctx
                          (str "Market avg: " (long (:avg market-ctx)) " KGS\n"))
                        "Results (" (count cards) " items):\n" results-text)
           messages [{"role" "system" "content" curator-prompt}
                     {"role" "user" "content" context}]
-          resp (llm/llm :kimi-k2 messages [] :provider :openrouter :max-tokens 500)
+          resp    (llm/llm model messages [] :provider provider :max-tokens 500)
           content (get-in resp ["choices" 0 "message" "content"])]
       (parse-curated-response content (count cards)))
     (catch Exception e
       (log/warn :curator-call-failed (.getMessage e))
-      {:intro         (str "Нашёл " (count cards) " вариантов")
-       :cta           "Хотите уточнить?"
-       :assumptions   []
-       :selected-idx  (vec (range (min 6 (count cards))))
-       :tiers         {}})))
+      {:intro        (str "Нашёл " (count cards) " вариантов")
+       :cta          "Хотите уточнить?"
+       :assumptions  []
+       :selected-idx (vec (range (min 6 (count cards))))})))
+
+;; ════════════════════ COMPARISON ════════════════════
+
+(def ^:private compare-prompt
+  "You are a marketplace assistant. Compare two products based on search results.
+Return ONLY valid JSON:
+{\"intro\":\"Comparing iPhone 13 vs Samsung S21…\",\"comparison_points\":[\"iPhone is cheaper\",\"Samsung has better camera\"],\"verdict\":\"For budget, pick iPhone. For camera, pick Samsung.\",\"cta\":\"Want to search for one of these?\"}")
+
+(defn- compare-products
+  "Run searches for both items and produce a comparison."
+  [text model provider]
+  (try
+    ;; Extract two items from comparison query
+    (let [parts (str/split text #"\s+(?:vs|или|versus|and|и|vs\.|против)\s+" 2)
+          ;; If no vs/or detected, search the whole text
+          [item1 item2] (if (= (count parts) 2)
+                          [(first parts) (second parts)]
+                          [text (re-find #"и\s+(\S+)" (str/lower-case text))])
+          _ (when item2 nil) ;; ensure item2 binding
+          ;; Search both
+          _ (log/info :compare :item1 item1 :item2 item2)
+          result1 (search/search (or item1 text) {:use-llm? false})
+          result2 (search/search (or item2 item1) {:use-llm? false})
+          context (str "Comparison requested: " text "\n\n"
+                       "Results for \"" (or item1 text) "\" (" (count (:cards result1)) " items):\n"
+                       (str/join "\n" (map #(str (:title %) " — " (:price %) " " (:currency %))
+                                            (take 5 (:cards result1)))) "\n\n"
+                       "Results for \"" (or item2 item1) "\" (" (count (:cards result2)) " items):\n"
+                       (str/join "\n" (map #(str (:title %) " — " (:price %) " " (:currency %))
+                                            (take 5 (:cards result2)))))
+          messages [{"role" "system" "content" compare-prompt}
+                    {"role" "user" "content" context}]
+          resp    (llm/llm model messages [] :provider provider :max-tokens 500)
+          content (get-in resp ["choices" 0 "message" "content"])
+          json-str (or (re-find #"(?s)\{.*\}" (or content "{}")) "{}")
+          parsed (try (cheshire.core/parse-string json-str true) (catch Exception _ {}))]
+      {:mode  :shortlist
+       :intro (or (sanitize-intro (:intro parsed))
+                  (str "Comparing " (or item1 "items") " vs " (or item2 "alternatives")))
+       :cards []
+       :cta   (:cta parsed "Want to search for one of these?")
+       :assumptions (or (:assumptions parsed) [])})
+    (catch Exception e
+      (log/warn :compare-failed (.getMessage e))
+      {:mode :shortlist
+       :intro "🔍 Воспользуйтесь поиском — напишите что ищете, и я покажу варианты для сравнения."
+       :cards [] :cta nil :assumptions []})))
 
 ;; ════════════════════ FAST PATH REPLIES ════════════════════
 
 (def ^:private greeting-reply
   {:mode :shortlist
    :intro (str "👋 Салам! Я TapalakBot — помогу найти товары на Lalafo.kg\n\n"
-               "Напишите что ищете, и я:\n"
-               "• Разберусь в товаре\n"
-               "• Найду лучшие варианты\n"
-               "• Проверю рыночные цены 🔍")
+               "Просто напишите что ищете! 🔍")
    :cards [] :cta nil :assumptions []})
 
 (def ^:private thanks-reply
@@ -158,11 +202,7 @@
                "🔄 Новый диалог — сбросить контекст")
    :cards [] :cta nil :assumptions []})
 
-(def ^:private no-results-reply
-  {:mode :no-results
-   :intro "Ничего не найдено. Попробуйте изменить запрос."
-   :cards [] :cta nil :assumptions []})
-
+;; ════════════════════ REFINE ════════════════════
 
 (defn- apply-refine
   "Apply refine keyword to existing search state."
@@ -204,10 +244,9 @@
 
 (defn orchestrate
   "Main entry point. Takes user message + session, returns structured reply.
-
-   Returns: {:mode :shortlist :intro \"...\" :cards [...] :cta \"...\" :assumptions [...]}
-   Or for fast paths: {:mode :shortlist :intro \"...\" :cards []}"
-  [text session & [status-cb]]
+   Options: :model :provider :status-cb"
+  [text session & {:keys [model provider status-cb]
+                   :or {model default-model provider default-provider}}]
   (let [state (get-session-data session)
         mode  (policy/classify text state)]
     (log/info :orchestrate :mode mode :text (let [t (or text "")]
@@ -218,8 +257,8 @@
       :greeting
       (if (:last-search state)
         {:mode :shortlist
-         :intro (str "👋 Салам! Возвращаемся к «" (:last-search state) "»?\n\n"
-                      "Или напишите новый запрос!")
+         :intro (str "👋 Салам! Returning to «" (:last-search state) "»?\n\n"
+                     "Or write a new query!")
          :cards [] :cta nil :assumptions []}
         greeting-reply)
       :thanks    thanks-reply
@@ -227,34 +266,32 @@
       :reset     {:mode :reset}
       :tracking  {:mode :tracking}
 
-      ;; ── Search paths ──
+      ;; ── Search ──
       :search
-      (let [_ (when status-cb (status-cb "🔍 Ищу на Lalafo.kg..."))
-            qb-result (try (tapalakbot.query-builder/build text :use-llm? true) (catch Exception _ {}))
-            {:keys [cards stats platforms query]}
+      (let [{:keys [cards stats platforms query qb-result] :as result}
             (search/search text {:use-llm? true})]
         (if (empty? cards)
-          no-results-reply
-          (let [_ (when status-cb (status-cb (str "📊 Обрабатываю " (count cards) " результатов...")))
-                curated    (call-curator query cards stats)
-                selected   (mapv #(get cards %) (:selected-idx curated))
-                ;; Deterministic tier assignment from stats
-                final-cards (mapv
-                             (fn [card]
-                               (let [tier (render/assign-tier (:price card) (:avg stats))]
-                                 (assoc card :tier (or tier :good))))
-                             selected)]
+          {:mode :no-results
+           :intro "Nothing found. Try a different query."
+           :cards [] :cta nil :assumptions []}
+          (let [_           (when status-cb (status-cb (str "📊 Processing " (count cards) " results...")))
+                curated     (call-curator query cards stats model provider)
+                selected    (mapv #(get cards %) (:selected-idx curated))
+                final-cards (mapv (fn [card]
+                                    (let [tier (render/assign-tier (:price card) (:avg stats))]
+                                      (assoc card :tier (or tier :good))))
+                                  selected)]
             (patch-session! session {:last-search     query
-                                    :last-platforms   platforms
-                                    :last-price-max   (:price-max qb-result)
-                                    :last-price-min   (:price-min qb-result)
-                                    :last-category    (cond
-                                                        (:is-auto? qb-result) :auto
-                                                        (:is-electronics? qb-result) :electronics
-                                                        (:is-real-estate? qb-result) :real-estate
-                                                        :else :general)
-                                    :last-card-count  (count final-cards)})
-            (when status-cb (status-cb "✨ Подбираю лучшие..."))
+                                     :last-platforms   platforms
+                                     :last-price-max   (:price-max qb-result)
+                                     :last-price-min   (:price-min qb-result)
+                                     :last-category    (cond
+                                                         (:is-auto? qb-result) :auto
+                                                         (:is-electronics? qb-result) :electronics
+                                                         (:is-real-estate? qb-result) :real-estate
+                                                         :else :general)
+                                     :last-card-count  (count final-cards)})
+            (when status-cb (status-cb "✨ Curating best picks..."))
             {:mode           :shortlist
              :intro          (:intro curated)
              :cards          final-cards
@@ -263,37 +300,38 @@
              :platforms-used platforms
              :query          query})))
 
+      ;; ── Refine ──
       :refine
-      (let [_ (when status-cb (status-cb "🔍 Ищу на Lalafo.kg..."))
-            last-search (or (:last-search state) text)
-            refined (apply-refine last-search text state)
+      (let [last-search   (or (:last-search state) text)
+            refined       (apply-refine last-search text state)
             {:keys [cards stats platforms query]}
             (search/search (:query refined) {:use-llm? true})]
         (if (empty? cards)
-          no-results-reply
-          (let [_ (when status-cb (status-cb (str "📊 Обрабатываю " (count cards) " результатов...")))
-                curated  (call-curator query cards stats)
-                selected (mapv
-                          (fn [card]
-                            (let [tier (render/assign-tier (:price card) (:avg stats))]
-                              (assoc card :tier (or tier :good))))
-                          (mapv #(get cards %) (:selected-idx curated)))]
+          {:mode :no-results
+           :intro "Nothing found after refining. Try broadening."
+           :cards [] :cta nil :assumptions []}
+          (let [_           (when status-cb (status-cb (str "📊 Processing " (count cards) " results...")))
+                curated     (call-curator query cards stats model provider)
+                selected    (mapv #(get cards %) (:selected-idx curated))
+                final-cards (mapv (fn [card]
+                                    (let [tier (render/assign-tier (:price card) (:avg stats))]
+                                      (assoc card :tier (or tier :good))))
+                                  selected)]
             (patch-session! session {:last-search (:query refined)
                                      :last-price-max (:price-max refined)})
-            (when status-cb (status-cb "✨ Подбираю лучшие..."))
+            (when status-cb (status-cb "✨ Curating best picks..."))
             {:mode           :refine
              :intro          (:intro curated)
-             :cards          selected
+             :cards          final-cards
              :cta            (:cta curated)
              :assumptions    (into (vec (:assumptions curated)) (:assumptions refined))
              :platforms-used platforms
              :query          (:query refined)})))
 
+      ;; ── Compare ──
       :compare
-      {:mode  :shortlist
-       :intro "🔍 Воспользуйтесь поиском — напишите что ищете, и я покажу варианты для сравнения."
-       :cards [] :cta nil :assumptions []}
+      (compare-products text model provider)
 
-      ;; ── Unknown: signal to bot.clj to use LLM agent ──
+      ;; ── Unknown ──
       {:mode  :unknown
        :llm-context {:text text :session-state state}})))

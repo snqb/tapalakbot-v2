@@ -67,9 +67,8 @@
       (re-find help-re tl)        :help
       (re-find thanks-re tl)      :thanks
 
-      ;; Refine: short message + has session state + refine keyword
-      (and session-state
-           (< (count t) 30)
+      ;; Refine: short message with refine keyword (works even without session)
+      (and (< (count t) 30)
            (contains? refine-keywords tl))
       :refine
 

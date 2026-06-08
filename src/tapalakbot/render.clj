@@ -74,7 +74,7 @@
                    condition (conj (str "📋 " (escape-html condition))))
         chip-str (when (seq chips) (str/join " · " chips))
         ;; Desc snippet (first 80 chars)
-        desc-snip (when (and desc (> (count desc) 10))
+        desc-snip (when (and desc (pos? (count desc)))
                     (let [d (subs desc 0 (min 80 (count desc)))]
                       (str "<i>" (escape-html d)
                            (when (> (count desc) 80) "…") "</i>")))]
