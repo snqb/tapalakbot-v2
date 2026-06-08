@@ -21,17 +21,19 @@
      :desc     (get item "desc")}))
 
 (defn mashina-item->card
-  "Convert a Mashina listing to a card map."
+  "Convert a Mashina listing to a card map.
+   Normalizes price to a flat number (not nested map)."
   [listing]
-  {:title    (:title listing)
-   :price    (when-let [p (:price listing)]
-               {:amount   (:amount p)
-                :currency (:currency p)})
-   :url      (:url listing)
-   :year     (:year listing)
-   :mileage  (:mileage listing)
-   :city     (:city listing)
-   :platform :mashina})
+  (let [p (:price listing)]
+    {:title    (:title listing)
+     :price    (when (and p (:amount p)) (long (:amount p)))
+     :currency (or (:currency p) "KGS")
+     :url      (:url listing)
+     :year     (:year listing)
+     :mileage  (when-let [m (:mileage listing)]
+                 (when (number? m) (long m)))
+     :city     (:city listing)
+     :platform :mashina}))
 
 ;; ════════════════════════════ FILTERING ════════════════════════════
 

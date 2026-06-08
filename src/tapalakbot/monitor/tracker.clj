@@ -9,6 +9,7 @@
   (:require [tapalakbot.monitor.store :as store]
             [tapalakbot.lalafo :as lalafo]
             [tapalakbot.query-builder :as qb]
+            [tapalakbot.render :as render]
             [clj-harness.telegram :as tg]
             [clj-harness.llm :as llm]
             [cheshire.core :as json]
@@ -159,25 +160,25 @@ Rules:
     "цена неизвестна"))
 
 (defn- format-notification
-  "Format a notification message for relevant items."
+  "Format a notification message for relevant items using render module."
   [track-title items]
-  (let [lines (mapv (fn [item]
-                      (let [title (get item "title" "")
-                            short-title (if (> (count title) 60)
-                                          (subs title 0 57) "...")
-                            price (get item "price")
-                            price-str (format-price price)
-                            raw-url (or (get item "url") "")
+  (let [cards (mapv (fn [item]
+                      (let [raw-url (or (get item "url") "")
                             url (if (str/starts-with? raw-url "http")
                                   raw-url
                                   (str "https://lalafo.kg" raw-url))]
-                        (str "• " short-title
-                             (when (and price (> price 0))
-                               (str "\n  💰 " price-str))
-                             "\n  🔗 " url)))
-                    items)]
-    (str "🔔 *«" track-title "»* — " (count items) " новых\n\n"
-         (str/join "\n\n" lines))))
+                        {:title    (get item "title" "")
+                         :price    (get item "price")
+                         :currency "KGS"
+                         :url      url
+                         :platform :lalafo}))
+                    items)
+        reply {:mode :shortlist
+               :intro (str "🔔 <b>«" track-title "»</b> — " (count items) " новых")
+               :cards cards
+               :cta nil
+               :assumptions []}]
+    (render/render-reply reply)))
 
 (defn- extract-user-id-from-track
   "Extract numeric Telegram user ID from track user-id (format: 'tg-123456')."

@@ -24,4 +24,9 @@
   :notebook {:main-opts ["-m" "nextjournal.clerk"]
              :exec-args {:browse true
                          :watch-paths ["notebooks" "src"]}}
-  :repl    {:main-opts ["-r"]}}}
+  :repl    {:main-opts ["-r"]}
+  :test    {:extra-paths ["test"]
+            :extra-deps {com.cognitect/test-runner {:git/url "https://github.com/cognitect-labs/test-runner"
+                                                    :git/sha "3f288f1f16d167723ad87cc35b1dfee3c1681e10"}}
+            :main-opts ["-m" "cognitect.test-runner"]
+            :exec-fn cognitect.test-runner.api/test}}}

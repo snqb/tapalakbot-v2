@@ -103,18 +103,19 @@
   (case mode
     :error      (str "❌ " (or intro "Произошла ошибка. Попробуйте ещё раз."))
     :no-results (str "🔍 " (or intro "Ничего не найдено по вашему запросу.")
-                     (when assumptions
-                       (str "\n\nПредположения: " assumptions)))
-    :clarify    (str "❗ " (or intro "Уточните, пожалуйста, ваш запрос."))
-    ;; Default: full card render
-    (str (when (and intro (not (str/blank? intro)))
-           (str intro "\n\n"))
-         (when (seq cards)
-           (render-cards cards))
-         (when assumptions
-           (str "\n\n_" (escape-html assumptions) "_"))
-         (when (and cta (not (str/blank? cta)))
-           (str "\n\n" cta)))))
+                     (when (seq assumptions)
+                       (str "\n\nПредположения: " (if (vector? assumptions) (str/join " · " assumptions) assumptions))))
+     :clarify    (str "❗ " (or intro "Уточните, пожалуйста, ваш запрос."))
+     ;; Default: full card render
+     (str (when (and intro (not (str/blank? intro)))
+            (str intro "\n\n"))
+          (when (seq cards)
+            (render-cards cards))
+          (when (seq assumptions)
+            (let [a (if (vector? assumptions) (str/join " · " assumptions) (str assumptions))]
+              (str "\n\n<i>" a "</i>")))
+          (when (and cta (not (str/blank? cta)))
+            (str "\n\n" cta)))))
 
 (defn render-welcome
   "Render welcome/greeting message."

@@ -1,9 +1,11 @@
 (ns tapalakbot.bot
   "Telegram bot for TapalakBot v2.
-  Uses progressive streaming for real-time text display.
+  Uses orchestrator for structured search pipeline.
   Button-based tracking UI via inline keyboards.
   Persistent menu: [🔄 Новый диалог] [🔔 Отслеживание]"
   (:require [tapalakbot.core :as t]
+            [tapalakbot.orchestrator :as orch]
+            [tapalakbot.render :as render]
             [tapalakbot.monitor.client :as monitor]
             [tapalakbot.monitor.store :as store]
             [tapalakbot.monitor.tracker :as tracker]
@@ -609,6 +611,79 @@
           (tg/edit-message chat-id msg-id "❌ Ошибка. Попробуйте ещё раз." :parse-mode nil)
           (tg/send-message chat-id "❌ Ошибка. Попробуйте ещё раз." :parse-mode nil))))))
 
+(declare handle-agent)
+
+(defn- render-orchestrated
+  "Render an orchestrator reply to Telegram HTML + buttons."
+  [chat-id msg-id reply user-id query]
+  (let [html (render/render-reply reply)
+        track-btn (when (and (seq (:cards reply)) query)
+                    (track-context-button user-id query))]
+    (when msg-id
+      (try
+        (tg/edit-message chat-id msg-id html :parse-mode "HTML")
+        (catch Exception e
+          (log/error e :orchestrated-edit-fail)
+          (tg/send-message chat-id html :parse-mode "HTML"))))
+    (when track-btn
+      (try
+        (Thread/sleep 300)
+        (tg/send-message chat-id
+                         (str "🔔 Хотите отслеживать «" query "»?")
+                         :reply_markup track-btn)
+        (catch Exception e
+          (log/warn e :track-button-fail))))))
+
+(defn- handle-orchestrated
+  "Handle message via orchestrator pipeline — structured search, deterministic cards."
+  [{:keys [chat-id user-id text] :as msg}]
+  (let [uid (str "tg-" user-id)
+        bot @t/tapalakbot
+        session (hc/get-or-create-session bot uid)
+        thinking-msg-id (atom nil)]
+    ;; Show thinking indicator
+    (when-let [m (tg/send-message chat-id "💭 ..." :parse-mode nil)]
+      (reset! thinking-msg-id (some-> m (get "result") (get "message_id"))))
+    (try
+      (let [reply (orch/orchestrate text session)]
+        (case (:mode reply)
+          ;; Reset
+          :reset
+          (do (hc/reset-session! @t/tapalakbot uid)
+              (release! uid)
+              (store-pending! uid nil)
+              (when-let [msg-id @thinking-msg-id]
+                (tg/edit-message chat-id msg-id "🗑️ Контекст очищен. Начнём заново!" :parse-mode nil))
+              nil)
+
+          ;; Tracking — show subscription list
+          :tracking
+          (do (when-let [msg-id @thinking-msg-id]
+                (try (tg/delete-message chat-id msg-id) (catch Exception _)))
+              (show-tracking-list chat-id user-id)
+              nil)
+
+          ;; Search results — render cards deterministically
+          (:shortlist :refine)
+          (do (render-orchestrated chat-id @thinking-msg-id reply user-id (:query reply))
+              nil)
+
+          ;; Unknown — fall back to full LLM agent
+          :unknown
+          (do (when-let [msg-id @thinking-msg-id]
+                (try (tg/delete-message chat-id msg-id) (catch Exception _)))
+              (handle-agent msg) nil)
+
+          ;; Fallback
+          (do (when-let [msg-id @thinking-msg-id]
+                (tg/edit-message chat-id msg-id "🤔" :parse-mode nil))
+              (handle-agent msg) nil)))
+      (catch Exception e
+        (log/error e :orchestrated-error {:user-id uid})
+        (when-let [msg-id @thinking-msg-id]
+          (try (tg/edit-message chat-id msg-id "❌ Ошибка. Попробуйте ещё раз." :parse-mode nil)
+               (catch Exception _)))))))
+
 (defn- handle-agent
   "Handle agent message with per-user lock and pending queue."
   [{:keys [chat-id user-id] :as msg}]
@@ -721,7 +796,7 @@
         (and (not (str/blank? text))
              (:text parsed))
         (do (handler-future
-             (fn [] (handle-agent parsed)))
+             (fn [] (handle-orchestrated parsed)))
             nil)  ;; return nil immediately to unblock poll loop
 
         :else nil))

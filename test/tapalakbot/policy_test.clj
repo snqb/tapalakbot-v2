@@ -1,0 +1,72 @@
+(ns tapalakbot.policy-test
+  (:require [clojure.test :refer :all]
+            [tapalakbot.policy :as p]))
+
+;; ════════════════════ GREETINGS ════════════════════
+
+(deftest test-greetings
+  (is (= :greeting (p/classify "привет" nil)))
+  (is (= :greeting (p/classify "Привет!" nil)))
+  (is (= :greeting (p/classify "салам" nil)))
+  (is (= :greeting (p/classify "hello" nil)))
+  (is (= :greeting (p/classify "добрый день" nil)))
+  (is (= :greeting (p/classify "  привет  " nil))))
+
+;; ════════════════════ SEARCH ════════════════════
+
+(deftest test-search
+  (is (= :search (p/classify "найди iphone 13" nil)))
+  (is (= :search (p/classify "купить ноутбук до 50000" nil)))
+  (is (= :search (p/classify "hyundai solaris 2020" nil)))
+  (is (= :search (p/classify "ищу роутер до 4000" nil)))
+  (is (= :search (p/classify "сколько стоит samsung galaxy" nil)))
+  (is (= :search (p/classify "iphone 13 pro max 256gb" nil)))
+  (is (= :search (p/classify "купить квартиру в бишкеке" nil))))
+
+;; ════════════════════ FAST PATHS ════════════════════
+
+(deftest test-reset
+  (is (= :reset (p/classify "новый диалог" nil)))
+  (is (= :reset (p/classify "сброс" nil)))
+  (is (= :reset (p/classify "заново" nil))))
+
+(deftest test-tracking
+  (is (= :tracking (p/classify "мои подписки" nil)))
+  (is (= :tracking (p/classify "отслеживание" nil))))
+
+(deftest test-help
+  (is (= :help (p/classify "помощь" nil)))
+  (is (= :help (p/classify "что умеешь" nil))))
+
+(deftest test-thanks
+  (is (= :thanks (p/classify "спасибо" nil)))
+  (is (= :thanks (p/classify "спс" nil)))
+  (is (= :thanks (p/classify "ок" nil)))
+  (is (= :thanks (p/classify "понял" nil))))
+
+;; ════════════════════ COMPARE ════════════════════
+
+(deftest test-compare
+  (is (= :compare (p/classify "что лучше, iphone или samsung" nil)))
+  (is (= :compare (p/classify "сравни macbook air и pro" nil))))
+
+;; ════════════════════ UNKNOWN ════════════════════
+
+(deftest test-unknown
+  (is (= :unknown (p/classify "расскажи анекдот" nil)))
+  (is (= :unknown (p/classify "" nil)))
+  (is (= :unknown (p/classify nil nil))))
+
+;; ════════════════════ DECISION HELPERS ════════════════════
+
+(deftest test-should-search
+  (is (p/should-search? :search))
+  (is (p/should-search? :refine))
+  (is (not (p/should-search? :greeting)))
+  (is (not (p/should-search? :unknown))))
+
+(deftest test-needs-llm
+  (is (p/needs-llm? :unknown))
+  (is (p/needs-llm? :compare))
+  (is (not (p/needs-llm? :search)))
+  (is (not (p/needs-llm? :greeting))))
