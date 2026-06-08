@@ -7,7 +7,7 @@
             [clojure.string :as str]
             [clojure.tools.logging :as log]))
 
-;; ════════════════════════════ CONVERSION ════════════════════════════
+;; ════════════════════ CONVERSION ════════════════════
 
 (defn lalafo-item->card
   "Convert a Lalafo API item (JSON map with string keys) to a card map."
@@ -35,12 +35,17 @@
      :city     (:city listing)
      :platform :mashina}))
 
-;; ════════════════════════════ FILTERING ════════════════════════════
+;; ════════════════════ FILTERING ════════════════════
 
 (def ^:private accessory-bad-words
-  "Words in title that indicate accessory / junk."
+  "Words indicating accessory, service, or non-product listing."
   ["зарядк" "кабел" "чехол" "стекло" "ремонт" "установка"
-   "обложк" "коробка" "настройк"])
+   "обложк" "коробка" "настройк" "адаптер" "переходник"
+   "плeнк" "защитн" "аксессуар" "запчаст" "комплект"
+   "подароч" "упаков" "держател" "кронштейн" "стенд"
+   "подставк" "сидень" "накладк" "наклейк"
+   "обтяжк" "шнур" "провод" "розетк"
+   "удлинител" "объектив" "штатив" "монопод"])
 
 (defn accessory-score
   "Quick deterministic score for junk.
@@ -62,7 +67,7 @@
            (do (vswap! seen conj key) true))))
      cards)))
 
-;; ════════════════════════════ LALAFO SEARCH ════════════════════════════
+;; ════════════════════ LALAFO SEARCH ════════════════════
 
 (defn- search-lalafo
   "Search Lalafo with a vector of queries.
@@ -85,7 +90,7 @@
             items (get parsed "items" [])]
         (mapv lalafo-item->card items)))))
 
-;; ════════════════════════════ MASHINA SEARCH ════════════════════════════
+;; ════════════════════ MASHINA SEARCH ════════════════════
 
 (defn- search-mashina
   "Search Mashina for cars.
@@ -101,7 +106,17 @@
       []
       (mapv mashina-item->card (:listings result)))))
 
-;; ════════════════════════════ STATS ════════════════════════════
+;; ════════════════════ RELEVANCE ════════════════════
+
+(defn relevance-score
+  "Score how relevant a card is to the search query. Higher = more relevant.
+   10 if query words appear in title, 0 otherwise."
+  [title query]
+  (let [t (str/lower-case (or title ""))
+        q-words (str/split (str/lower-case (or query "")) #"\s+")]
+    (if (some #(str/includes? t %) q-words) 10 0)))
+
+;; ════════════════════ STATS ════════════════════
 
 (defn- card-price
   "Extract a numeric price from a card. Handles both raw and nested formats."
@@ -126,7 +141,7 @@
          :max   (apply max ps)
          :count (count ps)}))))
 
-;; ════════════════════════════ MAIN ════════════════════════════
+;; ════════════════════ MAIN ════════════════════
 
 (defn search
   "Main search entry point. Deterministic — no LLM involvement.
@@ -138,7 +153,7 @@
      1. qb/build to get platform routing + price constraints
      2. Route to appropriate platforms
      3. Search Lalafo / Mashina
-     4. Filter accessories, dedup
+     4. Filter accessories, dedup, sort by relevance
      5. Compute stats
 
    Returns {:cards [...] :stats {:avg N :min N :max N :count N}
@@ -173,21 +188,20 @@
                              (log/warn :mashina-search-failed :error (.getMessage e))
                              [])))
 
-         ;; 5. Combine, filter accessories (score > 2), dedup
+         ;; 5. Combine, filter accessories (score > 1), dedup, sort by relevance
          all-cards (concat lalafo-cards mashina-cards)
-         filtered  (filterv #(<= (accessory-score (:title %)) 2) all-cards)
+         filtered  (filterv #(<= (accessory-score (:title %)) 1) all-cards)
          deduped   (dedup-cards filtered)
+         sorted    (sort-by #(- (relevance-score (:title %) query)) deduped)
 
          ;; 6. Stats
-         stats (compute-stats deduped)]
+         stats (compute-stats sorted)]
 
      (log/info :search-done
                :platforms platforms
-               :lalafo-count (count lalafo-cards)
-               :mashina-count (count mashina-cards)
-               :final-count (count deduped))
+               :final-count (count sorted))
 
-     {:cards    deduped
+     {:cards    (vec sorted)
       :stats    stats
       :platforms platforms
       :query    query})))
