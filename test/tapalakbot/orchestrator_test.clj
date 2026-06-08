@@ -3,6 +3,7 @@
    All external dependencies (search, LLM, monitor) are mocked with with-redefs.
    No real API calls are made."
   (:require [clojure.test :refer :all]
+            [clojure.string :as str]
             [tapalakbot.orchestrator :as orch]
             [tapalakbot.policy :as policy]
             [tapalakbot.search :as search]
@@ -207,6 +208,6 @@
                     monitor-store/get-category-summary (fn [] [])]
         (orch/orchestrate "найди iphone 13" session)
         ;; Session should now contain last-search
-        (let [state (:data @session)]
+        (let [state (get @session "data")]
           (is (= "iphone 13" (:last-search state)))
           (is (= [:lalafo] (:last-platforms state))))))))

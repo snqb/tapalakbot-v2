@@ -88,8 +88,12 @@ Rules:
        :selected-idx selected-idx
        :tiers       (into {}
                           (map (fn [[k v]]
-                                 [(if (string? k) (parse-long k) (long k))
-                                  (keyword (str v))])
+                                 (let [key-long (cond
+                                                  (string? k) (parse-long k)
+                                                  (keyword? k) (parse-long (name k))
+                                                  (number? k) (long k)
+                                                  :else nil)]
+                                   [key-long (keyword (str v))]))
                                tiers))})
     (catch Exception e
       (log/warn :curator-parse-failed (.getMessage e))
@@ -170,7 +174,8 @@ Rules:
   [text session]
   (let [state (get-session-data session)
         mode  (policy/classify text state)]
-    (log/info :orchestrate :mode mode :text (subs (or text "") 0 50))
+    (log/info :orchestrate :mode mode :text (let [t (or text "")]
+                                              (subs t 0 (min (count t) 50))))
     (case mode
 
       ;; ── Fast paths (no search, no LLM) ──
