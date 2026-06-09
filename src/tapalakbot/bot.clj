@@ -596,8 +596,8 @@
               (show-tracking-list chat-id user-id)
               nil)
 
-          ;; Search / Refine — render cards deterministically
-          (:shortlist :refine)
+          ;; Search / Refine / Research / Followup / Compare — render deterministically
+          (:shortlist :refine :research :followup :compare)
           (do (render-orchestrated chat-id @thinking-msg-id reply user-id (:query reply))
               (log-transcript! user-id text reply)
               nil)
@@ -606,13 +606,6 @@
           :no-results
           (do (when-let [msg-id @thinking-msg-id]
                 (try (tg/edit-message chat-id msg-id (:intro reply "Ничего не нашлось.") :parse-mode "HTML")
-                     (catch Exception _)))
-              nil)
-
-          ;; Compare — LLM-generated comparison
-          :compare
-          (do (when-let [msg-id @thinking-msg-id]
-                (try (tg/edit-message chat-id msg-id (:intro reply "Сравнение:") :parse-mode "HTML")
                      (catch Exception _)))
               nil)
 

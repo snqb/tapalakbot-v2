@@ -2,6 +2,7 @@
   "The orchestrator — glues policy, search, LLM, and render.
    This is the tg-agent turn policy + agent + deterministic rails, all in one."
   (:require [tapalakbot.policy :as policy]
+            [tapalakbot.intent :as intent]
             [tapalakbot.search :as search]
             [tapalakbot.render :as render]
             [tapalakbot.monitor.store :as monitor-store]
@@ -16,17 +17,28 @@
 
 ;; ════════════════════ SESSION STATE ════════════════════
 
+(def ^:private session-ttl-ms
+  "Session conversation context expires after 30 minutes of inactivity."
+  (* 30 60 1000))
+
 (defn get-session-data
-  "Get structured state from session data map."
+  "Get structured state from session data map.
+   Returns empty map if session has been idle > 30 minutes (context expired)."
   [session]
   (when session
-    (get @session "data" {})))
+    (let [data (get @session "data" {})
+          last-active (:last-active data 0)
+          now (System/currentTimeMillis)]
+      (if (and (pos? last-active)
+               (> (- now last-active) session-ttl-ms))
+        {}   ;; expired — return empty state so old context doesn't confuse intent classifier
+        data))))
 
 (defn patch-session!
-  "Merge state patches into session data."
+  "Merge state patches into session data. Always updates last-active timestamp."
   [session patch]
   (when (and session (map? patch))
-    (swap! session update "data" merge patch)))
+    (swap! session update "data" merge patch {:last-active (System/currentTimeMillis)})))
 
 ;; ════════════════════ MARKET ENRICHMENT ════════════════════
 
@@ -168,9 +180,11 @@ Return ONLY valid JSON:
           content (get-in resp ["choices" 0 "message" "content"])
           json-str (or (re-find #"(?s)\{.*\}" (or content "{}")) "{}")
           parsed (try (cheshire.core/parse-string json-str true) (catch Exception _ {}))]
-      {:mode  :shortlist
+      {:mode  :compare
        :intro (or (sanitize-intro (:intro parsed))
                   (str "Comparing " (or item1 "items") " vs " (or item2 "alternatives")))
+       :comparison (:comparison_points parsed)
+       :verdict (:verdict parsed)
        :cards []
        :cta   (:cta parsed "Want to search for one of these?")
        :assumptions (or (:assumptions parsed) [])})
@@ -260,6 +274,7 @@ Return ONLY valid JSON:
                                   (assoc card :tier (or tier :good))))
                               selected)]
         (patch-session! session {:last-search     query
+                                 :last-mode        :search
                                  :last-platforms   platforms
                                  :last-price-max   (:price-max result)
                                  :last-price-min   (:price-min result)
@@ -268,7 +283,9 @@ Return ONLY valid JSON:
                                                      (:is-electronics? (:qb-result result)) :electronics
                                                      (:is-real-estate? (:qb-result result)) :real-estate
                                                      :else :general)
-                                 :last-card-count  (count final-cards)})
+                                 :last-card-count  (count final-cards)
+                                 :last-items       (mapv #(select-keys % [:title :price :currency :platform])
+                                                        final-cards)})
         (when status-cb (status-cb "✨ Curating best picks..."))
         {:mode           :shortlist
          :intro          (:intro curated)
@@ -277,6 +294,153 @@ Return ONLY valid JSON:
          :assumptions    (:assumptions curated)
          :platforms-used platforms
          :query          query}))))
+
+;; ════════════════════ RESEARCH ════════════════════
+
+(defn- do-research
+  "Research mode: market intelligence + curated picks.
+   Falls back to search with market context enrichment when LLM synthesis unavailable."
+  [text query session {:keys [status-cb model provider]}]
+  (when status-cb (status-cb "📊 Анализирую рынок..."))
+  (let [market-ctx (get-market-context query)
+        search-result (search/search (or query text) {:use-llm? true})
+        cards (:cards search-result)
+        stats (:stats search-result)]
+    (if (empty? cards)
+      {:mode :no-results
+       :intro (str "По «" (or query text) "» пока нет данных. "
+                   "Попробуйте более общий запрос или другую категорию.")
+       :cards [] :cta nil :assumptions []}
+      (let [_ (when status-cb (status-cb (str "📊 " (count cards) " вариантов, анализирую...")))
+            context (str "User query: " query "\n"
+                         (when market-ctx
+                           (str "MARKET DATA: " (:category market-ctx) "\n"
+                                "  Price range: " (render/format-price (long (:min market-ctx)))
+                                " – " (render/format-price (long (:max market-ctx))) " KGS\n"
+                                "  Average: " (render/format-price (long (:avg market-ctx))) " KGS\n"
+                                "  Items tracked: " (:count market-ctx) "\n\n"))
+                         "LIVE RESULTS (" (count cards) " items):\n"
+                         (str/join "\n"
+                           (map-indexed
+                            (fn [i c]
+                              (str i ". " (:title c) " — " (:price c) " " (or (:currency c) "KGS")
+                                   (when (:year c) (str " | " (:year c) " yr"))
+                                   (when (:city c) (str " | " (:city c)))))
+                            (take 20 cards))))
+            messages [{"role" "system"
+                       "content" "You are a marketplace research assistant for Kyrgyzstan. The user is exploring a product category. Give a SHORT market overview, pick 5-6 best items by index. Return ONLY JSON: {\"selected\":[0,2,4],\"intro\":\"your 1-2 sentence market overview with price range\",\"cta\":\"helpful follow-up question\",\"market_note\":\"brief stat\",\"assumptions\":[]}. NO markdown."}
+                      {"role" "user" "content" context}]
+            resp (try
+                   (llm/llm (or model default-model) messages []
+                            :provider (or provider default-provider)
+                            :max-tokens 500 :timeout-ms 30000)
+                   (catch Exception e
+                     (log/warn :research-llm-failed (.getMessage e))
+                     nil))
+            content (get-in resp ["choices" 0 "message" "content"])
+            parsed (try
+                     (let [json-str (or (re-find #"(?s)\{.*\}" (or content "{}")) "{}")]
+                       (cheshire.core/parse-string json-str true))
+                     (catch Exception _ {}))
+            raw-selected (:selected parsed)
+            selected-idx (if (and (vector? raw-selected) (seq raw-selected))
+                          (vec (take 6 raw-selected))
+                          (vec (range (min 6 (count cards)))))
+            selected-cards (mapv #(get cards %) selected-idx)
+            final-cards (mapv (fn [card]
+                               (let [tier (render/assign-tier (:price card) (:avg stats))]
+                                 (assoc card :tier (or tier :good))))
+                             selected-cards)]
+        (patch-session! session {:last-search query
+                                 :last-mode :research
+                                 :last-card-count (count final-cards)
+                                 :last-price-max (:price-max search-result)
+                                 :last-price-min (:price-min search-result)})
+        (when status-cb (status-cb "✨ Готовлю обзор..."))
+        {:mode :research
+         :intro (or (when (:intro parsed) (sanitize-intro (:intro parsed)))
+                    (str "📊 " (or (:category market-ctx) query)
+                         (when market-ctx
+                           (str ": цены от " (render/format-price (long (:min market-ctx)))
+                                " до " (render/format-price (long (:max market-ctx))) " сом"))
+                         ". Вот лучшие варианты:"))
+         :cards final-cards
+         :cta (:cta parsed "Уточните бюджет или характеристики?")
+         :assumptions (or (:assumptions parsed) [])
+         :market-note (:market_note parsed)
+         :platforms-used (:platforms search-result)
+         :query query}))))
+
+;; ════════════════════ FOLLOWUP ════════════════════
+
+(defn- do-followup
+  "Followup mode: answer questions about previously shown items."
+  [text state {:keys [status-cb model provider]}]
+  (let [last-search (or (:last-search state) "предыдущий запрос")
+        items (:last-items state)
+        item-count (or (:last-card-count state) 0)]
+    (when status-cb (status-cb "💭 ..."))
+    (if (empty? items)
+      ;; No items to reference — generic response
+      {:mode :shortlist
+       :intro (str "По «" last-search "» я показывал " item-count " вариантов. "
+                   "Уточните, что именно интересует?")
+       :cards [] :cta nil :assumptions []}
+      ;; Build context with actual items
+      (let [item-details (str/join "\n"
+                           (map-indexed
+                            (fn [i item]
+                              (str (inc i) ". " (:title item) " — " (:price item) " "
+                                   (or (:currency item) "сом")))
+                            items))
+            messages [{"role" "system"
+                       "content" (str "You are TapalakBot, a marketplace assistant. "
+                                      "The user is asking about items you previously showed.\n\n"
+                                      "Previous search: " last-search "\n"
+                                      "Items shown:\n" item-details "\n\n"
+                                      "Answer their question helpfully. Be concise (under 200 chars). "
+                                      "Return ONLY JSON: {\"answer\":\"your answer\",\"cta\":\"optional follow-up\"}")}
+                      {"role" "user" "content" text}]
+            resp (try
+                   (llm/llm (or model default-model) messages []
+                            :provider (or provider default-provider)
+                            :max-tokens 300 :timeout-ms 20000)
+                   (catch Exception e
+                     (log/warn :followup-llm-failed (.getMessage e))
+                     nil))
+            content (get-in resp ["choices" 0 "message" "content"])
+            parsed (try
+                     (let [json-str (or (re-find #"(?s)\{.*\}" (or content "{}")) "{}")]
+                       (cheshire.core/parse-string json-str true))
+                     (catch Exception _ {}))]
+        {:mode :followup
+         :intro (or (:answer parsed)
+                    (str "Вот что я нашёл по «" last-search "». Уточните запрос?"))
+         :cards []
+         :cta (:cta parsed)
+         :assumptions []}))))
+
+;; ════════════════════ CHAT ════════════════════
+
+(defn- do-chat
+  "Chat mode: small talk, general conversation."
+  [text {:keys [model provider]}]
+  (try
+    (let [messages [{"role" "system"
+                     "content" "You are TapalakBot, a marketplace assistant for Kyrgyzstan (Lalafo.kg, Mashina.kg). Be friendly, concise, helpful. Speak Russian. Keep responses under 300 chars. If the user asks what you can do, explain you help find products and compare prices on Lalafo.kg."}
+                    {"role" "user" "content" text}]
+          resp (llm/llm (or model default-model) messages []
+                        :provider (or provider default-provider)
+                        :max-tokens 200 :timeout-ms 15000)
+          content (get-in resp ["choices" 0 "message" "content"])]
+      {:mode :shortlist
+       :intro (or content "Чем могу помочь? Напишите что ищете!")
+       :cards [] :cta nil :assumptions []})
+    (catch Exception e
+      (log/warn :chat-failed (.getMessage e))
+      {:mode :shortlist
+       :intro "Чем могу помочь? Просто напишите что ищете на Lalafo.kg 🔍"
+       :cards [] :cta nil :assumptions []})))
 
 (defn orchestrate
   "Main entry point. Takes user message + session, returns structured reply.
@@ -322,11 +486,51 @@ Return ONLY valid JSON:
       (compare-products text model provider)
 
       ;; ── Unknown ──
-      ;; Try searching anyway — users type typos, brands, model names that
-      ;; the regex won't catch. Only show help for very short/gibberish text.
+      ;; Regex couldn't classify. Use LLM to understand conversational intent.
+      ;; This handles follow-ups, research queries, chat, and any natural language
+      ;; the regex can't match. Fixes the "search for literal text" comedy.
       (if (and text (> (count (str/trim text)) 3))
-        (do (log/info :unknown-but-trying-search :text text)
-            (do-search text session {:status-cb status-cb :model model :provider provider}))
-        {:mode  :no-results
+        (let [{:keys [intent query]} (intent/classify-intent text state)]
+          (log/info :llm-intent :text text :intent intent :query query)
+          (case intent
+            ;; Search — user wants direct results
+            :search
+            (do-search (or query text) session
+                       {:status-cb status-cb :model model :provider provider})
+
+            ;; Research — user wants market intelligence + guidance
+            :research
+            (do-research text (or query text) session
+                         {:status-cb status-cb :model model :provider provider})
+
+            ;; Followup — user asks about previous results
+            :followup
+            (do-followup text state
+                         {:status-cb status-cb :model model :provider provider})
+
+            ;; Compare — explicit comparison
+            :compare
+            (compare-products (or query text) model provider)
+
+            ;; Refine — filter/narrow previous search
+            :refine
+            (let [last-search (or (:last-search state) query)
+                  refined     (apply-refine last-search (or query text) state)
+                  result      (do-search (:query refined) session
+                                        {:status-cb status-cb :model model :provider provider})]
+              (-> result
+                  (assoc :mode :refine)
+                  (update :assumptions into (vec (:assumptions refined)))
+                  (assoc :query (:query refined))))
+
+            ;; Chat — small talk
+            :chat
+            (do-chat text {:status-cb status-cb :model model :provider provider})
+
+            ;; Fallback — shouldn't happen, but route to search
+            (do-search text session
+                       {:status-cb status-cb :model model :provider provider})))
+        ;; Very short/gibberish — show help
+        {:mode  :shortlist
          :intro "🤔 Напишите, что ищете — например, «найди iphone 13»."
          :cards [] :cta nil :assumptions []}))))

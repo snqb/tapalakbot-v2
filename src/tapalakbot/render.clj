@@ -115,16 +115,45 @@
 
 (defn render-reply
   "Render full Telegram HTML reply.
-   Input: {:mode :intro :cards :cta :assumptions}
-   Modes: :error, :no-results, :clarify, :shortlist, or nil (full card render)."
-  [{:keys [mode intro cards cta assumptions]}]
+   Input: {:mode :intro :cards :cta :assumptions :market-note :comparison :verdict}
+   Modes: :error, :no-results, :clarify, :shortlist, :research, :followup, :compare."
+  [{:keys [mode intro cards cta assumptions market-note comparison verdict]}]
   (case mode
     :error      (str "❌ " (or intro "Произошла ошибка. Попробуйте ещё раз."))
     :no-results (str "🔍 " (or intro "Ничего не найдено по вашему запросу.")
                      (when (seq assumptions)
                        (str "\n\nПредположения: " (if (vector? assumptions) (str/join " · " assumptions) assumptions))))
     :clarify    (str "❗ " (or intro "Уточните, пожалуйста, ваш запрос."))
-    ;; Default: full card render
+    ;; Research mode — intro + market note + cards
+    :research
+    (str (when (and intro (not (str/blank? intro)))
+           (str intro "\n\n"))
+         (when (and market-note (not (str/blank? market-note)))
+           (str "<i>" (escape-html market-note) "</i>\n\n"))
+         (when (seq cards)
+           (render-cards cards))
+         (when (seq assumptions)
+           (let [a (if (vector? assumptions) (str/join " · " assumptions) (str assumptions))]
+             (str "\n\n<i>" a "</i>")))
+         (when (and cta (not (str/blank? cta)))
+           (str "\n\n💬 " cta)))
+    ;; Followup mode — conversational answer, no cards
+    :followup
+    (str (when (and intro (not (str/blank? intro)))
+           intro)
+         (when (and cta (not (str/blank? cta)))
+           (str "\n\n💬 " cta)))
+    ;; Compare mode — intro + comparison points + verdict
+    :compare
+    (str (when (and intro (not (str/blank? intro)))
+           (str intro "\n\n"))
+         (when (seq comparison)
+           (str (str/join "\n" (map #(str "• " (escape-html %)) comparison)) "\n\n"))
+         (when (and verdict (not (str/blank? verdict)))
+           (str "<b>Итог:</b> " (escape-html verdict) "\n"))
+         (when (and cta (not (str/blank? cta)))
+           (str "\n💬 " cta)))
+    ;; Default: full card render (shortlist, refine, etc.)
     (str (when (and intro (not (str/blank? intro)))
            (str intro "\n\n"))
          (when (seq cards)

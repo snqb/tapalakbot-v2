@@ -6,8 +6,10 @@
             [clojure.string :as str]
             [tapalakbot.orchestrator :as orch]
             [tapalakbot.policy :as policy]
+            [tapalakbot.intent :as intent]
             [tapalakbot.search :as search]
             [clj-harness.llm :as llm]
+            [cheshire.core :as json]
             [tapalakbot.monitor.store :as monitor-store]))
 
 ;; ════════════════════ HELPERS ════════════════════
@@ -208,4 +210,55 @@
         ;; Session should now contain last-search
         (let [state (get @session "data")]
           (is (= "iphone 13" (:last-search state)))
-          (is (= [:lalafo] (:last-platforms state))))))))
+          (is (= [:lalafo] (:last-platforms state)))
+          (is (= :search (:last-mode state)))
+          (is (vector? (:last-items state)))
+          ;; Curator picked 3 items (indices 0, 1, 2), so last-items has 3 entries
+          (is (= 3 (count (:last-items state)))))))))
+
+;; ════════════════════ TEST 8: INTENT-CLASSIFIED FOLLOWUP ════════════════════
+
+(deftest test-unknown-routes-to-followup
+  (testing "unknown text classified as followup gets a conversational answer, not a search"
+    (let [session (make-session {:last-search "iphone 13"
+                                 :last-items [{:title "iPhone 13 128GB" :price 35000 :currency "KGS"}]
+                                 :last-card-count 1})
+          followup-llm {"choices" [{"message" {"content" "{\"answer\":\"Самый дешёвый — iPhone 13 128GB за 35 000 сом\",\"cta\":\"Хотите посмотреть дешевле?\"}"}}]}]
+      (with-redefs [intent/classify-intent (fn [_ _] {:intent :followup :query "which is better"})
+                    search/search (fn [& _] (throw (Exception. "should not search")))
+                    llm/llm (fn [& _] followup-llm)]
+        (let [result (orch/orchestrate "which is better" session)]
+          (is (= :followup (:mode result)))
+          (is (string? (:intro result)))
+          (is (str/includes? (:intro result) "35 000")))))))
+
+;; ════════════════════ TEST 9: INTENT-CLASSIFIED CHAT ════════════════════
+
+(deftest test-unknown-routes-to-chat
+  (testing "small talk gets a conversational response, not a search"
+    (let [chat-llm {"choices" [{"message" {"content" "Привет! Я помогаю искать товары на Lalafo.kg 🔍"}}]}]
+      (with-redefs [intent/classify-intent (fn [_ _] {:intent :chat :query "как дела"})
+                    search/search (fn [& _] (throw (Exception. "should not search")))
+                    llm/llm (fn [& _] chat-llm)]
+        (let [result (orch/orchestrate "как дела" nil)]
+          (is (= :shortlist (:mode result)))
+          (is (str/includes? (:intro result) "Lalafo")))))))
+
+;; ════════════════════ TEST 10: INTENT-CLASSIFIED SEARCH FALLBACK ════════════════════
+
+(deftest test-unknown-routes-to-search-when-classified
+  (testing "unknown text classified as search by LLM routes to do-search"
+    (let [search-result (mock-search-result (sample-cards))
+          curator-json {"selected" [0 1]
+                        "tiers"    {"0" "good" "1" "good"}
+                        "intro"    "Found via intent"
+                        "cta"      "More?"
+                        "assumptions" []}
+          llm-response {"choices" [{"message" {"content" (cheshire.core/generate-string curator-json)}}]}]
+      (with-redefs [intent/classify-intent (fn [_ _] {:intent :search :query "samsung galaxy"})
+                    search/search (fn [q & opts] search-result)
+                    llm/llm (fn [model msgs tools & opts] llm-response)
+                    monitor-store/get-category-summary (fn [] [])]
+        (let [result (orch/orchestrate "samsung galaxy" nil)]
+          (is (= :shortlist (:mode result)))
+          (is (str/includes? (:intro result) "Found via intent")))))))
