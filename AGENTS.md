@@ -15,53 +15,33 @@
 ## Architecture
 
 ```
-User → Telegram → bot.clj → orchestrator.clj → policy.clj (classify)
-                              │                    │
-                              │              search.clj → lalafo/mashina
-                              │                    │
-                              │              LLM curator (pick 5 items + prose)
-                              │                    │
-                              │              render.clj → Telegram HTML
-                              │
-                         :unknown fallback → core.clj (full LLM agent)
-                              │
-                         clj-harness (streaming, sessions, tools)
+User → Telegram → bot.clj → core.clj (clj-harness agent loop):
+    LLM sees conversation + tools (search, market_stats, research)
+    → agent decides intent, calls tools as needed
+    → tools return structured data (captured in dynamic vars)
+    → agent generates conversational text
+    ↓
+bot.clj extracts captured cards → render.clj → deterministic HTML
+    ↓
+Telegram: agent text + rendered cards
 ```
 
-**Three-layer architecture (tg-agent):**
-1. **Intent layer** (LLM): `intent.clj` — classifies conversational intent when regex can't. Routes to search, research, followup, compare, refine, or chat.
-2. **Deterministic layer** (search + parse + render): query_builder, lalafo, mashina, search.clj, render.clj — owns all trust-critical facts (prices, URLs, cards).
-3. **Agent layer** (LLM): curator picks 5-6 best items + writes intro/CTA. Research mode synthesizes market data from monitor DB. Followup answers questions about shown items.
-4. **Transport layer** (Telegram): bot.clj — session state, UX, progress messages, structured payload → HTML.
+**Agent-first architecture:**
+1. **Agent layer** (clj-harness): LLM is the brain — sees full conversation, decides what tools to call, generates conversational text. Uses `wrap-tools` middleware for automatic tool calling loop.
+2. **Deterministic layer** (search + render): search.clj, render.clj, query_builder.clj, lalafo.clj, mashina.clj — own all trust-critical facts (prices, URLs, cards).
+3. **Transport layer** (Telegram): bot.clj — fast-path shortcuts for greetings/reset, thinking indicator, card rendering.
 
-**Key insight:** Regex handles fast paths (greetings, direct searches). Everything else goes through LLM intent classification — so "which is better" after an iPhone search becomes a followup, not a search for "which is better". LLM never touches prices, URLs, or card layout. Zero hallucinated facts.
+**Key insight:** The agent decides intent and drives the conversation. Tools do the heavy lifting. Cards are rendered deterministically from captured search results. LLM never touches prices or URLs.
 
 ## File Map
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| **intent.clj** | ~75 | LLM-powered intent classifier (search/research/followup/compare/refine/chat) |
-| **orchestrator.clj** | ~540 | The glue: policy → intent → mode handler → structured reply. Contains do-search, do-research, do-followup, do-chat, compare-products |
-| **policy.clj** | ~110 | Deterministic fast paths (greeting/reset/help/tracking/thanks) + regex for search/compare/refine |
-| **search.clj** | ~200 | Structured search pipeline — cards out, no LLM in search path |
-| **render.clj** | ~180 | Deterministic card renderer — multi-mode: :shortlist, :research, :followup, :compare |
+| `core.clj` | ~700 | Agent: system prompt, tools (search/market_stats/research), ask-stream, card capture |
+| `bot.clj` | ~780 | Telegram: agent dispatch, fast paths, card rendering, tracking UI |
+| `render.clj` | ~180 | Deterministic card renderer — tier groups, formatted prices, Telegram HTML |
+| `search.clj` | ~200 | Structured search pipeline — cards out, no LLM in search path |
 | `query_builder.clj` | ~340 | NL→structured params: price, platform, category extraction |
-| `core.clj` | ~460 | Agent: system prompt, smart_search tool, pre-hook, REPL (fallback path) |
-| `lalafo.clj` | ~380 | Direct Lalafo.kg HTTP client + Exa research + healthcheck |
-| `mashina.clj` | ~200 | Mashina.kg API client (public API, no auth needed) |
-| `bot.clj` | ~840 | Telegram bot: orchestrator dispatch, tracking UI, streaming fallback |
-| `server.clj` | ~65 | Entry point: bot + monitor auto-start + healthcheck |
-| `tg/format.clj` | ~17 | Thin wrapper → `clj-harness.telegram.format` |
-| `tg/channel.clj` | ~17 | Thin wrapper → `clj-harness.telegram` |
-| **monitor/store.clj** | ~260 | SQLite: categories, items, price snapshots + queries |
-| **monitor/scanner.clj** | ~150 | Background Lalafo scanner (every 4h), accessory filter |
-| **monitor/api.clj** | ~265 | Ring/Jetty HTTP API (:8787): trending, deals, search, history |
-| **monitor/client.clj** | ~130 | HTTP client for monitor API (used by bot) |
-| **monitor/tracker.clj** | ~290 | User tracking notifications (uses render module) |
-| **monitor/main.clj** | ~60 | Monitor standalone entry point |
-| **test/tapalakbot/render_test.clj** | ~100 | Card renderer tests (11 tests, 34 assertions) |
-| **test/tapalakbot/policy_test.clj** | ~90 | Turn classifier tests (10 tests, 37 assertions) |
-| **test/tapalakbot/orchestrator_test.clj** | ~210 | Orchestrator tests with mocked search/LLM (7 tests, 40 assertions) |
 
 ## Marketplace Platforms
 

@@ -1,15 +1,13 @@
 (ns tapalakbot.bot
   "Telegram bot for TapalakBot v2.
-  Uses orchestrator for structured search pipeline.
+  Agent-first architecture — clj-harness agent with tools handles intent + response.
   Button-based tracking UI via inline keyboards.
   Persistent menu: [🔄 Новый диалог] [🔔 Отслеживание]"
   (:require [tapalakbot.core :as t]
-            [tapalakbot.orchestrator :as orch]
             [tapalakbot.render :as render]
             [tapalakbot.monitor.client :as monitor]
             [tapalakbot.monitor.store :as store]
             [tapalakbot.monitor.tracker :as tracker]
-            [tapalakbot.query-builder :as qb]
             [clj-harness.telegram :as tg]
             [clj-harness.telegram.format :as fmt]
             [clj-harness.core :as hc]
@@ -520,7 +518,7 @@
 (declare handle-agent)
 
 (defn- render-orchestrated
-  "Render an orchestrator reply to Telegram HTML + buttons."
+  "Render a reply to Telegram HTML + buttons."
   [chat-id msg-id reply user-id query]
   (let [html (render/render-reply reply)
         track-btn (when (and (seq (:cards reply)) query)
@@ -556,73 +554,65 @@
     (catch Exception _)))
 
 (defn- handle-orchestrated
-  "Handle message via orchestrator pipeline — structured search, deterministic cards."
+  "Handle message via agent-first pipeline — clj-harness agent with tools.
+   The agent decides intent, calls tools, and generates conversational response.
+   Cards are rendered deterministically from captured search tool results."
   [{:keys [chat-id user-id text] :as msg}]
   (let [uid (str "tg-" user-id)
-        bot @t/tapalakbot
-        session (hc/get-or-create-session bot uid)
         thinking-msg-id (atom nil)
         status-cb (fn [status-text]
-                     (when-let [msg-id @thinking-msg-id]
-                       (try
-                         (tg/edit-message chat-id msg-id status-text :parse-mode nil)
-                         (catch Exception _))))]
+                    (when-let [msg-id @thinking-msg-id]
+                      (try
+                        (tg/edit-message chat-id msg-id status-text :parse-mode nil)
+                        (catch Exception _))))]
     ;; Show thinking indicator
     (when-let [m (tg/send-message chat-id "💭 ..." :parse-mode nil)]
       (reset! thinking-msg-id (some-> m (get "result") (get "message_id"))))
     (try
-      (let [cfg (-> @t/tapalakbot :config)
-            ;; Wrap orchestrator in a future with 45s timeout
-            orch-future (future
-                         (orch/orchestrate text session
-                           :model (or (:model cfg) :kimi-k2)
-                           :provider (or (:provider cfg) :openrouter)
-                           :status-cb status-cb))
-            reply (deref orch-future 45000 :timeout)]
-        (case (:mode reply)
-          ;; Reset
-          :reset
-          (do (hc/reset-session! @t/tapalakbot uid)
-              (release! uid)
-              (store-pending! uid nil)
-              (when-let [msg-id @thinking-msg-id]
-                (tg/edit-message chat-id msg-id "🗑️ Контекст очищен. Начнём заново!" :parse-mode nil))
-              nil)
-
-          ;; Tracking — show subscription list
-          :tracking
-          (do (when-let [msg-id @thinking-msg-id]
-                (try (tg/delete-message chat-id msg-id) (catch Exception _)))
-              (show-tracking-list chat-id user-id)
-              nil)
-
-          ;; Search / Refine / Research / Followup / Compare — render deterministically
-          (:shortlist :refine :research :followup :compare)
-          (do (render-orchestrated chat-id @thinking-msg-id reply user-id (:query reply))
-              (log-transcript! user-id text reply)
-              nil)
-
-          ;; No results — show intro message
-          :no-results
-          (do (when-let [msg-id @thinking-msg-id]
-                (try (tg/edit-message chat-id msg-id (:intro reply "Ничего не нашлось.") :parse-mode "HTML")
-                     (catch Exception _)))
-              nil)
-
-          ;; Timeout — orchestrator took too long
-          :timeout
-          (do (when-let [msg-id @thinking-msg-id]
-                (try (tg/edit-message chat-id msg-id "⏳ Поиск занимает слишком много времени. Попробуйте ещё раз." :parse-mode nil)
-                     (catch Exception _)))
-              nil)
-
-          ;; Fallback — unexpected mode
-          (do (when-let [msg-id @thinking-msg-id]
-                (try (tg/edit-message chat-id msg-id "❌ Что-то пошло не так. Попробуйте ещё раз." :parse-mode nil)
-                     (catch Exception _)))
-              nil)))
+      ;; Run agent with card capture
+      (let [agent-future (future
+                           (t/ask-stream uid text status-cb))
+            result (deref agent-future 90000 :timeout)]
+        (if (= result :timeout)
+          ;; Timeout
+          (when-let [msg-id @thinking-msg-id]
+            (try (tg/edit-message chat-id msg-id "⏳ Слишком долго. Попробуйте ещё раз." :parse-mode nil)
+                 (catch Exception _)))
+          ;; Render agent text + cards
+          (let [agent-text (:text result)
+                cards (:cards result)
+                stats (:stats result)
+                ;; Assign tiers to cards
+                final-cards (when (seq cards)
+                             (mapv (fn [card]
+                                     (let [tier (render/assign-tier (:price card) (:avg stats))]
+                                       (assoc card :tier (or tier :good))))
+                                   cards))
+                ;; Build reply for render
+                reply {:mode (if (seq final-cards) :shortlist :no-results)
+                       :intro (or agent-text "Чем могу помочь?")
+                       :cards (or final-cards [])
+                       :cta nil
+                       :assumptions []}]
+            ;; Delete thinking message and render
+            (when-let [msg-id @thinking-msg-id]
+              (try (tg/delete-message chat-id msg-id) (catch Exception _)))
+            (if (seq final-cards)
+              ;; Cards available — render with card layout
+              (do
+                (render-orchestrated chat-id nil reply user-id text)
+                ;; Add tracking button
+                (let [track-btn (track-context-button user-id text)]
+                  (when track-btn
+                    (try (tg/send-message chat-id "Хотите отслеживать этот поиск?"
+                                          :parse-mode nil :reply_markup track-btn)
+                         (catch Exception _)))))
+              ;; No cards — just send agent text
+              (try (tg/send-message chat-id (or agent-text "Чем могу помочь? 🔍") :parse-mode "HTML")
+                   (catch Exception _
+                     (tg/send-md chat-id (or agent-text "Чем могу помочь? 🔍"))))))))
       (catch Exception e
-        (log/error e :orchestrated-error {:user-id uid})
+        (log/error e :agent-error {:user-id uid})
         (when-let [msg-id @thinking-msg-id]
           (try (tg/edit-message chat-id msg-id "❌ Ошибка. Попробуйте ещё раз." :parse-mode nil)
                (catch Exception _)))))))

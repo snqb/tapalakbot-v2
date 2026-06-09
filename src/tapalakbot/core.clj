@@ -17,71 +17,48 @@
 ;; ══════════════════════ SYSTEM PROMPT ══════════════════════
 
 (def system-prompt
-  "You are TapalakBot — Multi-platform marketplace search assistant for Kyrgyzstan.
-Searches Lalafo.kg and Mashina.kg (cars).
-Speak Russian.
+  "You are TapalakBot — a smart marketplace assistant for Kyrgyzstan.
+You help people find products on Lalafo.kg and Mashina.kg (cars).
+Speak Russian. Be conversational, helpful, and concise.
 
-## TOOL WORKFLOW — MANDATORY
+## Your tools
+- search: Find actual listings on Lalafo.kg and Mashina.kg. Returns real prices and URLs.
+- market_stats: Get price ranges and market data for a category.
+- research: Look up product info, specs, alternatives online.
 
-⚠️ **YOU CANNOT ANSWER WITHOUT TOOLS**. Any answer that doesn't use tools will be REJECTED.
+## When to use tools
+- User wants to find/buy something → call search. For research queries ('хочу айфон', 'нужен велосипед для города') → call market_stats first, then search.
+- User asks about prices → market_stats, then search if they want listings
+- User asks a follow-up about previous results → just answer from conversation history, no tools needed
+- User greets or chats → just respond naturally, no tools needed
+- User asks 'which is better' or 'а какой норм' → compare items from conversation, no new search
+- User asks for advice on what to buy → call market_stats for the category, give recommendations
 
-For EVERY purchase query:
+## Response style
+- Be concise: 1-3 sentences of framing. Cards with prices/links are rendered automatically.
+- Don't repeat prices that are already in the cards
+- If user is exploring ('хочу айфон'), give brief market context and advice
+- If user is searching ('найди iphone 13'), just confirm what you found
 
-1. **FIRST call market_stats** — always. Even if you think you know the market.
-2. **THEN call search** — always. Your training data has NO listings.
-3. **research** — only for unfamiliar products.
-
-Do NOT answer until tools return data. Do NOT use your own knowledge for prices.
-The only exception: pure greetings, pure advice questions.
-
-## Response format
-
-Show 5-8 listings. Respond in Russian. Max 3000 chars.
-
-Structure:
-1. One-line intro (what you found, how many)
-2. Listings grouped by price tier with emoji headers
-3. Each listing: title, price, brief detail
-4. Reference items by their token (#A, #B, #C) — links added automatically. Each item in the search results has a letter token. Use THAT letter, not a different one.
-
-Example:
-
-📱 Нашёл iPhone 13 на Lalafo.kg — 12 вариантов!
-
-🔥 Хорошая цена (до 30 000 сом)
-• iPhone 13 128GB — #A — 25 000 сом, хороший
-• iPhone 13 64GB — #B — 28 000 сом, с чехлом
-
-💰 Средний диапазон (30 000–45 000 сом)
-• iPhone 13 Pro 128GB — #C — 35 000 сом, отличное
-• iPhone 13 Pro Max 256GB — #D — 42 000 сом
-
-💎 Премиум
-• iPhone 13 Pro Max 512GB — #E — 55 000 сом, новый
-
-## ANTI-HALLUCINATION RULES
-
-**NEVER fabricate:**
-- URLs or links (lalafo.kg/..., https://...)
-- Listing IDs not in tool results
-- Prices not shown in tool output
-- Seller names, locations, or conditions not in data
-
-**Letter tokens (#A, #B, #C):**
-- Copy EXACTLY as shown in search results
-- NEVER change, renumber, or reassign letters
-- If no token in results → don't add one
-
-**If you don't have data → say so. Do not invent.**
-
-NEVER use markdown tables (| --- |). NEVER write URLs or link emojis. Use bold for prices. Respond in Russian.
-
-⚠️ CRITICAL: Use the EXACT letter tokens (#A, #B, #C) from the search results you received. Do NOT invent, change, or reassign letters. Links will only work with the exact tokens from the tool.")
+## Anti-hallucination rules
+- NEVER fabricate prices, URLs, or listing details
+- If you don't have data from tools, say so
+- Never make up market statistics")
 ;; ══════════════════════ TOOLS ══════════════════════
 
 ;; ══════════════════════ URL STORE ══════════════════════
 ;; DEPRECATED: url-store and *current-user-id* are only used by the old LLM agent path (format-search-results, citation-replace).
 ;; The orchestrated search path uses tapalakbot.render for deterministic card output.
+
+(def ^:dynamic *captured-cards*
+  "Captured structured cards from search tool execution.
+   Atom holding vector of card maps. Used by bot.clj to render deterministic cards."
+  nil)
+
+(def ^:dynamic *captured-stats*
+  "Captured search stats from tool execution.
+   Atom holding {:avg :min :max :count}."
+  nil)
 
 (def url-store
   "Map of user-id → {letter-token {:url :title :item-id}}. Populated by format-search-results, consumed by bot.clj.
@@ -230,7 +207,7 @@ Example: [113171780, 112908144, 111226783]")
               ;; Build url-store locally (not global atom)
               ]
           (if (zero? found)
-            {:text (get data "message" "Nothing found.") :url-store {}}
+            {:text (get data "message" "Nothing found.") :url-store {} :items []}
             {:text
              (str "🔍 Showing " (count relevant) " relevant candidates"
                   (str " (from " raw " raw listings across " pages " pages)")
@@ -261,7 +238,8 @@ Example: [113171780, 112908144, 111226783]")
                                        (str " | " url))
                                      (when (not (str/blank? desc))
                                        (str " | " desc)))))))
-             :url-store {}}))))))
+             :url-store {}
+             :items (vec relevant)}))))))
 
 (defn- format-research-results
   "Format web research results."
@@ -504,6 +482,17 @@ Rules:
                                  (let [fmt (format-search-results result :user-query user-want)
                                        txt (:text fmt)]
                                    (log/info :search-done :urls (count (get-url-store user-id)) :chars (count txt))
+                                   ;; Capture structured cards for deterministic rendering
+                                   (when (and *captured-cards* (seq (:items fmt)))
+                                     (let [cards (mapv (fn [item]
+                                                         {:title    (get item "title")
+                                                          :price    (when (get item "price") (long (get item "price")))
+                                                          :currency (get item "currency" "KGS")
+                                                          :url      (get item "url")
+                                                          :platform :lalafo
+                                                          :desc     (get item "desc")})
+                                                       (:items fmt))]
+                                       (swap! *captured-cards* into cards)))
                                    txt)
                                  (catch Exception e
                                    (log/error :search-format-failed (.getMessage e)
@@ -516,13 +505,38 @@ Rules:
                                       mr (mashina/search-cars :query q :size 10)]
                                   (log/info :smart-search-mashina :query q :found (:total mr))
                                   (when (seq (:listings mr))
+                                    ;; Capture Mashina cards for deterministic rendering
+                                    (when *captured-cards*
+                                      (let [cards (mapv (fn [item]
+                                                          {:title    (:title item)
+                                                           :price    (when-let [p (get-in item [:price :amount])]
+                                                                       (long p))
+                                                           :currency (get-in item [:price :currency] "KGS")
+                                                           :url      (:url item)
+                                                           :platform :mashina
+                                                           :year     (:year item)
+                                                           :mileage  (when-let [m (:mileage item)]
+                                                                       (when (number? m) (long m)))
+                                                           :city     (:city item)})
+                                                        (:listings mr))]
+                                        (swap! *captured-cards* into cards)))
                                     (format-mashina-results mr)))
                                 (catch Exception e
                                   (log/warn :mashina-search-failed (.getMessage e))
                                   nil)))]
-        ;; Combine results
-        (str (when lalafo-results lalafo-results)
-             (when mashina-results (str "\n\n" mashina-results))))))))
+        ;; Combine results + capture stats
+        (let [combined (str (when lalafo-results lalafo-results)
+                           (when mashina-results (str "\n\n" mashina-results)))]
+          ;; Compute and capture stats from captured cards
+          (when (and *captured-stats* *captured-cards*)
+            (let [prices (keep :price @*captured-cards*)]
+              (when (seq prices)
+                (reset! *captured-stats*
+                        {:avg   (long (/ (reduce + prices) (count prices)))
+                         :min   (apply min prices)
+                         :max   (apply max prices)
+                         :count (count prices)}))))
+          combined)))))
 
 (def tools
   [{:name "research"
@@ -564,30 +578,10 @@ Rules:
   #"(?i)^\s*(привет|здрав|добр[оы]й|хай|hello|hi|/start|/help)\s*$")
 
 (defn pre-hook
-  "Called before each message. Auto-executes search for purchase queries
-   and appends real marketplace data to the system prompt."
+  "Called before each message. In agent-first mode, the agent decides when to
+   use tools — no auto-search needed."
   [user-id text session]
-  (try
-    (let [is-purchase? (and (re-find purchase-intent-pattern text)
-                            (not (re-find greeting-pattern text)))]
-      (if is-purchase?
-        (try
-          (log/info :pre-hook-auto-search :user-id user-id :query text)
-          (let [search-result (search-execute {"user_want" text})
-                has-data? (and search-result (> (count search-result) 20))]
-            (if has-data?
-              (do
-                (log/info :pre-hook-search-done :chars (count search-result))
-                (str "\n\n[REAL MARKETPLACE DATA — use ONLY these listings, do NOT invent]\n\n"
-                     search-result))
-              (do
-                (log/warn :pre-hook-search-empty :query text)
-                nil)))
-          (catch Exception e
-            (log/warn :pre-hook-search-failed (.getMessage e))
-            nil))
-        nil))
-    (catch Exception _ nil)))
+  nil)
 
 ;; ══════════════════════ BOT FACTORY ══════════════════════
 
@@ -611,6 +605,30 @@ Rules:
   ([text] (ask "terminal" text))
   ([user-id text]
    (h/handle-message @tapalakbot user-id text)))
+
+(defn ask-stream
+  "Run agent with streaming + card capture. Returns {:text :cards :stats}.
+   Captures structured search results for deterministic card rendering.
+   status-cb called with progress updates during tool execution."
+  ([user-id text status-cb]
+   (ask-stream user-id text status-cb {}))
+  ([user-id text status-cb opts]
+   (let [cards-atom (atom [])
+         stats-atom (atom nil)
+         result (binding [*captured-cards* cards-atom
+                          *captured-stats* stats-atom]
+                  (h/handle-message-stream!
+                   @tapalakbot user-id text
+                   (fn [chunk] nil)  ;; stream-cb — we don't stream chunks to Telegram
+                   :status-cb status-cb))
+         agent-text (if (map? result) (:content result) (str result))
+         cards @cards-atom
+         stats @stats-atom]
+     (log/info :ask-stream-done :text-len (count agent-text) :cards (count cards)
+               :has-stats (some? stats))
+     {:text  (or agent-text "")
+      :cards cards
+      :stats stats})))
 
 ;; ══════════════════════ MAIN ══════════════════════
 
