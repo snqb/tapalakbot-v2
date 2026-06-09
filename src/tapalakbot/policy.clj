@@ -44,7 +44,7 @@
 (def purchase-intent-re
   "Purchase/search intent — extracted from core.clj purchase-intent-pattern.
    Uses short stems (велос, айфо) to catch common typos (велосипед/велосиепед)."
-  #"(найди|ищ[уе]|купи[ть]|сколько\s+стоит|цена|в\s+продаже|покажи|хочу|ищу|надо|нужен|нужна|нужно|прода[ею]|до\s+\d+|от\s+\d+|б/?у|подерж|бу\b|нов[аы]я|планшет|айпад|ipad|ноут|телефон|айфо|iphone|samsung|xiaomi|макбук|пылесос|роутер|телевиз|монитор|наушник|мышк[аи]|клавиатур|видеокарт|процессор|холодильник|стирал|велос|самокат|hyundai|toyota|honda|bmw|mercedes|lexus|квартир|участ[ко])")
+  #"(найди|ищ[уе]|купи[ть]|сколько\s+стоит|цена|в\s+продаже|покажи|хочу|ищу|надо|нужен|нужна|нужно|прода[ею]|до\s+\d+|от\s+\d+|б/?у|подерж|бу\b|нов[аы]я|планшет|айпад|ipad|ноут|телефон|айфо|iphone|samsung|samsng|xiaomi|макбу|пылесос|роутер|телевиз|монитор|наушник|мышк[аи]|клавиатур|видеокарт|процессор|холодильник|стирал|вело|машин[аы]|самокат|hyundai|toyota|honda|bmw|mercedes|lexus|квартир|участ[ко]|find\s|buy\s|cheap\s+laptop)")
 
 ;; ══════════════════════ CLASSIFIER ══════════════════════
 
@@ -61,19 +61,17 @@
       (str/blank? t)
       :unknown
 
-      ;; Exact fast-path matches (short messages, high confidence)
+      ;; Comparison queries BEFORE search — specific language pattern
+      ;; "что лучше iphone или samsung" should be :compare not :search
+      (re-find comparison-re tl)      :compare
+      (re-find purchase-intent-re tl) :search
+
+      ;; Fast paths (greeting, reset, tracking, help, thanks)
       (re-find greeting-re tl)    :greeting
       (re-find reset-re tl)       :reset
       (re-find tracking-re tl)    :tracking
       (re-find help-re tl)        :help
       (re-find thanks-re tl)      :thanks
-
-      ;; Comparison
-      (re-find comparison-re tl)  :compare
-
-      ;; Purchase / search — must come BEFORE session-refine so full queries
-      ;; aren't misclassified as refine just because session exists
-      (re-find purchase-intent-re tl) :search
 
       ;; Refine: short message with refine keyword, OR short message with prior session
       (or (and (< (count t) 30)

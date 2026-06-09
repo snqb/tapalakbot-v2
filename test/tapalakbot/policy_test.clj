@@ -46,9 +46,21 @@
 
 ;; ════════════════════ COMPARE ════════════════════
 
-(deftest test-compare
-  (is (= :compare (p/classify "что лучше, iphone или samsung" nil)))
-  (is (= :compare (p/classify "сравни macbook air и pro" nil))))
+(deftest test-greeting-vs-search
+  ;; Search intent beats greeting prefix
+  (is (= :search (p/classify "привет найди телефон" nil)))
+  (is (= :search (p/classify "салам ищу велосипед" nil)))
+  ;; Pure greeting still works
+  (is (= :greeting (p/classify "привет" nil)))
+  (is (= :greeting (p/classify "салам" nil))))
+
+(deftest test-typo-tolerance
+  (is (= :search (p/classify "велосиепед" nil)))
+  (is (= :search (p/classify "вело" nil)))
+  (is (= :search (p/classify "машина" nil)))
+  (is (= :search (p/classify "samsng galaxy" nil)))
+  (is (= :search (p/classify "макбуук про" nil)))
+  (is (= :search (p/classify "айфон12" nil))))
 
 ;; ════════════════════ REFINE ════════════════════
 

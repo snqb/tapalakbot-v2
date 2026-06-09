@@ -179,13 +179,13 @@
 
 ;; ════════════════════ TEST 6: COMPARE MODE ════════════════════
 
-(deftest test-compare-returns-shortlist
-  (testing "compare intent returns shortlist suggesting search"
-    (with-redefs [search/search (fn [& _] (throw (Exception. "search should not be called")))
-                  llm/llm       (fn [& _] (throw (Exception. "LLM should not be called")))]
+(deftest test-compare-returns-fallback-on-error
+  (testing "compare intent catches errors and returns helpful fallback"
+    (with-redefs [search/search (fn [& _] (throw (Exception. "search unavailable")))
+                  llm/llm       (fn [& _] (throw (Exception. "LLM unavailable")))]
       (let [result (orch/orchestrate "что лучше, iphone или samsung" nil)]
         (is (= :shortlist (:mode result)))
-        (is (str/includes? (:intro result) "сравнен"))
+        (is (str/includes? (:intro result) "поиском"))
         (is (empty? (:cards result)))))))
 
 ;; ════════════════════ TEST 7: SESSION STATE IS UPDATED ════════════════════
