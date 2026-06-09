@@ -536,7 +536,7 @@ Rules:
                          :min   (apply min prices)
                          :max   (apply max prices)
                          :count (count prices)}))))
-          combined)))))
+          combined))))))
 
 (def tools
   [{:name "research"
