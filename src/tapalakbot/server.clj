@@ -19,11 +19,14 @@
         (require 'tapalakbot.monitor.main)
         (let [main-fn (resolve 'tapalakbot.monitor.main/-main)]
           (.start (Thread. ^Runnable (fn [] (main-fn)) "monitor-service"))
-          ;; Wait for it to be ready
-          (Thread/sleep 5000)
-          (if (monitor/health-check)
-            (log/info :monitor-started)
-            (log/warn :monitor-start-failed)))
+          ;; Poll with backoff — initial scan can take 15-30s
+          (loop [attempt 0]
+            (Thread/sleep (min 3000 (* 1000 (inc attempt))))
+            (if (monitor/health-check)
+              (log/info :monitor-started :attempt (inc attempt))
+              (if (< attempt 10)
+                (recur (inc attempt))
+                (log/warn :monitor-start-failed)))))
         (catch Exception e
           (log/warn :monitor-start-error (.getMessage e)))))))
 
