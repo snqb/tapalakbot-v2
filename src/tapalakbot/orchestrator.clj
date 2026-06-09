@@ -322,12 +322,11 @@ Return ONLY valid JSON:
       (compare-products text model provider)
 
       ;; ── Unknown ──
-      ;; If session has prior search context, try combining it.
-      ;; Otherwise don't fall back to old agent path (which emits bare #letter markers).
-      (if-let [last-q (:last-search state)]
-        (let [combined (str last-q " " text)]
-          (log/info :unknown-combining-with-session :combined combined)
-          (do-search combined session {:status-cb status-cb :model model :provider provider}))
+      ;; Try searching anyway — users type typos, brands, model names that
+      ;; the regex won't catch. Only show help for very short/gibberish text.
+      (if (and text (> (count (str/trim text)) 3))
+        (do (log/info :unknown-but-trying-search :text text)
+            (do-search text session {:status-cb status-cb :model model :provider provider}))
         {:mode  :no-results
-         :intro "🤔 Я не совсем понял. Напишите, что ищете — например, «найди iphone 13»."
+         :intro "🤔 Напишите, что ищете — например, «найди iphone 13»."
          :cards [] :cta nil :assumptions []}))))
