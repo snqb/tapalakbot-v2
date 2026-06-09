@@ -209,13 +209,13 @@ Example: [113171780, 112908144, 111226783]")
           (if (zero? found)
             {:text (get data "message" "Nothing found.") :url-store {} :items []}
             {:text
-             (str "🔍 Showing " (count relevant) " relevant candidates"
+             (str "🔍 Showing " (min (count relevant) 12) " relevant candidates"
                   (str " (from " raw " raw listings across " pages " pages)")
                   (when truncated " [truncated]")
                   ". STRICT: Use the title in [brackets] for each item. Each item has a real Lalafo URL — include it. DO NOT invent iPhones for items that are MacBooks/accessories. Check the URL slug."
                   "\n"
                   (str/join "\n"
-                            (for [item relevant]
+                            (for [item (take 12 relevant)]
                               (let [item-id (str (get item "id"))
                                     url (get item "url" "")
                                     price (get item "price")

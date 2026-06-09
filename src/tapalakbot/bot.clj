@@ -581,37 +581,27 @@
                  (catch Exception _)))
           ;; Render agent text + cards
           (let [agent-text (:text result)
-                cards (:cards result)
+                all-cards (:cards result)
                 stats (:stats result)
+                ;; Cap at 8 cards to prevent Telegram message-too-long
+                capped-cards (when (seq all-cards) (vec (take 8 all-cards)))
                 ;; Assign tiers to cards
-                final-cards (when (seq cards)
+                final-cards (when (seq capped-cards)
                              (mapv (fn [card]
                                      (let [tier (render/assign-tier (:price card) (:avg stats))]
                                        (assoc card :tier (or tier :good))))
-                                   cards))
+                                   capped-cards))
                 ;; Build reply for render
                 reply {:mode (if (seq final-cards) :shortlist :no-results)
-                       :intro (or agent-text "Чем могу помочь?")
+                       :intro (or agent-text "Ничего не нашлось. Попробуйте переформулировать запрос 🔍")
                        :cards (or final-cards [])
                        :cta nil
                        :assumptions []}]
             ;; Delete thinking message and render
             (when-let [msg-id @thinking-msg-id]
               (try (tg/delete-message chat-id msg-id) (catch Exception _)))
-            (if (seq final-cards)
-              ;; Cards available — render with card layout
-              (do
-                (render-orchestrated chat-id nil reply user-id text)
-                ;; Add tracking button
-                (let [track-btn (track-context-button user-id text)]
-                  (when track-btn
-                    (try (tg/send-message chat-id "Хотите отслеживать этот поиск?"
-                                          :parse-mode nil :reply_markup track-btn)
-                         (catch Exception _)))))
-              ;; No cards — just send agent text
-              (try (tg/send-message chat-id (or agent-text "Чем могу помочь? 🔍") :parse-mode "HTML")
-                   (catch Exception _
-                     (tg/send-md chat-id (or agent-text "Чем могу помочь? 🔍"))))))))
+            ;; render-orchestrated handles tracking button internally
+            (render-orchestrated chat-id nil reply user-id text))))
       (catch Exception e
         (log/error e :agent-error {:user-id uid})
         (when-let [msg-id @thinking-msg-id]
