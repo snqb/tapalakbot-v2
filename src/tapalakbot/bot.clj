@@ -9,6 +9,7 @@
             [tapalakbot.monitor.store :as store]
             [tapalakbot.monitor.tracker :as tracker]
             [tapalakbot.query-builder :as qb]
+            [cheshire.core :as json]
             [clj-harness.telegram :as tg]
             [clj-harness.telegram.format :as fmt]
             [clj-harness.core :as hc]
@@ -358,6 +359,30 @@
       (do (answer-callback callback-id)
           (tg/send-md chat-id "🔍 Напишите что ищете, и в конце будет кнопка «🔔 Отслеживать»"))
 
+    ;; === MORE RESULTS: Show more search results ===
+      (re-matches #"more:(.+)" data)
+      (let [[_ query] (re-matches #"more:(.+)" data)]
+        (answer-callback callback-id "Ищу ещё...")
+        ;; Run search in background
+        (future
+          (let [uid (str "tg-" user-id)
+                result (t/ask-stream uid (str "найди ещё " query) (fn [_]))]
+            (when (seq (:cards result))
+              (t/cache-ads! uid (:cards result))
+              (let [capped (vec (take 8 (:cards result)))
+                    reply {:mode :shortlist
+                           :intro "🔄 Ещё варианты:"
+                           :cards capped
+                           :cta nil
+                           :assumptions []}
+                    html (render/render-reply reply)
+                    track-btn (track-context-button user-id query)
+                    kb (when track-btn {:inline_keyboard [[track-btn]]})]
+                (try
+                  (tg/send-message chat-id html :parse-mode "HTML"
+                                   :reply_markup (when kb (json/generate-string kb)))
+                  (catch Exception _)))))))
+
     ;; Unknown callback
       :else
       (do (log/warn :unknown-callback :data data)
@@ -583,6 +608,8 @@
           (let [agent-text (:text result)
                 all-cards (:cards result)
                 stats (:stats result)
+                ;; Cache ALL cards for /N drill-down
+                _ (when (seq all-cards) (t/cache-ads! uid all-cards))
                 ;; Cap at 8 cards to prevent Telegram message-too-long
                 capped-cards (when (seq all-cards) (vec (take 8 all-cards)))
                 ;; Assign tiers to cards
@@ -596,12 +623,27 @@
                        :intro (or agent-text "Ничего не нашлось. Попробуйте переформулировать запрос 🔍")
                        :cards (or final-cards [])
                        :cta nil
-                       :assumptions []}]
+                       :assumptions []}
+                ;; Build inline keyboard: "Ещё результаты" + tracking
+                track-btn (track-context-button user-id text)
+                more-btn (when (seq all-cards)
+                           {:inline_keyboard
+                            (vec (remove nil?
+                              [(when track-btn [track-btn])
+                               [{:text "🔄 Ещё результаты"
+                                 :callback_data (str "more:" text)}]]))})]
             ;; Delete thinking message and render
             (when-let [msg-id @thinking-msg-id]
               (try (tg/delete-message chat-id msg-id) (catch Exception _)))
-            ;; render-orchestrated handles tracking button internally
-            (render-orchestrated chat-id nil reply user-id text))))
+            ;; Send cards with keyboard
+            (let [html (render/render-reply reply)
+                  kb (or more-btn (when track-btn {:inline_keyboard [[track-btn]]}))]
+              (try
+                (tg/send-message chat-id html :parse-mode "HTML"
+                                 :reply_markup (when kb (json/generate-string kb)))
+                (catch Exception _
+                  ;; Fallback: send without keyboard
+                  (tg/send-message chat-id html :parse-mode "HTML")))))))
       (catch Exception e
         (log/error e :agent-error {:user-id uid})
         (when-let [msg-id @thinking-msg-id]

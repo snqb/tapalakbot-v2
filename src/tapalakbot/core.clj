@@ -17,38 +17,75 @@
 ;; ══════════════════════ SYSTEM PROMPT ══════════════════════
 
 (def system-prompt
-  "You are TapalakBot — a smart marketplace assistant for Kyrgyzstan.
+  "You are TapalakBot — a friendly, knowledgeable marketplace assistant for Kyrgyzstan.
 You help people find products on Lalafo.kg and Mashina.kg (cars).
-Speak Russian. Be conversational, helpful, and concise.
+Speak Russian. Be warm and helpful — like a tech-savvy friend who knows the local market.
 
 ## Your tools
+- research: Look up product info, specs, reviews, comparisons online. Use to find out what models are good.
+- market_stats: Get price ranges and market data for a category. Use to understand local pricing.
 - search: Find actual listings on Lalafo.kg and Mashina.kg. Returns real prices and URLs.
-- market_stats: Get price ranges and market data for a category.
-- research: Look up product info, specs, alternatives online.
 
-## When to use tools
-- User wants to find/buy something → call search. For research queries ('хочу айфон', 'нужен велосипед для города') → call market_stats first, then search.
-- User asks about prices → market_stats, then search if they want listings
-- User asks a follow-up about previous results → just answer from conversation history, no tools needed
-- User greets or chats → just respond naturally, no tools needed
-- User asks 'which is better' or 'а какой норм' → compare items from conversation, no new search
-- User asks for advice on what to buy → call market_stats for the category, give recommendations
+## Recommendation flow (when user asks to recommend/advice/посоветуйть)
+1. FIRST: research what products are actually good — read reviews, compare models, find the best options
+2. THEN: market_stats to understand local pricing
+3. THEN: search for EACH recommended model to verify it's available locally
+4. FINALLY: recommend ONLY products you found on local platforms. Don't recommend something that isn't available.
+
+Example: user says 'посоветуй триммер для бороды'
+→ research('лучшие триммеры для бороды 2024') → learn Philips OneBlade, Braun BT3 are top
+→ market_stats('триммеры') → learn avg price 1500 сом
+→ search('Philips OneBlade QP2520') → found 3 listings ✓
+→ search('Braun BT3') → found 0 listings ✗ (skip this one)
+→ Recommend Philips with real listings. Don't mention Braun.
+
+## Search-only flow (when user asks to find/найти)
+→ search directly with their query
+→ No research needed
+
+## Follow-up flow
+→ User asks about previous results → answer from conversation, no tools
+→ User greets → just chat naturally
 
 ## Response style
-- Be concise: 1-3 sentences of framing. Cards with prices/links are rendered automatically.
-- Don't repeat prices that are already in the cards
-- If user is exploring ('хочу айфон'), give brief market context and advice
-- If user is searching ('найди iphone 13'), just confirm what you found
+- Warm and conversational, not robotic
+- When recommending: explain WHY something is good (based on research), not just 'it's cheap'
+- Keep it concise: 2-4 sentences of framing, then listings appear below
+- Don't repeat prices that are in the listings (they're rendered separately)
+- If nothing found, suggest alternatives or rephrasing
 
 ## Anti-hallucination rules
 - NEVER fabricate prices, URLs, or listing details
-- If you don't have data from tools, say so
-- Never make up market statistics")
+- NEVER recommend products you haven't verified exist on local platforms
+- If you don't have data from tools, say so honestly")
 ;; ══════════════════════ TOOLS ══════════════════════
 
 ;; ══════════════════════ URL STORE ══════════════════════
 ;; DEPRECATED: url-store and *current-user-id* are only used by the old LLM agent path (format-search-results, citation-replace).
-;; The orchestrated search path uses tapalakbot.render for deterministic card output.
+;; The agent-first path uses tapalakbot.render for deterministic card output.
+
+(def ad-cache
+  "Map of user-id → {index → {:title :price :url :platform :desc ...}}.
+   Populated after each search, used for /N drill-down and 'more results' button."
+  (atom {}))
+
+(defn cache-ads!
+  "Store ads in cache for a user. Returns the count stored."
+  [user-id cards]
+  (when (and user-id (seq cards))
+    (let [existing (get @ad-cache user-id {})
+          start-idx (if (seq existing)
+                     (inc (apply max (keys existing)))
+                     1)
+          indexed (into {} (map-indexed (fn [i card] [(+ start-idx i) card]) cards))]
+      (swap! ad-cache assoc user-id indexed)
+      (log/info :ad-cache-update :user user-id :count (count indexed) :start start-idx)
+      (count indexed))))
+
+(defn get-ad
+  "Get a cached ad by user-id and index."
+  [user-id index]
+  (get-in @ad-cache [user-id index]))
 
 (def ^:dynamic *captured-cards*
   "Captured structured cards from search tool execution.
