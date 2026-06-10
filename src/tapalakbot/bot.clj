@@ -605,9 +605,15 @@
             (try (tg/edit-message chat-id msg-id "⏳ Слишком долго. Попробуйте ещё раз." :parse-mode nil)
                  (catch Exception _)))
           ;; Render agent text + cards
-          (let [agent-text (:text result)
-                all-cards (:cards result)
-                stats (:stats result)
+          (let [result* (if (and (not (seq (:cards result)))
+                                (> (count text) 3)
+                                (not (re-find #"(?i)^\s*(привет|здрав|спасибо|ок|да|нет|/reset|/start)" text)))
+                         (do (log/info :fallback-auto-search :query text)
+                           (t/ask-stream uid (str "найди " text) (fn [_])))
+                         result)
+                agent-text (:text result*)
+                all-cards (:cards result*)
+                stats (:stats result*)
                 ;; Cache ALL cards for /N drill-down
                 _ (when (seq all-cards) (t/cache-ads! uid all-cards))
                 ;; Cap at 8 cards to prevent Telegram message-too-long
