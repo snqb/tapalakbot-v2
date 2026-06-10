@@ -625,19 +625,18 @@
                        :cta nil
                        :assumptions []}
                 ;; Build inline keyboard: "Ещё результаты" + tracking
-                track-btn (track-context-button user-id text)
+                track-kb (track-context-button user-id text)
                 more-btn (when (seq all-cards)
-                           {:inline_keyboard
-                            (vec (remove nil?
-                              [[{:text "🔄 Ещё результаты"
-                                 :callback_data (str "more:" text)}]
-                               (when track-btn [track-btn])]))})]
+                           (let [more-row [{:text "🔄 Ещё результаты"
+                                            :callback_data (str "more:" text)}]
+                                 track-rows (get track-kb "inline_keyboard" [])]
+                             {"inline_keyboard" (vec (concat [more-row] track-rows))}))]]
             ;; Delete thinking message and render
             (when-let [msg-id @thinking-msg-id]
               (try (tg/delete-message chat-id msg-id) (catch Exception _)))
             ;; Send cards with keyboard
             (let [html (render/render-reply reply)
-                  kb (or more-btn (when track-btn {:inline_keyboard [[track-btn]]}))]
+                  kb (or more-btn track-kb)]
               (try
                 (tg/send-message chat-id html :parse-mode "HTML"
                                  :reply_markup (when kb (json/generate-string kb)))
