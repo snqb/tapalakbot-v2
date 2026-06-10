@@ -598,7 +598,7 @@
       ;; Run agent with card capture
       (let [agent-future (future
                            (t/ask-stream uid text status-cb))
-            result (deref agent-future 90000 :timeout)]
+            result (deref agent-future 180000 :timeout)]
         (if (= result :timeout)
           ;; Timeout
           (when-let [msg-id @thinking-msg-id]
