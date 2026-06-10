@@ -52,6 +52,20 @@
       (str/replace ">" "&gt;")
       (str/replace "\"" "&quot;")))
 
+(defn strip-markdown
+  "Convert common Markdown to Telegram HTML.
+   Handles: **bold**, ### headings, --- separators, *italic*."
+  [text]
+  (when text
+    (-> text
+        (clojure.string/replace #"(?m)^---$" "")
+        (clojure.string/replace #"(?m)^#{1,4}\s+(.+)$" "<b>$1</b>")
+        (clojure.string/replace #"(?<!\*)\*\*([^*]+)\*\*(?!\*)" "<b>$1</b>")
+        (clojure.string/replace #"(?m)^\s*[-•]\s+" "• ")
+        (clojure.string/replace #"(?:\n\s*){3,}" "\n\n")
+        clojure.string/trim)))
+
+
 ;; ════════════════════ SINGLE CARD RENDERING ════════════════════
 
 (defn render-card
@@ -127,7 +141,7 @@
     ;; Research mode — intro + market note + cards
     :research
     (str (when (and intro (not (str/blank? intro)))
-           (str intro "\n\n"))
+           (str (strip-markdown intro) "\n\n"))
          (when (and market-note (not (str/blank? market-note)))
            (str "<i>" (escape-html market-note) "</i>\n\n"))
          (when (seq cards)
@@ -140,13 +154,13 @@
     ;; Followup mode — conversational answer, no cards
     :followup
     (str (when (and intro (not (str/blank? intro)))
-           intro)
+           (strip-markdown intro))
          (when (and cta (not (str/blank? cta)))
            (str "\n\n💬 " cta)))
     ;; Compare mode — intro + comparison points + verdict
     :compare
     (str (when (and intro (not (str/blank? intro)))
-           (str intro "\n\n"))
+           (str (strip-markdown intro) "\n\n"))
          (when (seq comparison)
            (str (str/join "\n" (map #(str "• " (escape-html %)) comparison)) "\n\n"))
          (when (and verdict (not (str/blank? verdict)))
@@ -155,7 +169,7 @@
            (str "\n💬 " cta)))
     ;; Default: full card render (shortlist, refine, etc.)
     (str (when (and intro (not (str/blank? intro)))
-           (str intro "\n\n"))
+           (str (strip-markdown intro) "\n\n"))
          (when (seq cards)
            (render-cards cards))
          (when (seq assumptions)
