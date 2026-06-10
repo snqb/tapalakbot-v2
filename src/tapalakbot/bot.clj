@@ -625,7 +625,7 @@
                        :cta nil
                        :assumptions []}
                 ;; Build inline keyboard: "Ещё результаты" + tracking
-                track-kb (track-context-button user-id text)
+                track-kb (when (seq final-cards) (track-context-button user-id text))
                 more-btn (when (seq all-cards)
                            (let [more-row [{:text "🔄 Ещё результаты"
                                             :callback_data (str "more:" text)}]
@@ -634,15 +634,19 @@
             ;; Delete thinking message and render
             (when-let [msg-id @thinking-msg-id]
               (try (tg/delete-message chat-id msg-id) (catch Exception _)))
-            ;; Send cards with keyboard
+            ;; Send response
             (let [html (render/render-reply reply)
                   kb (or more-btn track-kb)]
               (try
-                (tg/send-message chat-id html :parse-mode "HTML"
-                                 :reply_markup (when kb (json/generate-string kb)))
-                (catch Exception _
-                  ;; Fallback: send without keyboard
-                  (tg/send-message chat-id html :parse-mode "HTML")))))))
+                (if kb
+                  (tg/send-message chat-id html :parse-mode "HTML"
+                                   :reply_markup (json/generate-string kb))
+                  (tg/send-message chat-id html :parse-mode "HTML"))
+                (catch Exception e
+                  (log/error e :tg-send-failed {:uid uid})
+                  ;; Fallback: plain text without keyboard
+                  (try (tg/send-message chat-id (or agent-text "Ошибка — попробуйте ещё раз.") :parse-mode nil)
+                       (catch Exception _)))))))
       (catch Exception e
         (log/error e :agent-error {:user-id uid})
         (when-let [msg-id @thinking-msg-id]
