@@ -43,7 +43,7 @@
 
 ;; ════════════════════ HTML ESCAPING ════════════════════
 
-(defn- escape-html
+(defn escape-html
   "Escape HTML special chars for Telegram."
   [s]
   (-> (str s)

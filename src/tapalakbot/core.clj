@@ -73,7 +73,7 @@ Example: user says 'посоветуй триммер для бороды'
   (atom {}))
 
 (defn cache-ads!
-  "Store ads in cache for a user. Returns the count stored."
+  "Store ads in cache for a user. Returns {:start N :count N}."
   [user-id cards]
   (when (and user-id (seq cards))
     (let [existing (get @ad-cache user-id {})
@@ -83,7 +83,7 @@ Example: user says 'посоветуй триммер для бороды'
           indexed (into {} (map-indexed (fn [i card] [(+ start-idx i) card]) cards))]
       (swap! ad-cache assoc user-id indexed)
       (log/info :ad-cache-update :user user-id :count (count indexed) :start start-idx)
-      (count indexed))))
+      {:start start-idx :count (count indexed)})))
 
 (defn get-ad
   "Get a cached ad by user-id and index."
@@ -649,7 +649,8 @@ Rules:
 (defn ask-stream
   "Run agent with streaming + card capture. Returns {:text :cards :stats}.
    Captures structured search results for deterministic card rendering.
-   status-cb called with progress updates during tool execution."
+   status-cb called with progress updates during tool execution.
+   Also caches ads for /N drill-down."
   ([user-id text status-cb]
    (ask-stream user-id text status-cb {}))
   ([user-id text status-cb opts]
@@ -664,6 +665,9 @@ Rules:
          agent-text (if (map? result) (:content result) (str result))
          cards @cards-atom
          stats @stats-atom]
+     ;; Cache ads for /N drill-down
+     (when (seq cards)
+       (cache-ads! user-id cards))
      (log/info :ask-stream-done :text-len (count agent-text) :cards (count cards)
                :has-stats (some? stats))
      {:text  (or agent-text "")

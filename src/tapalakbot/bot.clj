@@ -383,6 +383,32 @@
                                    :reply_markup (when kb (json/generate-string kb)))
                   (catch Exception _)))))))
 
+    ;; === DRILL-DOWN: Show detailed ad ===
+      (re-matches #"ad:(\d+)" data)
+      (let [[_ idx-str] (re-matches #"ad:(\d+)" data)
+            idx (Integer/parseInt idx-str)
+            uid (str "tg-" user-id)
+            ad (t/get-ad uid idx)]
+        (answer-callback callback-id)
+        (if ad
+          (let [card-text (str "<b>" (render/escape-html (:title ad)) "</b>\n\n"
+                              "💰 " (when (:price ad) (format "%,d" (:price ad)))
+                              " " (:currency ad "KGS") "\n"
+                              (when (:desc ad) (str "\n" (render/escape-html (:desc ad)) "\n")) "\n"
+                              "📍 " (get ad :platform "lalafo") "\n\n"
+                              "<a href=\"" (:url ad) "\">🔗 Открыть на площадке</a>")
+                kb {"inline_keyboard"
+                    [[{:text "🔗 Открыть на Lalafo"
+                       :url (:url ad)}]
+                     [{:text "◀️ Назад к результатам"
+                       :callback_data "back_to_results"}]]}]
+            (try
+              (tg/send-message chat-id card-text :parse-mode "HTML"
+                               :reply_markup (json/generate-string kb))
+              (catch Exception e
+                (log/error e :drilldown-send-failed))))
+          (tg/send-md chat-id "❌ Объявление не найдено в кеше. Попробуйте новый поиск.")))
+
     ;; Unknown callback
       :else
       (do (log/warn :unknown-callback :data data)
@@ -614,10 +640,14 @@
                 agent-text (:text result*)
                 all-cards (:cards result*)
                 stats (:stats result*)
-                ;; Cache ALL cards for /N drill-down
-                _ (when (seq all-cards) (t/cache-ads! uid all-cards))
                 ;; Cap at 8 cards to prevent Telegram message-too-long
                 capped-cards (when (seq all-cards) (vec (take 8 all-cards)))
+                ;; Get drill-down indices from ad-cache
+                cache-idx (when (seq all-cards)
+                           (let [cached (get @t/ad-cache uid)]
+                             {:start 1 :count (count capped-cards)}))
+                drill-start (:start cache-idx)
+                drill-count (:count cache-idx)
                 ;; Assign tiers to cards
                 final-cards (when (seq capped-cards)
                              (mapv (fn [card]
@@ -635,8 +665,15 @@
                 more-btn (when (seq all-cards)
                            (let [more-row [{:text "🔄 Ещё результаты"
                                             :callback_data (str "more:" text)}]
+                                 drill-row (when (and drill-start drill-count)
+                                            (->> (range drill-start (+ drill-start drill-count))
+                                                 (take 8)
+                                                 (mapv (fn [n] {:text (str "/" n)
+                                                               :callback_data (str "ad:" n)}))))
                                  track-rows (get track-kb "inline_keyboard" [])]
-                             {"inline_keyboard" (vec (concat [more-row] track-rows))}))]
+                             {"inline_keyboard" (vec (concat [(when (seq drill-row) drill-row)
+                                                              more-row]
+                                                            track-rows))}))]
             ;; Delete thinking message and render
             (when-let [msg-id @thinking-msg-id]
               (try (tg/delete-message chat-id msg-id) (catch Exception _)))
