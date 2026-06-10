@@ -629,9 +629,9 @@
                 more-btn (when (seq all-cards)
                            {:inline_keyboard
                             (vec (remove nil?
-                              [(when track-btn [track-btn])
-                               [{:text "🔄 Ещё результаты"
-                                 :callback_data (str "more:" text)}]]))})]
+                              [[{:text "🔄 Ещё результаты"
+                                 :callback_data (str "more:" text)}]
+                               (when track-btn [track-btn])]))})]
             ;; Delete thinking message and render
             (when-let [msg-id @thinking-msg-id]
               (try (tg/delete-message chat-id msg-id) (catch Exception _)))
