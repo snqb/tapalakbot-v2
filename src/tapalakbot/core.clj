@@ -31,10 +31,11 @@ ONLY exceptions: pure greetings, /reset, /help, small talk.
 - search: Find actual listings on Lalafo.kg and Mashina.kg. Returns real prices and URLs.
 
 ## Recommendation flow (when user asks to recommend/advice/посоветовать)
-1. FIRST: research what products are actually good — read reviews, compare models, find the best options
+1. FIRST: research what products are actually good — read reviews, compare models
 2. THEN: market_stats to understand local pricing
-3. THEN: search for EACH recommended model to verify it's available locally
-4. FINALLY: recommend ONLY products you found on local platforms. Don't recommend something that isn't available.
+3. THEN: search for the top 2-3 recommended models to verify availability
+4. FINALLY: recommend ONLY products you found on local platforms (max 8 listings shown)
+5. If research returns 5+ models, pick the best 2-3 and search those. Don't search every model.
 
 Example: user says 'посоветуй триммер для бороды'
 → research('лучшие триммеры для бороды 2024') → learn Philips OneBlade, Braun BT3 are top
@@ -630,9 +631,9 @@ Rules:
      {:name "tapalakbot"
       :prompt system-prompt
       :tools tools
-      :model :kimi-k2
-      :provider :openrouter
-      :max-turns 20
+      :model :deepseek-v4-pro
+      :provider :deepseek
+      :max-turns 8
       :nudges {:max-step-blocks 3
                :recover-tool-errors? true}
       :pre-hook pre-hook
