@@ -646,7 +646,7 @@
                   (log/error e :tg-send-failed {:uid uid})
                   ;; Fallback: plain text without keyboard
                   (try (tg/send-message chat-id (or agent-text "Ошибка — попробуйте ещё раз.") :parse-mode nil)
-                       (catch Exception _)))))))
+                       (catch Exception _))))))))
       (catch Exception e
         (log/error e :agent-error {:user-id uid})
         (when-let [msg-id @thinking-msg-id]
