@@ -630,7 +630,7 @@
                            (let [more-row [{:text "🔄 Ещё результаты"
                                             :callback_data (str "more:" text)}]
                                  track-rows (get track-kb "inline_keyboard" [])]
-                             {"inline_keyboard" (vec (concat [more-row] track-rows))})))]
+                             {"inline_keyboard" (vec (concat [more-row] track-rows))}))]
             ;; Delete thinking message and render
             (when-let [msg-id @thinking-msg-id]
               (try (tg/delete-message chat-id msg-id) (catch Exception _)))
