@@ -537,17 +537,19 @@
 
 (defn- truncate-cb
   "Truncate string to fit within max-bytes when UTF-8 encoded (for Telegram callback_data).
-   Walks back from max-bytes to find a valid UTF-8 boundary."
+   Walks back from truncation point to avoid splitting UTF-8 multi-byte sequences."
   [s max-bytes]
   (let [bs (.getBytes (str s) "UTF-8")]
     (if (<= (alength bs) max-bytes)
       (str s)
-      (let [n (loop [i (min max-bytes (alength bs))]
-                (if (pos? i)
-                  (let [ok? (try (String. bs 0 i "UTF-8") true
-                                 (catch Exception _ false))]
-                    (if ok? i (recur (dec i))))
-                  0))]
+      ;; Walk back from max-bytes until bs[n] is NOT a continuation byte (10xxxxxx).
+      ;; Continuation bytes mean we're inside a multi-byte character — keep walking.
+      (let [n (loop [n max-bytes]
+                (if (and (pos? n)
+                         (< n (alength bs))
+                         (= (bit-and (aget bs n) 0xC0) 0x80))
+                  (recur (dec n))
+                  n))]
         (String. bs 0 n "UTF-8")))))
 
 (defn- log-transcript!
