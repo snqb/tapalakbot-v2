@@ -663,8 +663,9 @@
                 ;; Build inline keyboard: "Ещё результаты" + tracking
                 track-kb (when (seq final-cards) (track-context-button user-id text))
                 more-btn (when (seq all-cards)
-                           (let [more-row [{:text "🔄 Ещё результаты"
-                                            :callback_data (str "more:" text)}]
+                           more-query (subs text 0 (min 50 (count text)))
+                           more-row [{:text "🔄 Ещё результаты"
+                                      :callback_data (str "more:" more-query)}]
                                  drill-row (when (and drill-start drill-count)
                                             (->> (range drill-start (+ drill-start drill-count))
                                                  (take 8)
