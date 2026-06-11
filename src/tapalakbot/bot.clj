@@ -535,6 +535,21 @@
         (catch Exception e
           (log/warn e :track-button-fail))))))
 
+(defn- truncate-cb
+  "Truncate string to fit within max-bytes when UTF-8 encoded (for Telegram callback_data).
+   Walks back from max-bytes to find a valid UTF-8 boundary."
+  [s max-bytes]
+  (let [bs (.getBytes (str s) "UTF-8")]
+    (if (<= (alength bs) max-bytes)
+      (str s)
+      (let [n (loop [i (min max-bytes (alength bs))]
+                (if (pos? i)
+                  (let [ok? (try (String. bs 0 i "UTF-8") true
+                                 (catch Exception _ false))]
+                    (if ok? i (recur (dec i))))
+                  0))]
+        (String. bs 0 n "UTF-8")))))
+
 (defn- log-transcript!
   "Log a transcript entry for later review."
   [user-id user-text reply]
@@ -639,7 +654,7 @@
             ;; Build inline keyboard: "Ещё результаты" + drill-down
             more-btn (when (seq all-cards)
                        (let [more-row [{:text "🔄 Ещё результаты"
-                                        :callback_data (str "more:" (subs text 0 (min 50 (count text))))}]
+                                        :callback_data (str "more:" (truncate-cb text 58))}]
                              drill-row (when (seq capped-cards)
                                         (->> (range 1 (inc (count capped-cards)))
                                              (take 8)
