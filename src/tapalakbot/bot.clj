@@ -359,14 +359,34 @@
       (do (answer-callback callback-id)
           (tg/send-md chat-id "🔍 Напишите что ищете, и в конце будет кнопка «🔔 Отслеживать»"))
 
-    ;; === MORE RESULTS: Show more search results ===
+    ;; === MORE RESULTS: Show more search results with live streaming ===
       (re-matches #"more:(.+)" data)
       (let [[_ query] (re-matches #"more:(.+)" data)]
         (answer-callback callback-id "Ищу ещё...")
-        ;; Run search in background
+        ;; Run search with streaming in background
         (future
           (let [uid (str "tg-" user-id)
-                result (t/ask-stream uid (str "найди ещё " query) (fn [_]))]
+                ;; Send placeholder
+                placeholder (tg/send-message chat-id "🔄 Ищу ещё варианты..." :parse-mode nil)
+                msg-id (some-> placeholder (get "result") (get "message_id"))
+                buf (StringBuilder.)
+                last-edit (atom 0)
+                stream-cb (fn [delta]
+                            (.append buf delta)
+                            (let [now (System/currentTimeMillis)]
+                              (when (and (> (- now @last-edit) 1500)
+                                         (> (.length buf) 30)
+                                         msg-id)
+                                (reset! last-edit now)
+                                (try
+                                  (tg/edit-message chat-id msg-id (fmt/md->html (.toString buf)) :parse-mode "HTML")
+                                  (catch Exception _)))))
+                status-cb (fn [status]
+                            (.setLength buf 0)
+                            (when msg-id
+                              (try (tg/edit-message chat-id msg-id status :parse-mode nil)
+                                   (catch Exception _))))
+                result (t/ask-stream uid (str "найди ещё " query) status-cb {:stream-cb stream-cb})]
             (when (seq (:cards result))
               (t/cache-ads! uid (:cards result))
               (let [capped (vec (take 8 (:cards result)))
@@ -378,6 +398,8 @@
                     html (render/render-reply reply)
                     track-btn (track-context-button user-id query)
                     kb (when track-btn {:inline_keyboard [[track-btn]]})]
+                ;; Delete streamed preview, send final rendered
+                (when msg-id (try (tg/delete-message chat-id msg-id) (catch Exception _)))
                 (try
                   (tg/send-message chat-id html :parse-mode "HTML"
                                    :reply_markup (when kb (json/generate-string kb)))
@@ -490,85 +512,6 @@
   (when (and user-text (not (str/blank? user-text)))
     (str/trim user-text)))
 
-(defn- process-agent-message
-  "Process a single agent message with streaming. Returns nil."
-  [{:keys [chat-id user-id text]}]
-  (let [uid (str "tg-" user-id)
-        bot @t/tapalakbot
-        thinking-msg-id (atom nil)
-        buf (StringBuilder.)
-        last-edit (atom 0)
-        last-typing (atom 0)
-        phase (atom :initial)]
-    (let [msg (tg/send-message chat-id "💭 ..." :parse-mode nil)]
-      (reset! thinking-msg-id (some-> msg (get "result") (get "message_id"))))
-    (try
-      (let [stream-cb (fn [delta]
-                        (.append buf delta)
-                        (log/info :stream-delta :len (count delta) :total (.length buf))
-                        (reset! phase :streaming)
-                        (let [now (System/currentTimeMillis)]
-                          (when (> (- now @last-typing) 4000)
-                            (reset! last-typing now)
-                            (try (tg/send-typing chat-id) (catch Exception _))))
-                        (let [now (System/currentTimeMillis)
-                              elapsed (- now @last-edit)
-                              msg-id @thinking-msg-id]
-                          (when (and (> elapsed 1500)
-                                     (> (.length buf) 30)
-                                     msg-id)
-                            (reset! last-edit now)
-                            (try
-                              (let [preview (.toString buf)
-                                    html (fmt/md->html preview)]
-                                (tg/edit-message chat-id msg-id html :parse-mode "HTML"))
-                              (catch Exception e
-                                (log/warn e :stream-edit-fail))))))
-            status-cb (fn [status]
-                        (reset! phase :tool)
-                        (.setLength buf 0)
-                        (when-let [msg-id @thinking-msg-id]
-                          (try
-                            (tg/edit-message chat-id msg-id status :parse-mode nil)
-                            (catch Exception e
-                              (log/warn e :status-edit-fail)))))
-            result (do
-                     (t/set-thread-user-id! uid)
-                     (try
-                       (hc/handle-message-stream! bot uid text stream-cb :status-cb status-cb)
-                       (finally
-                         (t/clear-thread-user-id!))))]
-        (reset! phase :done)
-        (if-let [msg-id @thinking-msg-id]
-          (let [safe-text (str/replace (str result) #"👉 Смотри\b" "🔗")
-               html (fmt/md->html safe-text)]
-            (try
-              ;; Edit with search results
-              (tg/edit-message chat-id msg-id html :parse-mode "HTML")
-              ;; Add contextual track button after a short delay
-              (when-let [query (extract-search-query (str result) text)]
-                (log/info :track-button-prepare :query query :user user-id)
-                (try
-                  (Thread/sleep 500)
-                  (let [track-btn (track-context-button user-id query)
-                        resp (tg/send-message chat-id (str "🔔 Хотите отслеживать «" query "»?")
-                                              :reply_markup track-btn)]
-                    (log/info :track-button-sent :resp (when resp "ok")))
-                  (catch Exception e
-                    (log/warn e :track-button-fail))))
-              (catch Exception e
-                (log/error e :final-edit-fail)
-                (tg/send-message chat-id html :parse-mode "HTML"))))
-          (tg/send-md chat-id (str result))))
-      (catch Exception e
-        (log/error e :agent-error {:user-id uid})
-        (if-let [msg-id @thinking-msg-id]
-          (tg/edit-message chat-id msg-id "❌ Ошибка. Попробуйте ещё раз." :parse-mode nil)
-          (tg/send-message chat-id "❌ Ошибка. Попробуйте ещё раз." :parse-mode nil))))))
-
-
-(declare handle-agent)
-
 (defn- render-orchestrated
   "Render a reply to Telegram HTML + buttons."
   [chat-id msg-id reply user-id query]
@@ -605,14 +548,54 @@
                            :timestamp  (System/currentTimeMillis)})
     (catch Exception _)))
 
+(defn- render-and-send
+  "Render reply with cards and send to Telegram.
+   Optional :keyboard overrides the default track keyboard."
+  [chat-id user-id text reply & {:keys [keyboard]}]
+  (let [default-kb (when (seq (:cards reply)) (track-context-button user-id text))
+        kb (or keyboard default-kb)
+        html (render/render-reply reply)]
+    (try
+      (if kb
+        (tg/send-message chat-id html :parse-mode "HTML"
+                         :reply_markup (json/generate-string kb))
+        (tg/send-message chat-id html :parse-mode "HTML"))
+      (catch Exception e
+        (log/error e :tg-send-failed)
+        (try (tg/send-message chat-id (or (:intro reply) "Ошибка — попробуйте ещё раз.") :parse-mode nil)
+             (catch Exception _))))))
+
 (defn- handle-orchestrated
-  "Handle message via agent-first pipeline — clj-harness agent with tools.
-   The agent decides intent, calls tools, and generates conversational response.
-   Cards are rendered deterministically from captured search tool results."
+  "Handle message via agent-first pipeline with LIVE streaming.
+   Agent text is streamed to Telegram in real-time as it's generated.
+   Status updates (tool execution) reset the preview. Cards rendered on completion."
   [{:keys [chat-id user-id text] :as msg}]
   (let [uid (str "tg-" user-id)
         thinking-msg-id (atom nil)
+        buf (StringBuilder.)
+        last-edit (atom 0)
+        last-typing (atom 0)
+        stream-cb (fn [delta]
+                    (.append buf delta)
+                    (let [now (System/currentTimeMillis)]
+                      ;; Typing indicator every 4s
+                      (when (> (- now @last-typing) 4000)
+                        (reset! last-typing now)
+                        (try (tg/send-typing chat-id) (catch Exception _)))
+                      ;; Edit message with live preview (throttled 1500ms)
+                      (when (and (> (- now @last-edit) 1500)
+                                 (> (.length buf) 30)
+                                 @thinking-msg-id)
+                        (reset! last-edit now)
+                        (try
+                          (let [preview (.toString buf)
+                                html (fmt/md->html preview)]
+                            (tg/edit-message chat-id @thinking-msg-id html :parse-mode "HTML"))
+                          (catch Exception e
+                            (log/warn e :stream-edit-fail))))))
         status-cb (fn [status-text]
+                    ;; Clear streaming buffer on phase change
+                    (.setLength buf 0)
                     (when-let [msg-id @thinking-msg-id]
                       (try
                         (tg/edit-message chat-id msg-id status-text :parse-mode nil)
@@ -621,103 +604,68 @@
     (when-let [m (tg/send-message chat-id "💭 ..." :parse-mode nil)]
       (reset! thinking-msg-id (some-> m (get "result") (get "message_id"))))
     (try
-      ;; Run agent with card capture
-      (let [agent-future (future
-                           (t/ask-stream uid text status-cb))
-            result (deref agent-future 180000 :timeout)]
-        (if (= result :timeout)
-          ;; Timeout
-          (when-let [msg-id @thinking-msg-id]
-            (try (tg/edit-message chat-id msg-id "⏳ Слишком долго. Попробуйте ещё раз." :parse-mode nil)
-                 (catch Exception _)))
-          ;; Render agent text + cards
-          (let [result* (if (and (not (seq (:cards result)))
-                                (> (count text) 3)
-                                (not (re-find #"(?i)^\s*(привет|здрав|спасибо|ок|да|нет|/reset|/start)" text)))
-                         (do (log/info :fallback-auto-search :query text)
-                           (t/ask-stream uid (str "найди " text) (fn [_])))
-                         result)
-                agent-text (:text result*)
-                all-cards (:cards result*)
-                stats (:stats result*)
-                ;; Cap at 8 cards to prevent Telegram message-too-long
-                capped-cards (when (seq all-cards) (vec (take 8 all-cards)))
-                ;; Get drill-down indices from ad-cache
-                cache-idx (when (seq all-cards)
-                           (let [cached (get @t/ad-cache uid)]
-                             {:start 1 :count (count capped-cards)}))
-                drill-start (:start cache-idx)
-                drill-count (:count cache-idx)
-                ;; Assign tiers to cards
-                final-cards (when (seq capped-cards)
-                             (mapv (fn [card]
-                                     (let [tier (render/assign-tier (:price card) (:avg stats))]
-                                       (assoc card :tier (or tier :good))))
-                                   capped-cards))
-                ;; Build reply for render
-                reply {:mode (if (seq final-cards) :shortlist :no-results)
-                       :intro (or agent-text "Ничего не нашлось. Попробуйте переформулировать запрос 🔍")
-                       :cards (or final-cards [])
-                       :cta nil
-                       :assumptions []}
-                ;; Build inline keyboard: "Ещё результаты" + tracking
-                track-kb (when (seq final-cards) (track-context-button user-id text))
-                more-btn (when (seq all-cards)
-                           (let [more-query (subs text 0 (min 50 (count text)))
-                                 more-row [{:text "🔄 Ещёрезультаты"
-                                            :callback_data (str "more:" more-query)}]
-                                 drill-row (when (and drill-start drill-count)
-                                            (->> (range drill-start (+ drill-start drill-count))
-                                                 (take 8)
-                                                 (mapv (fn [n] {:text (str "/" n)
-                                                               :callback_data (str "ad:" n)}))))
-                                 track-rows (get track-kb "inline_keyboard" [])]
-                             {"inline_keyboard" (vec (concat [(when (seq drill-row) drill-row)
-                                                              more-row]
-                                                            track-rows))}))]
-            ;; Delete thinking message and render
-            (when-let [msg-id @thinking-msg-id]
-              (try (tg/delete-message chat-id msg-id) (catch Exception _)))
-            ;; Send response
-            (let [html (render/render-reply reply)
-                  kb (or more-btn track-kb)]
-              (try
-                (if kb
-                  (tg/send-message chat-id html :parse-mode "HTML"
-                                   :reply_markup (json/generate-string kb))
-                  (tg/send-message chat-id html :parse-mode "HTML"))
-                (catch Exception e
-                  (log/error e :tg-send-failed {:uid uid})
-                  ;; Fallback: plain text without keyboard
-                  (try (tg/send-message chat-id (or agent-text "Ошибка — попробуйте ещё раз.") :parse-mode nil)
-                       (catch Exception _))))))))
+      ;; Run agent with REAL streaming + card capture
+      (let [result (t/ask-stream uid text status-cb {:stream-cb stream-cb})
+            ;; Fallback: retry with explicit search prefix if no cards
+            result* (if (and (not (seq (:cards result)))
+                            (> (count text) 3)
+                            (not (re-find #"(?i)^\s*(привет|здрав|спасибо|ок|да|нет|/reset|/start)" text)))
+                      (do
+                        (log/info :fallback-auto-search :query text)
+                        ;; Clear buffer and show status for retry
+                        (.setLength buf 0)
+                        (when-let [msg-id @thinking-msg-id]
+                          (try (tg/edit-message chat-id msg-id "🔍 Ищу подробнее..." :parse-mode nil)
+                               (catch Exception _)))
+                        (t/ask-stream uid (str "найди " text) status-cb {:stream-cb stream-cb}))
+                      result)
+            agent-text (:text result*)
+            all-cards (:cards result*)
+            stats (:stats result*)
+            ;; Cap at 8 cards to prevent Telegram message-too-long
+            capped-cards (when (seq all-cards) (vec (take 8 all-cards)))
+            ;; Assign tiers to cards
+            final-cards (when (seq capped-cards)
+                         (mapv (fn [card]
+                                 (let [tier (render/assign-tier (:price card) (:avg stats))]
+                                   (assoc card :tier (or tier :good))))
+                               capped-cards))
+            ;; Build reply for render
+            reply {:mode (if (seq final-cards) :shortlist :no-results)
+                   :intro (or agent-text "Ничего не нашлось. Попробуйте переформулировать запрос 🔍")
+                   :cards (or final-cards [])
+                   :cta nil
+                   :assumptions []}
+            ;; Build inline keyboard: "Ещё результаты" + drill-down
+            more-btn (when (seq all-cards)
+                       (let [more-row [{:text "🔄 Ещё результаты"
+                                        :callback_data (str "more:" (subs text 0 (min 50 (count text))))}]
+                             drill-row (when (seq capped-cards)
+                                        (->> (range 1 (inc (count capped-cards)))
+                                             (take 8)
+                                             (mapv (fn [n] {:text (str "/" n)
+                                                           :callback_data (str "ad:" n)}))))]
+                         {"inline_keyboard" (vec (filter some? [drill-row more-row]))}))]
+        ;; Delete streamed preview message, then send final rendered message
+        (when-let [msg-id @thinking-msg-id]
+          (try (tg/delete-message chat-id msg-id) (catch Exception _)))
+        ;; Send final response with cards + inline keyboard
+        (render-and-send chat-id user-id text reply :keyboard more-btn)
+        ;; Send track button after a short delay
+        (when-let [query (when (and text (> (count text) 3)) (str/trim text))]
+          (try
+            (Thread/sleep 500)
+            (let [track-btn (track-context-button user-id query)]
+              (when (seq (:cards reply))
+                (tg/send-message chat-id (str "🔔 Хотите отслеживать «" query "»?")
+                                 :reply_markup track-btn)))
+            (catch Exception e
+              (log/warn e :track-button-fail)))))
       (catch Exception e
         (log/error e :agent-error {:user-id uid})
         (when-let [msg-id @thinking-msg-id]
           (try (tg/edit-message chat-id msg-id "❌ Ошибка. Попробуйте ещё раз." :parse-mode nil)
                (catch Exception _)))))))
-
-(defn- handle-agent
-  "Handle agent message with per-user lock and pending queue."
-  [{:keys [chat-id user-id] :as msg}]
-  (let [uid (str "tg-" user-id)]
-    (if-not (try-acquire! uid)
-      (do
-        (log/info :msg-queued :user-id uid :text (:text msg))
-        (store-pending! uid msg)
-        (try (tg/send-message chat-id "⏳ Обрабатываю предыдущий запрос..." :parse-mode nil)
-             (catch Exception _))
-        nil)
-      (try
-        (loop [current msg]
-          (process-agent-message current)
-          (if-let [next-msg (take-pending! uid)]
-            (do
-              (log/info :process-pending :user-id uid :text (:text next-msg))
-              (recur next-msg))
-            nil))
-        (finally
-          (release! uid))))))
 
 (defn- handle-market-stats [{:keys [chat-id]}]
   (let [cats (monitor/fetch-categories)

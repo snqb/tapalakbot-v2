@@ -650,17 +650,19 @@ Rules:
   "Run agent with streaming + card capture. Returns {:text :cards :stats}.
    Captures structured search results for deterministic card rendering.
    status-cb called with progress updates during tool execution.
+   stream-cb (optional) called with each text delta for live preview.
    Also caches ads for /N drill-down."
   ([user-id text status-cb]
    (ask-stream user-id text status-cb {}))
-  ([user-id text status-cb opts]
+  ([user-id text status-cb {:keys [stream-cb]}]
    (let [cards-atom (atom [])
          stats-atom (atom nil)
+         effective-stream-cb (or stream-cb (fn [_]))
          result (binding [*captured-cards* cards-atom
                           *captured-stats* stats-atom]
                   (h/handle-message-stream!
                    @tapalakbot user-id text
-                   (fn [chunk] nil)  ;; stream-cb — we don't stream chunks to Telegram
+                   effective-stream-cb
                    :status-cb status-cb))
          agent-text (if (map? result) (:content result) (str result))
          cards @cards-atom
