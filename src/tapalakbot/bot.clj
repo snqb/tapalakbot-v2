@@ -639,21 +639,15 @@
             agent-text (:text result*)
             all-cards (:cards result*)
             stats (:stats result*)
-            ;; Cap at 8 cards to prevent Telegram message-too-long
+            ;; Cap at 8 cards for cache/drill-down (not rendered directly — agent text is the response)
             capped-cards (when (seq all-cards) (vec (take 8 all-cards)))
-            ;; Assign tiers to cards
-            final-cards (when (seq capped-cards)
-                         (mapv (fn [card]
-                                 (let [tier (render/assign-tier (:price card) (:avg stats))]
-                                   (assoc card :tier (or tier :good))))
-                               capped-cards))
-            ;; Build reply for render
-            reply {:mode (if (seq final-cards) :shortlist :no-results)
+            ;; Reply: agent text only, no card dump. Agent already formats listings in its response.
+            reply {:mode (if (seq all-cards) :shortlist :no-results)
                    :intro (or agent-text "Ничего не нашлось. Попробуйте переформулировать запрос 🔍")
-                   :cards (or final-cards [])
+                   :cards []  ;; Don't render cards — agent text already has curated listings
                    :cta nil
                    :assumptions []}
-            ;; Build inline keyboard: "Ещё результаты" + drill-down
+            ;; Build inline keyboard: "Ещё результаты" + drill-down (based on captured cards)
             more-btn (when (seq all-cards)
                        (let [more-row [{:text "🔄 Ещё результаты"
                                         :callback_data (str "more:" (truncate-cb text 58))}]
@@ -673,7 +667,7 @@
           (try
             (Thread/sleep 500)
             (let [track-btn (track-context-button user-id query)]
-              (when (seq (:cards reply))
+              (when (seq all-cards)
                 (tg/send-message chat-id (str "🔔 Хотите отслеживать «" query "»?")
                                  :reply_markup track-btn)))
             (catch Exception e
