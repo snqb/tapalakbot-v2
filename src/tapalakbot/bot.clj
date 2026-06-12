@@ -647,16 +647,10 @@
                    :cards []  ;; Don't render cards — agent text already has curated listings
                    :cta nil
                    :assumptions []}
-            ;; Build inline keyboard: "Ещё результаты" + drill-down (based on captured cards)
+            ;; Build inline keyboard: "Ещёрезультаты" only
             more-btn (when (seq all-cards)
-                       (let [more-row [{:text "🔄 Ещё результаты"
-                                        :callback_data (str "more:" (truncate-cb text 58))}]
-                             drill-row (when (seq capped-cards)
-                                        (->> (range 1 (inc (count capped-cards)))
-                                             (take 8)
-                                             (mapv (fn [n] {:text (str "/" n)
-                                                           :callback_data (str "ad:" n)}))))]
-                         {"inline_keyboard" (vec (filter some? [drill-row more-row]))}))]
+                       {"inline_keyboard" [[{:text "🔄 Ещё результаты"
+                                             :callback_data (str "more:" (truncate-cb text 58))}]]})]
         ;; Delete streamed preview message, then send final rendered message
         (when-let [msg-id @thinking-msg-id]
           (try (tg/delete-message chat-id msg-id) (catch Exception _)))
