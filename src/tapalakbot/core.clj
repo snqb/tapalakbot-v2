@@ -52,10 +52,21 @@ Example: user says 'посоветуй триммер для бороды'
 → User asks about previous results → answer from conversation, no tools
 → User greets → just chat naturally
 
-## Response style
-- When recommending: explain WHY something is good (based on research), not just 'it's cheap'
-- Keep it concise: 2-4 sentences of framing, then listings appear below
-- Don't repeat prices that are in the listings (they're rendered separately)
+## Response format — FOLLOW STRICTLY
+- Currency: ALWAYS use «сом» — never ₴, ₸, KGS, $, or any other symbol
+- NO letter tokens (#A, #B, #G) — just list items with title, price, and URL
+- NO markdown tables — Telegram doesn't render them. Use bullet lists instead.
+- Use **bold** for item names and prices
+- For each listing: **Title** — price сом | [Открыть →](url)
+- Group by category/brand with emoji headers (## 🍎 iPhone, ## 🤖 Android, etc.)
+- End with a short recommendation (1-2 sentences) and a follow-up question
+
+Example format:
+**iPhone 11, 64 ГБ** — 13 000 сом, Бишкек, АКБ 72%
+[Открыть →](https://lalafo.kg/...)
+
+**Redmi Note 13 Pro, 256 ГБ** — 11 000 сом, Ош
+[Открыть →](https://lalafo.kg/...)
 
 ## Anti-hallucination rules
 - NEVER fabricate prices, URLs, or listing details
@@ -260,24 +271,24 @@ Example: [113171780, 112908144, 111226783]")
                                     url (get item "url" "")
                                     price (get item "price")
                                     price-str (if price
-                                                (str (format "%,.0f" (double price)) " " (get item "currency" "KGS"))
-                                                "price unknown")
+                                                (str (format "%,.0f" (double price)) " сом")
+                                                "цена неизвестна")
                                     desc (get item "desc" "")
-                                    ;; Compute letter ONCE — used for both store and display (fixes off-by-one)
+                                    ;; Compute letter ONCE — used for store (anti-hallucination)
                                     letter (col-letter (count (get @url-store *current-user-id* {})))]
-                                ;; Store URL + title for post-LLM citation (per-user)
+                                ;; Store URL + title for citation validation (per-user)
                                 (when (and item-id (not (str/blank? url)) *current-user-id*)
                                   (swap! url-store assoc-in [*current-user-id* letter]
                                          {:url url
                                           :title (get item "title" "")
                                           :item-id item-id}))
-                                ;; Format with SAME letter token — no second read of the atom
-                                (str "- #" letter " [" (get item "title" "") "]"
-                                     " | " price-str
+                                ;; Format for LLM — no letter tokens, just clean listing
+                                (str "- " (get item "title" "")
+                                     " — " price-str
                                      (when (not (str/blank? url))
-                                       (str " | " url))
+                                       (str " — " url))
                                      (when (not (str/blank? desc))
-                                       (str " | " desc)))))))
+                                       (str " — " desc)))))))
              :url-store {}
              :items (vec relevant)}))))))
 
@@ -456,22 +467,21 @@ Rules:
                            (let [idx (count (get @url-store *current-user-id* {}))
                                  letter (col-letter idx)
                                  price (get-in item [:price :amount])
-                                 currency (get-in item [:price :currency] "KGS")
                                  price-str (if price
-                                             (str (format "%,.0f" (double price)) " " currency)
+                                             (str (format "%,.0f" (double price)) " сом")
                                              "цена не указана")
                                  url (:url item)]
                              ;; Store in url-store for anti-hallucination citation validation
                              (when (and *current-user-id* url (not (str/blank? url)))
                                (swap! url-store assoc-in [*current-user-id* letter]
                                       {:url url :title (:title item) :item-id (str (:id item))}))
-                             (str "• " (:title item)
-                                  " — #" letter " " price-str
+                             (str "- " (:title item)
+                                  " — " price-str
                                   (when (:year item) (str ", " (:year item) " г."))
                                   (when (:mileage item) (str ", " (:mileage item) " км"))
-                                  (when (:city item) (str " | " (:city item)))
+                                  (when (:city item) (str ", " (:city item)))
                                   (when (and url (not (str/blank? url)))
-                                    (str "\n  " url)))))
+                                    (str " — " url)))))
                          (take 8 listings))))))
 
 (defn- search-execute
