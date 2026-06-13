@@ -53,11 +53,12 @@ Example: user says 'посоветуй триммер для бороды'
 → User greets → just chat naturally
 
 ## Response format — FOLLOW STRICTLY
-- Currency: ALWAYS use «сом» — never ₴, ₸, KGS, $, or any other symbol
+- Currency: use the currency from the listing data (сом or USD). Real estate is often in USD.
 - NO letter tokens (#A, #B, #G) — just list items with title, price, and URL
 - NO markdown tables — Telegram doesn't render them. Use bullet lists instead.
 - Use **bold** for item names and prices
-- For each listing: **Title** — price сом | [Открыть →](url)
+- For each listing: **Title** — price сом/USD, City
+[Открыть →](url)
 - Group by category/brand with emoji headers (## 🍎 iPhone, ## 🤖 Android, etc.)
 - End with a short recommendation (1-2 sentences) and a follow-up question
 
@@ -65,7 +66,7 @@ Example format:
 **iPhone 11, 64 ГБ** — 13 000 сом, Бишкек, АКБ 72%
 [Открыть →](https://lalafo.kg/...)
 
-**Redmi Note 13 Pro, 256 ГБ** — 11 000 сом, Ош
+**Участок 5 соток** — 150 000 USD, Арча-Бешик
 [Открыть →](https://lalafo.kg/...)
 
 ## Anti-hallucination rules
@@ -271,7 +272,8 @@ Example: [113171780, 112908144, 111226783]")
                                     url (get item "url" "")
                                     price (get item "price")
                                     price-str (if price
-                                                (str (format "%,.0f" (double price)) " сом")
+                                                (str (format "%,.0f" (double price))
+                                                     " " (get item "currency" "сом"))
                                                 "цена неизвестна")
                                     desc (get item "desc" "")
                                     ;; Compute letter ONCE — used for store (anti-hallucination)
@@ -468,7 +470,8 @@ Rules:
                                  letter (col-letter idx)
                                  price (get-in item [:price :amount])
                                  price-str (if price
-                                             (str (format "%,.0f" (double price)) " сом")
+                                             (str (format "%,.0f" (double price))
+                                                  " " (get-in item [:price :currency] "сом"))
                                              "цена не указана")
                                  url (:url item)]
                              ;; Store in url-store for anti-hallucination citation validation

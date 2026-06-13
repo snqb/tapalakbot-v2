@@ -54,13 +54,14 @@
 
 (defn strip-markdown
   "Convert common Markdown to Telegram HTML.
-   Handles: **bold**, ### headings, --- separators, *italic*."
+   Handles: **bold**, ### headings, --- separators, *italic*, [text](url) links."
   [text]
   (when text
     (-> text
         (clojure.string/replace #"(?m)^---$" "")
         (clojure.string/replace #"(?m)^#{1,4}\s+(.+)$" "<b>$1</b>")
         (clojure.string/replace #"(?<!\*)\*\*([^*]+)\*\*(?!\*)" "<b>$1</b>")
+        (clojure.string/replace #"\[([^\]]+)\]\(([^)]+)\)" "<a href=\"$2\">$1</a>")
         (clojure.string/replace #"(?m)^\s*[-•]\s+" "• ")
         (clojure.string/replace #"(?:\n\s*){3,}" "\n\n")
         clojure.string/trim)))
