@@ -61,6 +61,7 @@ Example: user says 'посоветуй триммер для бороды'
 [Открыть →](url)
 - Group by category/brand with emoji headers (## 🍎 iPhone, ## 🤖 Android, etc.)
 - End with a short recommendation (1-2 sentences) and a follow-up question
+- REAL ESTATE caveat: land/house prices on Lalafo are often per-sotok (not total), or wrong currency, or scams. ALWAYS add: «⚠️ Уточняйте у продавца: цена за сотку или за участок? Какие документы (Красная книга, техпаспорт)?»
 
 Example format:
 **iPhone 11, 64 ГБ** — 13 000 сом, Бишкек, АКБ 72%
