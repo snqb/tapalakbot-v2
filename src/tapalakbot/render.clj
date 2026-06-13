@@ -52,12 +52,71 @@
       (str/replace ">" "&gt;")
       (str/replace "\"" "&quot;")))
 
+(defn- convert-tables-to-lists
+  "Convert markdown tables to bullet lists. Processes entire text."
+  [text]
+  (let [lines (clojure.string/split-lines text)]
+    (loop [remaining lines
+           result []
+           in-table false
+           headers []
+           rows []]
+      (if-let [line (first remaining)]
+        (let [is-table-row? (and (clojure.string/starts-with? (clojure.string/trim line) "|")
+                                 (clojure.string/ends-with? (clojure.string/trim line) "|"))
+              is-separator? (re-matches #"\|[\s\-:|]+\|" (clojure.string/trim line))]
+          (cond
+            ;; Start of table
+            (and is-table-row? (not is-separator?) (not in-table))
+            (recur (rest remaining) result true
+                   (->> (clojure.string/split line #"\|")
+                        (map clojure.string/trim)
+                        (remove clojure.string/blank?)
+                        vec)
+                   [])
+            ;; Separator line (skip)
+            (and is-table-row? is-separator? in-table)
+            (recur (rest remaining) result in-table headers rows)
+            ;; Table data row
+            (and is-table-row? (not is-separator?) in-table)
+            (let [cells (->> (clojure.string/split line #"\|")
+                             (map clojure.string/trim)
+                             (remove clojure.string/blank?)
+                             vec)]
+              (recur (rest remaining) result in-table headers (conj rows cells)))
+            ;; End of table (non-table row after table)
+            (and (not is-table-row?) in-table)
+            (let [table-lines (map (fn [row]
+                                     (str "• " (clojure.string/join " — "
+                                                (map (fn [h c] (str h ": " c))
+                                                     (take (count row) headers)
+                                                     row))))
+                                   rows)]
+              (recur (rest remaining)
+                     (into result (concat table-lines [""]))
+                     false [] []))
+            ;; Regular line
+            :else
+            (recur (rest remaining) (conj result line) false [] [])))
+        ;; End of text — flush remaining table
+        (if in-table
+          (let [table-lines (map (fn [row]
+                                   (str "• " (clojure.string/join " — "
+                                              (map (fn [h c] (str h ": " c))
+                                                   (take (count row) headers)
+                                                   row))))
+                                 rows)]
+            (clojure.string/join "\n" (into result table-lines)))
+          (clojure.string/join "\n" result))))))
+
 (defn strip-markdown
   "Convert common Markdown to Telegram HTML.
-   Handles: **bold**, ### headings, --- separators, *italic*, [text](url) links."
+   Handles: **bold**, ### headings, --- separators, *italic*, [text](url) links, tables."
   [text]
   (when text
     (-> text
+        ;; Convert markdown tables to bullet lists (LLM ignores "no tables" instruction)
+        convert-tables-to-lists
         (clojure.string/replace #"(?m)^---$" "")
         (clojure.string/replace #"(?m)^#{1,4}\s+(.+)$" "<b>$1</b>")
         (clojure.string/replace #"(?<!\*)\*\*([^*]+)\*\*(?!\*)" "<b>$1</b>")
