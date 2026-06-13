@@ -617,9 +617,16 @@
                       (try
                         (tg/edit-message chat-id msg-id status-text :parse-mode nil)
                         (catch Exception _))))]
-    ;; Show thinking indicator
-    (when-let [m (tg/send-message chat-id "💭 ..." :parse-mode nil)]
-      (reset! thinking-msg-id (some-> m (get "result") (get "message_id"))))
+    ;; Show thinking indicator — random Russian placeholder
+    (let [placeholders ["🧠 Так, сейчас поищу..."
+                        "🔍 Секундочку, смотрю что есть..."
+                        "👀 Давайте глянем..."
+                        "🤔 Хм, интересный запрос..."
+                        "💭 Так, сейчас найду..."
+                        "🔎 Гляну на рынке..."]
+          placeholder (nth placeholders (mod (System/currentTimeMillis) (count placeholders)))]
+      (when-let [m (tg/send-message chat-id placeholder :parse-mode nil)]
+        (reset! thinking-msg-id (some-> m (get "result") (get "message_id")))))
     (try
       ;; Run agent with REAL streaming + card capture
       (let [result (t/ask-stream uid text status-cb {:stream-cb stream-cb})
