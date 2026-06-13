@@ -236,6 +236,34 @@ Example: [113171780, 112908144, 111226783]")
           (println "[relevance] no parseable relevant IDs — showing first 60 candidates")
           (take 60 items))))))
 
+(defn- filter-price-outliers
+  "Filter out items with prices >max-sigma standard deviations from the mean.
+   Catches obviously wrong prices (e.g., 90 USD for land, or per-sotok mislabeled as total).
+   Returns {:items filtered :outliers N :stats {:mean N :std N}}."
+  [items & {:keys [max-sigma] :or {max-sigma 2.5}}]
+  (let [prices (keep #(when-let [p (get % "price")] (double p)) items)]
+    (if (< (count prices) 5)
+      ;; Too few items to compute meaningful stats
+      {:items items :outliers 0 :stats nil}
+      (let [mean (/ (reduce + prices) (count prices))
+            variance (/ (reduce + (map #(Math/pow (- % mean) 2) prices)) (count prices))
+            std (Math/sqrt variance)]
+        (if (< std 1.0)
+          ;; All prices nearly identical — no outliers
+          {:items items :outliers 0 :stats {:mean mean :std std}}
+          (let [threshold (* max-sigma std)
+                filtered (filterv (fn [item]
+                                    (if-let [p (get item "price")]
+                                      (let [diff (Math/abs (- (double p) mean))]
+                                        (<= diff threshold))
+                                      true)) ;; Keep items without price
+                                  items)
+                outlier-count (- (count items) (count filtered))]
+            (when (pos? outlier-count)
+              (println (str "  [outliers] " outlier-count " items filtered (mean=" (format "%,.0f" mean)
+                            " std=" (format "%,.0f" std) " threshold=±" (format "%,.0f" threshold) ")")))
+            {:items filtered :outliers outlier-count :stats {:mean mean :std std}}))))))
+
 (defn- format-search-results [result-json & {:keys [user-query] :or {user-query ""}}]
   "Format JSON search result into readable text for LLM.
    With user-query: applies LLM relevance filter first (pass 1).
@@ -254,9 +282,12 @@ Example: [113171780, 112908144, 111226783]")
               truncated (get data "truncated" false)
               items (get data "items" [])
               ;; Use LLM-based relevance filter (not regexes) — LLM understands context better
-              relevant (if (and user-query (not (str/blank? user-query)) (> (count items) 3))
-                         (relevance-filter items user-query)
-                         items)
+              relevant-raw (if (and user-query (not (str/blank? user-query)) (> (count items) 3))
+                             (relevance-filter items user-query)
+                             items)
+              ;; Filter statistical outliers (catches per-sotok mislabeled as total, etc.)
+              outlier-result (filter-price-outliers relevant-raw)
+              relevant (:items outlier-result)
               ;; Build url-store locally (not global atom)
               ]
           (if (zero? found)
