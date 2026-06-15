@@ -673,11 +673,34 @@ Rules:
   "Patterns that are just greetings (skip auto-search)."
   #"(?i)^\s*(привет|здрав|добр[оы]й|хай|hello|hi|/start|/help)\s*$")
 
+(def ^:private session-last-active
+  "Map of user-id -> last-active timestamp (ms). Used for session timeout."
+  (atom {}))
+
+(def ^:private session-timeout-ms
+  "Session auto-reset after this many ms of inactivity (5 minutes)."
+  (* 5 60 1000))
+
 (defn pre-hook
-  "Called before each message. In agent-first mode, the agent decides when to
-   use tools — no auto-search needed."
+  "Called before each message. Auto-resets session after timeout to prevent
+   context bleed (e.g., cars contaminating laptops)."
   [user-id text session]
-  nil)
+  (let [now (System/currentTimeMillis)
+        last-get (get @session-last-active user-id 0)
+        elapsed (- now last-get)]
+    ;; Update last-active timestamp
+    (swap! session-last-active assoc user-id now)
+    ;; If timeout expired and session has history, clear it
+    (when (and (> elapsed session-timeout-ms)
+               (> (count (get @session "messages" [])) 1))
+      (log/info :session-timeout :user-id user-id :elapsed-ms elapsed)
+      ;; Keep only the system prompt + current user message
+      (let [msgs (get @session "messages" [])
+            system-msg (first (filter #(= "system" (get % "role")) msgs))
+            current-user-msg (last (filter #(= "user" (get % "role")) msgs))
+            fresh-msgs (vec (remove nil? [system-msg current-user-msg]))]
+        (swap! session assoc "messages" fresh-msgs))
+      "Note: Previous conversation was auto-cleared due to inactivity. Treat this as a fresh query.")))
 
 ;; ══════════════════════ BOT FACTORY ══════════════════════
 
