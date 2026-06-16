@@ -11,7 +11,6 @@
             [tapalakbot.query-builder :as qb]
             [cheshire.core :as json]
             [clj-harness.telegram :as tg]
-            [clj-harness.telegram.format :as fmt]
             [clj-harness.core :as hc]
             [clojure.string :as str]
             [clojure.tools.logging :as log]))
@@ -344,47 +343,43 @@
       (re-matches #"more:(.+)" data)
       (let [[_ query] (re-matches #"more:(.+)" data)]
         (tg/answer-callback-query callback-id :text "Ищу ещё...")
-        ;; Run search with streaming in background
+        ;; Run search with streaming in background via Rich Message Drafts
         (future
           (let [uid (str "tg-" user-id)
-                ;; Send placeholder
-                placeholder (tg/send-message chat-id "🔄 Ищу ещё варианты..." :parse-mode nil)
-                msg-id (some-> placeholder (get "result") (get "message_id"))
+                draft-id (int (rand-int 999999))
                 buf (StringBuilder.)
-                last-edit (atom 0)
+                last-draft (atom 0)
+                last-preview (atom "")
+                _ (try (tg/send-rich-message-draft chat-id draft-id :markdown "🔄 Ищу ещё варианты...")
+                       (catch Exception _))
                 stream-cb (fn [delta]
                             (.append buf delta)
                             (let [now (System/currentTimeMillis)]
-                              (when (and (> (- now @last-edit) 1500)
-                                         (> (.length buf) 30)
-                                         msg-id)
-                                (reset! last-edit now)
+                              (when (and (> (- now @last-draft) 1200)
+                                         (> (.length buf) 30))
+                                (reset! last-draft now)
                                 (try
-                                  (tg/edit-message chat-id msg-id (fmt/md->html (.toString buf)) :parse-mode "HTML")
+                                  (let [preview (.toString buf)]
+                                    (when (not= preview @last-preview)
+                                      (reset! last-preview preview)
+                                      (tg/send-rich-message-draft chat-id draft-id :markdown preview)))
                                   (catch Exception _)))))
                 status-cb (fn [status]
                             (.setLength buf 0)
-                            (when msg-id
-                              (try (tg/edit-message chat-id msg-id status :parse-mode nil)
-                                   (catch Exception _))))
+                            (reset! last-preview "")
+                            (try (tg/send-rich-message-draft chat-id draft-id :markdown status)
+                                 (catch Exception _)))
                 result (t/ask-stream uid (str "найди ещё " query) status-cb {:stream-cb stream-cb})]
             (when (seq (:cards result))
-              (t/cache-ads! uid (:cards result))
-              (let [capped (vec (take 8 (:cards result)))
-                    reply {:mode :shortlist
-                           :intro "🔄 Ещё варианты:"
-                           :cards capped
-                           :cta nil
-                           :assumptions []}
-                    html (render/render-reply reply)
-                    track-btn (track-context-button user-id query)
-                    kb (when track-btn {:inline_keyboard [[track-btn]]})]
-                ;; Delete streamed preview, send final rendered
-                (when msg-id (try (tg/delete-message chat-id msg-id) (catch Exception _)))
-                (try
-                  (tg/send-message chat-id html :parse-mode "HTML"
-                                   :reply_markup (when kb (json/generate-string kb)))
-                  (catch Exception _)))))))
+              (t/cache-ads! uid (:cards result)))
+            ;; Send final agent text via Rich Messages (draft auto-expires)
+            (let [agent-text (:text result)
+                  track-btn (track-context-button user-id query)]
+              (try
+                (if (seq agent-text)
+                  (tg/send-md chat-id agent-text :reply_markup track-btn)
+                  (tg/send-message chat-id "🔄 Больше вариантов не нашлось." :parse-mode nil))
+                (catch Exception _))))))
 
     ;; === DRILL-DOWN: Show detailed ad ===
       (re-matches #"ad:(\d+)" data)
@@ -401,13 +396,13 @@
                               "📍 " (get ad :platform "lalafo") "\n\n"
                               "<a href=\"" (:url ad) "\">🔗 Открыть на площадке</a>")
                 kb {"inline_keyboard"
-                    [[{:text "🔗 Открыть на Lalafo"
-                       :url (:url ad)}]
-                     [{:text "◀️ Назад к результатам"
-                       :callback_data "back_to_results"}]]}]
+                    [[{"text" "🔗 Открыть на Lalafo"
+                       "url" (:url ad)}]
+                     [{"text" "◀️ Назад к результатам"
+                       "callback_data" "back_to_results"}]]}]
             (try
               (tg/send-message chat-id card-text :parse-mode "HTML"
-                               :reply_markup (json/generate-string kb))
+                               :reply_markup kb)
               (catch Exception e
                 (log/error e :drilldown-send-failed))))
           (tg/send-md chat-id "❌ Объявление не найдено в кеше. Попробуйте новый поиск.")))
@@ -547,32 +542,39 @@
     (catch Exception _)))
 
 (defn- render-and-send
-  "Render reply with cards and send to Telegram.
+  "Send reply to Telegram. When the reply is pure agent text (no cards),
+   sends raw markdown via Rich Messages API so Telegram renders tables,
+   headings, etc. natively. When cards are present, uses deterministic HTML.
    Optional :keyboard overrides the default track keyboard."
   [chat-id user-id text reply & {:keys [keyboard]}]
   (let [default-kb (when (seq (:cards reply)) (track-context-button user-id text))
         kb (or keyboard default-kb)
-        html (render/render-reply reply)]
+        intro (:intro reply)]
     (try
-      (if kb
-        (tg/send-message chat-id html :parse-mode "HTML"
-                         :reply_markup (json/generate-string kb))
-        (tg/send-message chat-id html :parse-mode "HTML"))
+      (if (and (seq intro) (empty? (:cards reply)))
+        ;; Pure agent text → Rich Messages (native tables/headings/code)
+        (tg/send-md chat-id intro :reply_markup kb)
+        ;; Cards present → deterministic HTML render
+        (let [html (render/render-reply reply)]
+          (if kb
+            (tg/send-message chat-id html :parse-mode "HTML" :reply_markup kb)
+            (tg/send-message chat-id html :parse-mode "HTML"))))
       (catch Exception e
         (log/error e :tg-send-failed)
-        (try (tg/send-message chat-id (or (:intro reply) "Ошибка — попробуйте ещё раз.") :parse-mode nil)
+        (try (tg/send-message chat-id (or intro "Ошибка — попробуйте ещё раз.") :parse-mode nil)
              (catch Exception _))))))
 
 (defn- handle-orchestrated
-  "Handle message via agent-first pipeline with LIVE streaming.
-   Agent text is streamed to Telegram in real-time as it's generated.
-   Status updates (tool execution) reset the preview. Cards rendered on completion."
+  "Handle message via agent-first pipeline with LIVE streaming via Rich Message Drafts.
+   Agent text streams as an animated ephemeral draft, then persists as a Rich Message
+   (native tables/headings). Status updates (tool execution) reset the preview."
   [{:keys [chat-id user-id text] :as msg}]
   (let [uid (str "tg-" user-id)
-        thinking-msg-id (atom nil)
+        draft-id (int (rand-int 999999))  ; stable draft ID for animation
         buf (StringBuilder.)
-        last-edit (atom 0)
+        last-draft (atom 0)
         last-typing (atom 0)
+        last-preview (atom "")
         stream-cb (fn [delta]
                     (.append buf delta)
                     (let [now (System/currentTimeMillis)]
@@ -580,25 +582,25 @@
                       (when (> (- now @last-typing) 4000)
                         (reset! last-typing now)
                         (try (tg/send-typing chat-id) (catch Exception _)))
-                      ;; Edit message with live preview (throttled 1500ms)
-                      (when (and (> (- now @last-edit) 1500)
-                                 (> (.length buf) 30)
-                                 @thinking-msg-id)
-                        (reset! last-edit now)
+                      ;; Animated draft preview (throttled 1200ms)
+                      (when (and (> (- now @last-draft) 1200)
+                                 (> (.length buf) 30))
+                        (reset! last-draft now)
                         (try
-                          (let [preview (.toString buf)
-                                html (fmt/md->html preview)]
-                            (tg/edit-message chat-id @thinking-msg-id html :parse-mode "HTML"))
+                          (let [preview (.toString buf)]
+                            (when (not= preview @last-preview)
+                              (reset! last-preview preview)
+                              (tg/send-rich-message-draft chat-id draft-id :markdown preview)))
                           (catch Exception e
-                            (log/warn e :stream-edit-fail))))))
+                            (log/warn e :stream-draft-fail))))))
         status-cb (fn [status-text]
-                    ;; Clear streaming buffer on phase change
+                    ;; Clear streaming buffer on phase change, show status as draft
                     (.setLength buf 0)
-                    (when-let [msg-id @thinking-msg-id]
-                      (try
-                        (tg/edit-message chat-id msg-id status-text :parse-mode nil)
-                        (catch Exception _))))]
-    ;; Show thinking indicator — random Russian placeholder
+                    (reset! last-preview "")
+                    (try
+                      (tg/send-rich-message-draft chat-id draft-id :markdown status-text)
+                      (catch Exception _)))]
+    ;; Initial draft — instant feedback
     (let [placeholders ["🧠 Так, сейчас поищу..."
                         "🔍 Секундочку, смотрю что есть..."
                         "👀 Давайте глянем..."
@@ -606,8 +608,8 @@
                         "💭 Так, сейчас найду..."
                         "🔎 Гляну на рынке..."]
           placeholder (nth placeholders (mod (System/currentTimeMillis) (count placeholders)))]
-      (when-let [m (tg/send-message chat-id placeholder :parse-mode nil)]
-        (reset! thinking-msg-id (some-> m (get "result") (get "message_id")))))
+      (try (tg/send-rich-message-draft chat-id draft-id :markdown placeholder)
+           (catch Exception _)))
     (try
       ;; Run agent with REAL streaming + card capture
       (let [result (t/ask-stream uid text status-cb {:stream-cb stream-cb})
@@ -617,32 +619,25 @@
                             (not (re-find #"(?i)^\s*(привет|здрав|спасибо|ок|да|нет|/reset|/start)" text)))
                       (do
                         (log/info :fallback-auto-search :query text)
-                        ;; Clear buffer and show status for retry
                         (.setLength buf 0)
-                        (when-let [msg-id @thinking-msg-id]
-                          (try (tg/edit-message chat-id msg-id "🔍 Ищу подробнее..." :parse-mode nil)
-                               (catch Exception _)))
+                        (reset! last-preview "")
+                        (try (tg/send-rich-message-draft chat-id draft-id :markdown "🔍 Ищу подробнее...")
+                             (catch Exception _))
                         (t/ask-stream uid (str "найди " text) status-cb {:stream-cb stream-cb}))
                       result)
             agent-text (:text result*)
             all-cards (:cards result*)
-            stats (:stats result*)
-            ;; Cap at 8 cards for cache/drill-down (not rendered directly — agent text is the response)
-            capped-cards (when (seq all-cards) (vec (take 8 all-cards)))
             ;; Reply: agent text only, no card dump. Agent already formats listings in its response.
             reply {:mode (if (seq all-cards) :shortlist :no-results)
                    :intro (or agent-text "Ничего не нашлось. Попробуйте переформулировать запрос 🔍")
                    :cards []  ;; Don't render cards — agent text already has curated listings
                    :cta nil
                    :assumptions []}
-            ;; Build inline keyboard: "Ещёрезультаты" only
+            ;; Build inline keyboard: "Ещё результаты" only
             more-btn (when (seq all-cards)
-                       {"inline_keyboard" [[{:text "🔄 Ещё результаты"
-                                             :callback_data (str "more:" (truncate-cb text 58))}]]})]
-        ;; Delete streamed preview message, then send final rendered message
-        (when-let [msg-id @thinking-msg-id]
-          (try (tg/delete-message chat-id msg-id) (catch Exception _)))
-        ;; Send final response with cards + inline keyboard
+                       {"inline_keyboard" [[{"text" "🔄 Ещё результаты"
+                                             "callback_data" (str "more:" (truncate-cb text 58))}]]})]
+        ;; Send final response — draft auto-expires (30s TTL), Rich Message persists
         (render-and-send chat-id user-id text reply :keyboard more-btn)
         ;; Send track button after a short delay
         (when-let [query (when (and text (> (count text) 3)) (str/trim text))]
@@ -656,9 +651,8 @@
               (log/warn e :track-button-fail)))))
       (catch Exception e
         (log/error e :agent-error {:user-id uid})
-        (when-let [msg-id @thinking-msg-id]
-          (try (tg/edit-message chat-id msg-id "❌ Ошибка. Попробуйте ещё раз." :parse-mode nil)
-               (catch Exception _)))))))
+        (try (tg/send-message chat-id "❌ Ошибка. Попробуйте ещё раз." :parse-mode nil)
+             (catch Exception _))))))
 
 (defn- handle-market-stats [{:keys [chat-id]}]
   (let [cats (monitor/fetch-categories)
