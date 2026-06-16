@@ -570,6 +570,7 @@
         last-draft (atom 0)
         last-typing (atom 0)
         last-preview (atom "")
+        draft-count (atom 0)
         stream-cb (fn [delta]
                     (.append buf delta)
                     (let [now (System/currentTimeMillis)]
@@ -585,6 +586,7 @@
                           (let [preview (.toString buf)]
                             (when (not= preview @last-preview)
                               (reset! last-preview preview)
+                              (swap! draft-count inc)
                               (tg/send-rich-message-draft chat-id draft-id :markdown preview)))
                           (catch Exception e
                             (log/warn e :stream-draft-fail))))))
@@ -633,6 +635,7 @@
                        {"inline_keyboard" [[{"text" "🔄 Ещё результаты"
                                              "callback_data" (str "more:" (truncate-cb text 58))}]]})]
         ;; Send final response — draft auto-expires (30s TTL), Rich Message persists
+        (log/info :stream-summary :drafts-sent @draft-count :final-len (count agent-text) :cards (count all-cards))
         (render-and-send chat-id user-id text reply :keyboard more-btn)
         ;; Send track button after a short delay
         (when-let [query (when (and text (> (count text) 3)) (str/trim text))]
