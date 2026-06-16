@@ -73,27 +73,8 @@
       m)))
 
 ;; ══════════════════════ INLINE KEYBOARD HELPERS ══════════════════════
-
-(defn- inline-keyboard
-  "Build InlineKeyboardMarkup from rows of buttons."
-  [rows]
-  {"inline_keyboard"
-   (mapv (fn [row]
-           (mapv (fn [{:keys [text callback_data]}]
-                   {"text" text "callback_data" callback_data})
-                 row))
-         rows)})
-
-(defn- answer-callback
-  "Answer callback query to remove loading spinner.
-   Uses #'tg/call (private) because clj-harness has no public answerCallbackQuery."
-  [callback-id & {:keys [text]}]
-  (when callback-id
-    (try
-      (let [body (cond-> {"callback_query_id" callback-id}
-                   text (assoc "text" text))]
-        (@#'tg/call "answerCallbackQuery" body))
-      (catch Exception _ nil))))
+;; Uses tg/inline-keyboard (accepts map form {:text :callback_data})
+;; Uses tg/answer-callback-query (public API)
 
 (defn- edit-with-buttons
   "Edit message to show new text + inline keyboard."
@@ -164,7 +145,7 @@
   [user-id query]
   (let [short-id (str (java.util.UUID/randomUUID))]
     (swap! pending-track-queries assoc user-id query)
-    (inline-keyboard
+    (tg/inline-keyboard
      [[{:text (str "🔔 Отслеживать «" query "»")
         :callback_data (str "track_quick:" short-id)}]])))
 
@@ -193,7 +174,7 @@
                                    (when price-min (str "от " price-min " сом"))
                                    (when (and price-min price-max) " \u2014 ")
                                    (when price-max (str "до " price-max " сом")))))
-                       (inline-keyboard
+                       (tg/inline-keyboard
                         [[{:text "📋 Мои подписки" :callback_data "track_list"}]]))
     ;; Do LLM category match + DB write in background
     (future
@@ -224,14 +205,14 @@
                                          "\n"))
                                   "📅 Проверяю каждые 24 часа\n"
                                   "Уведомлю когда появятся новые объявления")
-                             (inline-keyboard
+                             (tg/inline-keyboard
                               [[{:text "📋 Мои подписки" :callback_data "track_list"}
                                 {:text "⚙ Настроить" :callback_data (str "track_settings:" (:id track))}]])))
         (catch Exception e
           (log/error e :track-create-failed :query query)
           (edit-with-buttons chat-id msg-id
                              (str "❌ Ошибка подписки на «" query "»")
-                             (inline-keyboard
+                             (tg/inline-keyboard
                               [[{:text "🔄 Попробовать снова" :callback_data (str "track_quick:" short-id)}]])))))))
 
 ;; ══════════════════════ TRACKING — SUBSCRIPTION LIST ══════════════════════
@@ -244,7 +225,7 @@
     (if (empty? tracks)
       (send-with-buttons chat-id
                          "📋 *Ваши подписки пусты*\n\nНайдите товар и нажмите «🔔 Отслеживать»"
-                         (inline-keyboard
+                         (tg/inline-keyboard
                           [[{:text "🔍 Поиск товаров" :callback_data "open_search"}]]))
       (let [track-rows (mapv (fn [t]
                                (let [freq (format-interval (:notify_interval t))]
@@ -258,7 +239,7 @@
         (send-with-buttons chat-id
                            (str "📋 *Ваши подписки* (" (count tracks) ")\n\n"
                                 "📅 — частота уведомлений\n❌ — удалить")
-                           (inline-keyboard track-rows))))))
+                           (tg/inline-keyboard track-rows))))))
 
 (defn- show-track-settings
   "Show frequency settings for a track."
@@ -268,7 +249,7 @@
       (edit-with-buttons chat-id msg-id
                          (str "⚙ *Настройки:* «" (:title track) "»\n\n"
                               "📅 Частота уведомлений:")
-                         (inline-keyboard
+                         (tg/inline-keyboard
                           [[{:text "⏰ Каждые 3 часа"
                              :callback_data (str "track_set_freq:" track-id ":3")}
                             {:text "📅 Каждые 24 часа"
@@ -281,7 +262,7 @@
   [chat-id msg-id track-id title]
   (edit-with-buttons chat-id msg-id
                      (str "🗑 *Удалить подписку?*\n\n«" title "»")
-                     (inline-keyboard
+                     (tg/inline-keyboard
                       [[{:text "Да, удалить" :callback_data (str "track_del_yes:" track-id)}
                         {:text "← Назад" :callback_data "track_list"}]])))
 
@@ -296,24 +277,24 @@
     ;; === TRACKING: Quick create from search result ===
       (re-matches #"track_quick:(.+)" data)
       (let [[_ query] (re-matches #"track_quick:(.+)" data)]
-        (answer-callback callback-id)
+        (tg/answer-callback-query callback-id)
         (handle-track-quick chat-id msg-id user-id query))
 
     ;; === TRACKING: Show subscription list ===
       (= data "track_list")
-      (do (answer-callback callback-id)
+      (do (tg/answer-callback-query callback-id)
           (show-tracking-list chat-id user-id))
 
     ;; === TRACKING: Show settings for a track ===
       (re-matches #"track_settings:(\d+)" data)
       (let [[_ id-str] (re-matches #"track_settings:(\d+)" data)]
-        (answer-callback callback-id)
+        (tg/answer-callback-query callback-id)
         (show-track-settings chat-id msg-id (Long/parseLong id-str)))
 
     ;; === TRACKING: Show frequency picker ===
       (re-matches #"track_freq:(\d+)" data)
       (let [[_ id-str] (re-matches #"track_freq:(\d+)" data)]
-        (answer-callback callback-id)
+        (tg/answer-callback-query callback-id)
         (show-track-settings chat-id msg-id (Long/parseLong id-str)))
 
     ;; === TRACKING: Set frequency ===
@@ -322,21 +303,21 @@
             track-id (Long/parseLong id-str)
             interval-h (Long/parseLong interval)
             track (store/get-track track-id)]
-        (answer-callback callback-id :text (str "✅ " (format-interval interval-h)))
+        (tg/answer-callback-query callback-id :text (str "✅ " (format-interval interval-h)))
         (when (and track (= (:user_id track) (str "tg-" user-id)))
           (store/update-track-interval! track-id interval-h)
           (log/info :track-interval-updated :track-id track-id :interval interval-h)
           (edit-with-buttons chat-id msg-id
                              (str "✅ Частота обновлена\n\n"
                                   "«" (:title track) "» → " (format-interval interval-h))
-                             (inline-keyboard
+                             (tg/inline-keyboard
                               [[{:text "📋 Назад к списку" :callback_data "track_list"}]]))))
 
     ;; === TRACKING: Delete confirmation ===
       (re-matches #"track_del_ask:(\d+)" data)
       (let [[_ id-str] (re-matches #"track_del_ask:(\d+)" data)
             track (store/get-track (Long/parseLong id-str))]
-        (answer-callback callback-id)
+        (tg/answer-callback-query callback-id)
         (when track
           (confirm-delete-track chat-id msg-id (:id track) (:title track))))
 
@@ -345,24 +326,24 @@
       (let [[_ id-str] (re-matches #"track_del_yes:(\d+)" data)
             track-id (Long/parseLong id-str)
             track (store/get-track track-id)]
-        (answer-callback callback-id)
+        (tg/answer-callback-query callback-id)
         (when (and track (= (:user_id track) (str "tg-" user-id)))
           (store/delete-track! track-id)
           (log/info :track-deleted :user user-id :track-id track-id)
           (edit-with-buttons chat-id msg-id
                              (str "🗑 *Удалено:* «" (:title track) "»")
-                             (inline-keyboard
+                             (tg/inline-keyboard
                               [[{:text "📋 К списку" :callback_data "track_list"}]]))))
 
     ;; === TRACKING: Open search (from empty list) ===
       (= data "open_search")
-      (do (answer-callback callback-id)
+      (do (tg/answer-callback-query callback-id)
           (tg/send-md chat-id "🔍 Напишите что ищете, и в конце будет кнопка «🔔 Отслеживать»"))
 
     ;; === MORE RESULTS: Show more search results with live streaming ===
       (re-matches #"more:(.+)" data)
       (let [[_ query] (re-matches #"more:(.+)" data)]
-        (answer-callback callback-id "Ищу ещё...")
+        (tg/answer-callback-query callback-id :text "Ищу ещё...")
         ;; Run search with streaming in background
         (future
           (let [uid (str "tg-" user-id)
@@ -411,7 +392,7 @@
             idx (Integer/parseInt idx-str)
             uid (str "tg-" user-id)
             ad (t/get-ad uid idx)]
-        (answer-callback callback-id)
+        (tg/answer-callback-query callback-id)
         (if ad
           (let [card-text (str "<b>" (render/escape-html (:title ad)) "</b>\n\n"
                               "💰 " (when (:price ad) (format "%,d" (:price ad)))
@@ -434,11 +415,11 @@
     ;; Unknown callback
       :else
       (do (log/warn :unknown-callback :data data)
-          (answer-callback callback-id)))
+          (tg/answer-callback-query callback-id)))
 
     (catch Exception e
       (log/error e :callback-error :data data)
-      (try (answer-callback callback-id) (catch Exception _ nil)))))
+      (try (tg/answer-callback-query callback-id) (catch Exception _ nil)))))
 
 ;; ══════════════════════ HANDLERS ══════════════════════
 
@@ -692,7 +673,7 @@
       (tg/send-md chat-id "⚠️ Нет данных"))
     nil))
 
-;; ══════════════════════ CUSTOM POLL LOOP ══════════════════════
+;; ══════════════════════ POLLING (delegated to clj-harness) ══════════════════════
 
 (defn- parse-update-extended
   "Parse update including callback_query."
@@ -776,37 +757,14 @@
 
     :else nil))
 
-(defn- get-updates-extended
-  "getUpdates with allowed_updates for messages + callbacks.
-   Uses #'tg/call (private) because clj-harness get-updates doesn't pass allowed_updates."
-  [& {:keys [offset timeout limit]
-      :or {timeout 1 limit 10}}]
-  (let [body (cond-> {"timeout" timeout "limit" limit "allowed_updates" ["message" "callback_query"]}
-               offset (assoc "offset" offset))]
-    (@#'tg/call "getUpdates" body :timeout-ms 70000)))
-
 (defn start-polling
-  "Start polling loop. ALL handlers run in futures to never block poll loop."
+  "Start polling loop using clj-harness tg/poll-loop.
+   ALL handlers run in futures to never block poll loop.
+   Uses :allowed-updates to receive both messages and callback queries."
   [& {:keys [interval-ms] :or {interval-ms 1500}}]
-  (let [init (get-updates-extended :offset -1 :limit 1 :timeout 1)
-        offset (atom (if-let [u (first (get init "result" []))]
-                       (inc (get u "update_id")) 0))
-        cleanup-counter (atom 0)]
-    (log/info :poll-start :offset @offset :mode :extended-v4)
-    (while true
-      (try
-        (let [resp (get-updates-extended :offset @offset :timeout 1)
-              updates (get resp "result" [])]
-          (when (seq updates)
-            (log/info :poll-got-updates :count (count updates)))
-          (doseq [u updates]
-            (when-let [parsed (parse-update-extended u)]
-              (handler-future
-               (fn [] (extended-handler parsed))))
-            (reset! offset (inc (get u "update_id")))))
-        (catch Exception e (log/error e :poll-error)))
-      ;; Cleanup stale user states every 10 minutes
-      (when (>= (swap! cleanup-counter inc) 400)
-        (reset! cleanup-counter 0)
-        (cleanup-stale-users!))
-      (Thread/sleep interval-ms))))
+  (tg/poll-loop
+   (fn [parsed]
+     (handler-future (fn [] (extended-handler parsed))))
+   :interval-ms interval-ms
+   :allowed-updates ["message" "callback_query"]))
+
