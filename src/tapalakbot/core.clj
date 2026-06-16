@@ -56,7 +56,8 @@ Example: user says 'посоветуй триммер для бороды'
 ## Response format — FOLLOW STRICTLY
 - Currency: use the currency from the listing data (сом or USD). Real estate is often in USD.
 - NO letter tokens (#A, #B, #G) — just list items with title, price, and URL
-- NO markdown tables — Telegram doesn't render them. Use bullet lists instead.
+- Tables ARE supported — they render as monospace aligned blocks. Use them for comparisons (price, specs, platform).
+  Example: | Модель | Цена | Площадка |\n| --- | --- | --- |\n| iPhone 15 | 72000 | Lalafo |
 - Use **bold** for item names and prices
 - For each listing: **Title** — price сом/USD, City
 [Открыть →](url)
