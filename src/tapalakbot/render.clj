@@ -2,7 +2,8 @@
   "Deterministic card renderer for Telegram HTML.
    Multi-line blocks, bold titles, location chips, separators.
    LLM never touches this."
-  (:require [clojure.string :as str]))
+  (:require [clojure.string :as str]
+            [clj-harness.telegram.format :as hfmt]))
 
 ;; ════════════════════ TIER ASSIGNMENT ════════════════════
 
@@ -62,10 +63,12 @@
 (defn strip-markdown
   "Convert common Markdown to Telegram HTML.
    Handles: **bold**, ### headings, --- separators, *italic*, [text](url) links.
-   Tables are passed through — clj-harness renders them as monospace <pre>."
+   Tables are converted to monospace <pre> blocks via clj-harness."
   [text]
   (when text
     (-> text
+        ;; Convert markdown tables to monospace <pre> blocks (clj-harness)
+        hfmt/rewrite-markdown-tables
         (clojure.string/replace #"(?m)^---$" "")
         (clojure.string/replace #"(?m)^#{1,4}\s+(.+)$" "<b>$1</b>")
         (clojure.string/replace #"(?<!\*)\*\*([^*]+)\*\*(?!\*)" "<b>$1</b>")
