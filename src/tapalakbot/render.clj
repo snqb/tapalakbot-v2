@@ -54,21 +54,17 @@
       (str/replace "\"" "&quot;")))
 
 (defn- convert-tables-to-lists
-  "Convert markdown tables to bullet lists. Processes entire text.
-   DEPRECATED: clj-harness now renders tables as monospace <pre> blocks.
-   Kept as fallback for render paths that bypass clj-harness."
+  "DEPRECATED: Telegram now renders tables natively via Rich Messages API."
   [text]
   text)
 
 (defn strip-markdown
   "Convert common Markdown to Telegram HTML.
    Handles: **bold**, ### headings, --- separators, *italic*, [text](url) links.
-   Tables are converted to monospace <pre> blocks via clj-harness."
+   Tables pass through — Telegram renders them natively via Rich Messages API."
   [text]
   (when text
     (-> text
-        ;; Convert markdown tables to monospace <pre> blocks (clj-harness)
-        hfmt/rewrite-markdown-tables
         (clojure.string/replace #"(?m)^---$" "")
         (clojure.string/replace #"(?m)^#{1,4}\s+(.+)$" "<b>$1</b>")
         (clojure.string/replace #"(?<!\*)\*\*([^*]+)\*\*(?!\*)" "<b>$1</b>")
