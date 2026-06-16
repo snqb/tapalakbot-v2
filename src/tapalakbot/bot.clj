@@ -72,7 +72,9 @@
       m)))
 
 ;; ══════════════════════ INLINE KEYBOARD HELPERS ══════════════════════
-;; Uses tg/inline-keyboard (accepts map form {:text :callback_data})
+;; Uses tg/inline-keyboard with VECTOR form [label {:callback_data ...}] —
+;; the map form {:text ... :callback_data ...} is buggy in the pinned clj-harness
+;; (nests the whole map under "text"). Always use vector form.
 ;; Uses tg/answer-callback-query (public API)
 
 (defn- edit-with-buttons
@@ -145,8 +147,7 @@
   (let [short-id (str (java.util.UUID/randomUUID))]
     (swap! pending-track-queries assoc user-id query)
     (tg/inline-keyboard
-     [[{:text (str "🔔 Отслеживать «" query "»")
-        :callback_data (str "track_quick:" short-id)}]])))
+     [[(str "🔔 Отслеживать «" query "»") {:callback_data (str "track_quick:" short-id)}]])))
 
 (defn- handle-track-quick
   "Handle quick track button — create filter with 24h default.
@@ -174,7 +175,7 @@
                                    (when (and price-min price-max) " \u2014 ")
                                    (when price-max (str "до " price-max " сом")))))
                        (tg/inline-keyboard
-                        [[{:text "📋 Мои подписки" :callback_data "track_list"}]]))
+                        [["📋 Мои подписки" {:callback_data "track_list"}]]))
     ;; Do LLM category match + DB write in background
     (future
       (try
@@ -205,14 +206,14 @@
                                   "📅 Проверяю каждые 24 часа\n"
                                   "Уведомлю когда появятся новые объявления")
                              (tg/inline-keyboard
-                              [[{:text "📋 Мои подписки" :callback_data "track_list"}
-                                {:text "⚙ Настроить" :callback_data (str "track_settings:" (:id track))}]])))
+                              [["📋 Мои подписки" {:callback_data "track_list"}]
+                               ["⚙ Настроить" {:callback_data (str "track_settings:" (:id track))}]])))
         (catch Exception e
           (log/error e :track-create-failed :query query)
           (edit-with-buttons chat-id msg-id
                              (str "❌ Ошибка подписки на «" query "»")
                              (tg/inline-keyboard
-                              [[{:text "🔄 Попробовать снова" :callback_data (str "track_quick:" short-id)}]])))))))
+                              [["🔄 Попробовать снова" {:callback_data (str "track_quick:" short-id)}]])))))))
 
 ;; ══════════════════════ TRACKING — SUBSCRIPTION LIST ══════════════════════
 
@@ -225,20 +226,17 @@
       (send-with-buttons chat-id
                          "📋 *Ваши подписки пусты*\n\nНайдите товар и нажмите «🔔 Отслеживать»"
                          (tg/inline-keyboard
-                          [[{:text "🔍 Поиск товаров" :callback_data "open_search"}]]))
+                          [["🔍 Поиск товаров" {:callback_data "open_search"}]]))
       (let [track-rows (mapv (fn [t]
                                (let [freq (format-interval (:notify_interval t))]
-                                 [{:text (str "🔍 " (:title t))
-                                   :callback_data (str "track_info:" (:id t))}
-                                  {:text (str "📅 " freq)
-                                   :callback_data (str "track_freq:" (:id t))}
-                                  {:text "❌"
-                                   :callback_data (str "track_del_ask:" (:id t))}]))
+                                 [[(str "🔍 " (:title t)) {:callback_data (str "track_info:" (:id t))}]
+                                  [(str "📅 " freq) {:callback_data (str "track_freq:" (:id t))}]
+                                  ["❌" {:callback_data (str "track_del_ask:" (:id t))}]]))
                              tracks)]
         (send-with-buttons chat-id
                            (str "📋 *Ваши подписки* (" (count tracks) ")\n\n"
                                 "📅 — частота уведомлений\n❌ — удалить")
-                           (tg/inline-keyboard track-rows))))))
+                           (apply tg/inline-keyboard track-rows))))))
 
 (defn- show-track-settings
   "Show frequency settings for a track."
@@ -249,12 +247,9 @@
                          (str "⚙ *Настройки:* «" (:title track) "»\n\n"
                               "📅 Частота уведомлений:")
                          (tg/inline-keyboard
-                          [[{:text "⏰ Каждые 3 часа"
-                             :callback_data (str "track_set_freq:" track-id ":3")}
-                            {:text "📅 Каждые 24 часа"
-                             :callback_data (str "track_set_freq:" track-id ":24")}
-                            {:text "📆 Каждые 72 часа"
-                             :callback_data (str "track_set_freq:" track-id ":72")}]])))))
+                          [["⏰ Каждые 3 часа" {:callback_data (str "track_set_freq:" track-id ":3")}]
+                           ["📅 Каждые 24 часа" {:callback_data (str "track_set_freq:" track-id ":24")}]
+                           ["📆 Каждые 72 часа" {:callback_data (str "track_set_freq:" track-id ":72")}]])))))
 
 (defn- confirm-delete-track
   "Ask for delete confirmation."
@@ -262,8 +257,8 @@
   (edit-with-buttons chat-id msg-id
                      (str "🗑 *Удалить подписку?*\n\n«" title "»")
                      (tg/inline-keyboard
-                      [[{:text "Да, удалить" :callback_data (str "track_del_yes:" track-id)}
-                        {:text "← Назад" :callback_data "track_list"}]])))
+                      [["Да, удалить" {:callback_data (str "track_del_yes:" track-id)}]
+                       ["← Назад" {:callback_data "track_list"}]])))
 
 ;; ══════════════════════ CALLBACK ROUTER ══════════════════════
 
@@ -310,7 +305,7 @@
                              (str "✅ Частота обновлена\n\n"
                                   "«" (:title track) "» → " (format-interval interval-h))
                              (tg/inline-keyboard
-                              [[{:text "📋 Назад к списку" :callback_data "track_list"}]]))))
+                              [["📋 Назад к списку" {:callback_data "track_list"}]]))))
 
     ;; === TRACKING: Delete confirmation ===
       (re-matches #"track_del_ask:(\d+)" data)
@@ -332,7 +327,7 @@
           (edit-with-buttons chat-id msg-id
                              (str "🗑 *Удалено:* «" (:title track) "»")
                              (tg/inline-keyboard
-                              [[{:text "📋 К списку" :callback_data "track_list"}]]))))
+                              [["📋 К списку" {:callback_data "track_list"}]]))))
 
     ;; === TRACKING: Open search (from empty list) ===
       (= data "open_search")
