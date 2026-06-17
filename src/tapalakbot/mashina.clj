@@ -88,7 +88,7 @@
                           :city (some #(when (= (:slug %) "city")
                                          (get-in % [:value_json :name]))
                                       (:attributes item))
-                          :images (mapv :thumb (:images item))
+                          :images (mapv #(or (:big %) (:medium %) (:thumb %)) (:images item))
                           :url (str "https://www.mashina.kg/ru/" (:slug item))})
                        (:items result))
        :total (:total result)

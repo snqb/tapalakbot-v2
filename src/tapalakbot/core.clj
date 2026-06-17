@@ -342,8 +342,8 @@ Example: [113171780, 112908144, 111226783]")
                                           :item-id item-id}))
                                 ;; Format for LLM — include image URL for rich rendering
                                 (let [thumb (or (get item "thumbnail_url")
-                                                (get-in item ["images" 0 "thumbnail_url"])
-                                                (get-in item ["images" 0 "original_url"]))]
+                                                (get-in item ["images" 0 "original_url"])
+                                                (get-in item ["images" 0 "thumbnail_url"]))]
                                   (str "- " (get item "title" "")
                                        " — " price-str
                                        (when (not (str/blank? url))
@@ -545,7 +545,9 @@ Rules:
                                   (when (:mileage item) (str ", " (:mileage item) " км"))
                                   (when (:city item) (str ", " (:city item)))
                                   (when (and url (not (str/blank? url)))
-                                    (str " — " url)))))
+                                    (str " — " url))
+                                  (when (seq (:images item))
+                                    (str " — img:" (first (:images item)))))))
                          (take 8 listings))))))
 
 (defn- search-execute
