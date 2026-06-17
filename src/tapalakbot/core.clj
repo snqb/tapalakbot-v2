@@ -722,8 +722,8 @@ Rules:
      {:name "tapalakbot"
       :prompt system-prompt
       :tools tools
-      :model :deepseek-v4-pro
-      :provider :deepseek
+      :model :kimi-k2
+      :provider :openrouter
       :max-turns 8
       :nudges {:max-step-blocks 3
                :recover-tool-errors? true}
