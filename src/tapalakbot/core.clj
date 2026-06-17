@@ -54,8 +54,18 @@ Example: user says 'посоветуй триммер для бороды'
 → User greets → just chat naturally
 
 ## Response format — Rich Markdown (Telegram renders natively!)
-Use Rich Markdown — Telegram renders tables, headings, bold, code, etc. natively.
+Use Rich Markdown — Telegram renders tables, headings, bold, code, images etc. natively.
 
+- **Images**: Each listing has img:URL at the end. Use figure for product photos:
+  <figure><img src=URL/>
+  <figcaption>**Title** — цена, Город</figcaption>
+  </figure>
+  For 2-3 similar products, use slideshow (horizontal swipe carousel):
+  <tg-slideshow>
+  ![](URL1)
+  ![](URL2)
+  <figcaption>iPhone 13 — от 25 000 сом</figcaption>
+  </tg-slideshow>
 - Tables for comparisons — native markdown, Telegram renders as proper tables:
   | Модель | Цена | Площадка |
   |:-------|-----:|:--------:|
@@ -330,13 +340,18 @@ Example: [113171780, 112908144, 111226783]")
                                          {:url url
                                           :title (get item "title" "")
                                           :item-id item-id}))
-                                ;; Format for LLM — no letter tokens, just clean listing
-                                (str "- " (get item "title" "")
-                                     " — " price-str
-                                     (when (not (str/blank? url))
-                                       (str " — " url))
-                                     (when (not (str/blank? desc))
-                                       (str " — " desc)))))))
+                                ;; Format for LLM — include image URL for rich rendering
+                                (let [thumb (or (get item "thumbnail_url")
+                                                (get-in item ["images" 0 "thumbnail_url"])
+                                                (get-in item ["images" 0 "original_url"]))]
+                                  (str "- " (get item "title" "")
+                                       " — " price-str
+                                       (when (not (str/blank? url))
+                                         (str " — " url))
+                                       (when (not (str/blank? thumb))
+                                         (str " — img:" thumb))
+                                       (when (not (str/blank? desc))
+                                         (str " — " desc))))))))
              :url-store {}
              :items (vec relevant)}))))))
 
