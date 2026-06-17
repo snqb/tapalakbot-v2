@@ -290,10 +290,11 @@ Example: [113171780, 112908144, 111226783]")
                 by-currency)]
     (update result :items vec)))
 
-(defn- format-search-results [result-json & {:keys [user-query] :or {user-query ""}}]
+(defn- format-search-results [result-json & {:keys [user-query price-min price-max] :or {user-query ""}}]
   "Format JSON search result into readable text for LLM.
    With user-query: applies LLM relevance filter first (pass 1).
    Main LLM does curation (pass 2).
+   With price-min/price-max: skips outlier filter (user specified range).
    Returns {:text formatted-text :url-store {item-id url}}."
   (let [data (if (string? result-json)
                (try (json/parse-string result-json false) (catch Exception _ nil))
@@ -312,7 +313,10 @@ Example: [113171780, 112908144, 111226783]")
                              (relevance-filter items user-query)
                              items)
               ;; Filter statistical outliers (catches per-sotok mislabeled as total, etc.)
-              outlier-result (filter-price-outliers relevant-raw)
+              ;; Skip when user specified price range — they want those items
+              outlier-result (if (or price-min price-max)
+                               {:items relevant-raw :outliers 0}
+                               (filter-price-outliers relevant-raw))
               relevant (:items outlier-result)
               ;; Build url-store locally (not global atom)
               ]
@@ -597,7 +601,7 @@ Rules:
                                    result (lalafo/search search-args)]
                                (log/info :search-lalafo :queries enhanced-queries :price [final-price-min final-price-max])
                                (try
-                                 (let [fmt (format-search-results result :user-query user-want)
+                                 (let [fmt (format-search-results result :user-query user-want :price-min final-price-min :price-max final-price-max)
                                        txt (:text fmt)]
                                    (log/info :search-done :urls (count (get-url-store user-id)) :chars (count txt))
                                    ;; Capture structured cards for deterministic rendering
