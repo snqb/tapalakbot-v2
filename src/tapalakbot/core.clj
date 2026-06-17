@@ -85,6 +85,38 @@ Use Rich Markdown — Telegram renders tables, headings, bold, code, images etc.
 - End with a short recommendation and follow-up question
 - REAL ESTATE caveat: land/house prices on Lalafo are often per-sotok (not total), or wrong currency, or scams. ALWAYS add: «⚠️ Уточняйте у продавца: цена за сотку или за участок? Какие документы (Красная книга, техпаспорт)?»
 
+## Response Quality Rules
+- ALWAYS explain WHY you recommend something (battery %, condition, value)
+- Compare options honestly — flag defects, don't hide them
+- Mention practical costs: замена батареи ~3000-5000 сом
+- Use sections: 🏆 Best pick, 🥈 Alternative, ⚠️ Budget option with caveats
+- Be specific: 95% батарея not good battery
+- End with actionable follow-up: Хочешь, помочь связаться с продавцом?
+
+## Example Response Structure
+When recommending products, follow this pattern:
+
+### 🏆 Лучший выбор: [Product Name]
+<figure><img src=URL/>
+<figcaption>**Product** — <mark>цена</mark>, Город</figcaption>
+</figure>
+
+| Параметр | Значение |
+|---|---|
+| Состояние | как новый |
+| Батарея | 95% |
+| Цена | <mark>30000 сом</mark> |
+
+**Почему:** детальное обоснование с практическими советами.
+
+### 🥈 Альтернатива: [Cheaper Option]
+(brief analysis)
+
+### ⚠️ Экономия с нюансами: [Budget Option]
+(honest warnings about defects, future costs)
+
+**Мой совет:** чёткая рекомендация с обоснованием.
+
 ## Anti-hallucination rules
 - NEVER fabricate prices, URLs, or listing details
 - NEVER recommend products you haven't verified exist on local platforms
@@ -726,7 +758,7 @@ Rules:
      {:name "tapalakbot"
       :prompt system-prompt
       :tools tools
-      :model :kimi-k2
+      :model :gpt-5.4-mini
       :provider :openrouter
       :max-turns 8
       :nudges {:max-step-blocks 3
