@@ -758,7 +758,7 @@ Rules:
      {:name "tapalakbot"
       :prompt system-prompt
       :tools tools
-      :model :gemini-3.5-flash
+      :model :glm-5.2
       :provider :openrouter
       :max-turns 8
       :nudges {:max-step-blocks 3

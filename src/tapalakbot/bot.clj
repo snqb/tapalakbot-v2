@@ -597,8 +597,13 @@
 
 (defn- handle-orchestrated
   "Handle message via agent-first pipeline with LIVE streaming.
-   Drafter shows phase-aware status during tool-calling; main model
-   (Gemini 3.5 Flash) streams text when generating the final answer."
+
+   Activity-aware design: the model's own streamed text IS the best draft
+   content. The drafter thread only fills silence — it activates when
+   stream-cb hasn't fired for >3 seconds (during tool execution), and
+   yields instantly when new text arrives. This is correct for reasoning
+   models (GLM-5.2) that stream text alongside tool calls, AND for
+   non-reasoning models (DeepSeek) that only emit text on the final turn."
   [{:keys [chat-id user-id text] :as msg}]
   (let [uid (str "tg-" user-id)
         draft-id (int (rand-int 999999))
@@ -607,28 +612,30 @@
         last-typing (atom 0)
         last-preview (atom "")
         draft-count (atom 0)
-        ;; Current phase status from harness (real, not guessed)
+        ;; Track stream activity — drafter only fires during silence
+        last-stream-activity (atom (System/currentTimeMillis))
+        ;; Current phase status from harness (for humanize-status)
         current-status (atom "🧠 Анализирую запрос...")
-        in-tools-phase (atom true)
         status-variant (atom 0)
-        ;; Drafter thread — rotates phase-aware status every 5s during tool-calling
+        ;; Drafter thread — fires only after 3s of stream silence
         drafter-running (atom true)
         drafter-thread (Thread.
                         (fn []
                           (while @drafter-running
                             (try
-                              (Thread/sleep 5000)  ; refresh status every 5s
-                              (when (and @drafter-running @in-tools-phase)
-                                (swap! status-variant inc)
-                                (let [status (humanize-status @current-status text @status-variant)]
-                                  (tg/send-rich-message-draft chat-id draft-id :markdown status)
-                                  (log/info :drafter-status :text status)))
+                              (Thread/sleep 2000)  ; check every 2s
+                              (when @drafter-running
+                                (let [silence (- (System/currentTimeMillis) @last-stream-activity)]
+                                  ;; Only show status if: no text flowing for >3s
+                                  (when (> silence 3000)
+                                    (swap! status-variant inc)
+                                    (let [status (humanize-status @current-status text @status-variant)]
+                                      (tg/send-rich-message-draft chat-id draft-id :markdown status)
+                                      (log/info :drafter-status :text status :silence-ms silence)))))
                               (catch Exception _)))))
         stream-cb (fn [delta]
-                    ;; Exit tools phase when substantial text arrives (>80 chars)
-                    (when (and @in-tools-phase (> (.length buf) 80))
-                      (reset! in-tools-phase false)
-                      (log/info :exited-tools-phase :buf-len (.length buf)))
+                    ;; Mark stream activity — drafter yields when this fires
+                    (reset! last-stream-activity (System/currentTimeMillis))
                     (.append buf delta)
                     (let [now (System/currentTimeMillis)]
                       (when (> (- now @last-typing) 4000)
@@ -647,16 +654,11 @@
                           (catch Exception e
                             (log/warn e :stream-draft-fail))))))
         status-cb (fn [status-text]
-                    ;; Real phase change from harness — update current status,
-                    ;; reset to tools-phase, push immediate humanized draft
+                    ;; Real phase change from harness — update current status
+                    ;; for the drafter to use during silence. Do NOT clear buf —
+                    ;; reasoning models stream text we want the user to see.
                     (reset! current-status status-text)
-                    (reset! in-tools-phase true)
-                    (.setLength buf 0)
-                    (reset! last-preview "")
                     (swap! status-variant inc)
-                    (let [status (humanize-status status-text text @status-variant)]
-                      (try (tg/send-rich-message-draft chat-id draft-id :markdown status)
-                           (catch Exception _)))
                     (log/info :phase-change :status status-text))]
     ;; Initial draft — instant feedback
     (try (tg/send-rich-message-draft chat-id draft-id :markdown "🧠 Так, сейчас гляну...")
@@ -674,7 +676,7 @@
                         (log/info :fallback-auto-search :query text)
                         (.setLength buf 0)
                         (reset! last-preview "")
-                        (reset! in-tools-phase true)
+                        (reset! last-stream-activity (System/currentTimeMillis))
                         (try (tg/send-rich-message-draft chat-id draft-id :markdown "🔍 Ищу подробнее...")
                              (catch Exception _))
                         (t/ask-stream uid (str "найди " text) status-cb {:stream-cb stream-cb}))

@@ -2,6 +2,7 @@
  :riskbypass-key #or [#env RISKBYPASS_API_KEY "s7b5en@gmail.com_SmsfR424HBz4l1UFyyhAFp5mPjnce"]
  :models {;; Latest models (June 2026)
           :kimi-k2.7     "moonshotai/kimi-k2.7-code"
+          :glm-5.2       "z-ai/glm-5.2"
           :gemini-3.5-flash "google/gemini-3.5-flash"
           :gpt-5.4-mini  "openai/gpt-5.4-mini"
           :deepseek-v4   "deepseek/deepseek-v4-pro"
