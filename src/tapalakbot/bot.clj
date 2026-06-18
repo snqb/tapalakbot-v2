@@ -586,7 +586,13 @@
                     (let [now (System/currentTimeMillis)]
                       (when (> (- now @last-typing) 4000)
                         (reset! last-typing now)
-                        (try (tg/send-typing chat-id) (catch Exception _)))
+                        (try (tg/send-typing chat-id) (catch Exception _))
+                        ;; Animate the search emoji while waiting (no text yet)
+                        (when (zero? (.length buf))
+                          (let [emoji (nth ["🔍" "🔎" "👀" "🔬"] (mod (quot (- now @last-typing) 4000) 4))
+                                query-preview (str emoji " Ищу «" (subs text 0 (min 30 (count text))) "»...")]
+                            (try (tg/send-rich-message-draft chat-id draft-id :markdown query-preview)
+                                 (catch Exception _)))))
                       ;; Animated draft preview (throttled 1200ms)
                       (when (and (> (- now @last-draft) 1200)
                                  (> (.length buf) 30))
