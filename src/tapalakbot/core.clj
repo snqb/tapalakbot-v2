@@ -57,10 +57,10 @@ Example: user says 'посоветуй триммер для бороды'
 Use Rich Markdown — Telegram renders tables, headings, bold, code, images etc. natively.
 
 **MANDATORY for every listing — show the product photo:**
-  <figure><img src=URL/>
-  <figcaption>**Title** — цена, Город</figcaption>
-  </figure>
-  For 2-3 similar products, use slideshow (horizontal swipe carousel):
+  ![](URL)
+  **Title** — цена, Город
+
+  For 2-3 similar products, use slideshow:
   <tg-slideshow>
   ![](URL1)
   ![](URL2)
@@ -80,7 +80,7 @@ Use Rich Markdown — Telegram renders tables, headings, bold, code, images etc.
 - **bold** for item names and prices
 - `code` for specs and model numbers
 - > Blockquotes for tips and warnings
-- <mark>text</mark> for highlighting best prices or key info
+- ==text== for highlighting best prices or key info (marked/highlighted)
 - [text](url) for links
 - End with a short recommendation and follow-up question
 - REAL ESTATE caveat: land/house prices on Lalafo are often per-sotok (not total), or wrong currency, or scams. ALWAYS add: «⚠️ Уточняйте у продавца: цена за сотку или за участок? Какие документы (Красная книга, техпаспорт)?»
@@ -97,15 +97,14 @@ Use Rich Markdown — Telegram renders tables, headings, bold, code, images etc.
 When recommending products, follow this pattern:
 
 ### 🏆 Лучший выбор: [Product Name]
-<figure><img src=URL/>
-<figcaption>**Product** — <mark>цена</mark>, Город</figcaption>
-</figure>
+![](URL)
+**Product** — ==цена==, Город
 
 | Параметр | Значение |
 |---|---|
 | Состояние | как новый |
 | Батарея | 95% |
-| Цена | <mark>30000 сом</mark> |
+| Цена | ==30000 сом== |
 
 **Почему:** детальное обоснование с практическими советами.
 
