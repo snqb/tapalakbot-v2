@@ -582,10 +582,35 @@
       (log/warn e :narrator-error)
       phase)))
 
+(defn- humanize-status
+  "Map harness status text to warm Russian phrases. Rotates variants
+   to keep the draft alive and feeling responsive during long phases."
+  [status-text user-query variant]
+  (let [phase (cond
+                (re-find #"Анализ" status-text) :analyzing
+                (re-find #"research" status-text) :researching
+                (re-find #"Выполня" status-text) :tooling
+                (re-find #"Обрабат" status-text) :processing
+                :else :working)
+        variants {:analyzing  ["🧠 Так, давай разберёмся что тебе нужно..."
+                               "🤔 Понял запрос, прикидываю варианты..."]
+                  :researching ["📚 Смотрю что вообще стоит брать..."
+                                "🔬 Изучаю какие модели хорошие..."]
+                  :tooling    ["🔍 Ищу на Lalafo и Mashina..."
+                               "👀 Прочёсываю объявления..."
+                               "🔎 Копаюсь в свежих лотах..."]
+                  :processing ["📊 Нашёл варианты, отбираю лучшие..."
+                               "⚖️ Сравниваю цены и состояние..."
+                               "🧮 Считаю что выгоднее..."]
+                  :working    ["⏳ Секунду, почти готово..."
+                               "💭 Думаю над лучшим ответом..."]}
+        opts (get variants phase ["⏳ Работаю..."])]
+    (nth opts (mod variant (count opts)))))
+
 (defn- handle-orchestrated
   "Handle message via agent-first pipeline with LIVE streaming.
-   Uses drafter (GPT-5.4 Nano) for status during tool-calling phases.
-   Main model (Gemini 3.5 Flash) streams text when generating."
+   Drafter shows phase-aware status during tool-calling; main model
+   (Gemini 3.5 Flash) streams text when generating the final answer."
   [{:keys [chat-id user-id text] :as msg}]
   (let [uid (str "tg-" user-id)
         draft-id (int (rand-int 999999))
@@ -594,35 +619,30 @@
         last-typing (atom 0)
         last-preview (atom "")
         draft-count (atom 0)
-        ;; Track tool-calling phase
+        ;; Current phase status from harness (real, not guessed)
+        current-status (atom "🧠 Анализирую запрос...")
         in-tools-phase (atom true)
-        last-content-time (atom 0)
-        ;; Drafter thread for status updates during tool-calling
+        status-variant (atom 0)
+        ;; Drafter thread — rotates phase-aware status every 5s during tool-calling
         drafter-running (atom true)
         drafter-thread (Thread.
                         (fn []
-                          ;; Wait 2s before first status (let model start)
-                          (try (Thread/sleep 2000) (catch Exception _))
                           (while @drafter-running
                             (try
-                              (when @in-tools-phase
-                                (let [status (generate-narrator-text text "searching for products")]
-                                  (when @drafter-running
-                                    (tg/send-rich-message-draft chat-id draft-id :markdown status)
-                                    (log/info :drafter-status :text status))))
-                              (Thread/sleep 8000)  ; Status every 8s during tool-calling
+                              (Thread/sleep 5000)  ; refresh status every 5s
+                              (when (and @drafter-running @in-tools-phase)
+                                (swap! status-variant inc)
+                                (let [status (humanize-status @current-status text @status-variant)]
+                                  (tg/send-rich-message-draft chat-id draft-id :markdown status)
+                                  (log/info :drafter-status :text status)))
                               (catch Exception _)))))
         stream-cb (fn [delta]
-                    ;; Only exit tools phase when we get substantial text (>100 chars total)
-                    (when (and @in-tools-phase (> (.length buf) 100))
+                    ;; Exit tools phase when substantial text arrives (>80 chars)
+                    (when (and @in-tools-phase (> (.length buf) 80))
                       (reset! in-tools-phase false)
-                      (reset! drafter-running false)
-                      (.interrupt drafter-thread)
                       (log/info :exited-tools-phase :buf-len (.length buf)))
                     (.append buf delta)
-                    (reset! last-content-time (System/currentTimeMillis))
                     (let [now (System/currentTimeMillis)]
-                      ;; Typing indicator every 4s
                       (when (> (- now @last-typing) 4000)
                         (reset! last-typing now)
                         (try (tg/send-typing chat-id) (catch Exception _)))
@@ -639,39 +659,22 @@
                           (catch Exception e
                             (log/warn e :stream-draft-fail))))))
         status-cb (fn [status-text]
-                    ;; Phase change — reset buffer, use drafter for status
+                    ;; Real phase change from harness — update current status,
+                    ;; reset to tools-phase, push immediate humanized draft
+                    (reset! current-status status-text)
+                    (reset! in-tools-phase true)
                     (.setLength buf 0)
                     (reset! last-preview "")
-                    (reset! in-tools-phase true)
+                    (swap! status-variant inc)
+                    (let [status (humanize-status status-text text @status-variant)]
+                      (try (tg/send-rich-message-draft chat-id draft-id :markdown status)
+                           (catch Exception _)))
                     (log/info :phase-change :status status-text))]
-    ;; Start draft refresher — send new draft every 25s to prevent 30s TTL expiry
-    (let [refresh-running (atom true)
-          refresh-thread (Thread.
-                         (fn []
-                           (while @refresh-running
-                             (try
-                               (Thread/sleep 25000)
-                               (when @refresh-running
-                                 (let [current-text (if (pos? (.length buf))
-                                                      (.toString buf)
-                                                      "⏳ Обрабатываю результаты...")]
-                                   (tg/send-rich-message-draft chat-id draft-id :markdown current-text)
-                                   (log/info :draft-refreshed)))
-                               (catch Exception _)))))]
-      (.start refresh-thread)
-      ;; Initial draft — instant feedback
-      (let [placeholders ["🧠 Так, сейчас поищу..."
-                          "🔍 Секундочку, смотрю что есть..."
-                          "👀 Давайте глянем..."
-                          "🤔 Хм, интересный запрос..."
-                          "💭 Так, сейчас найду..."
-                          "🔎 Гляну на рынке..."]
-            placeholder (nth placeholders (mod (System/currentTimeMillis) (count placeholders)))]
-        (try (tg/send-rich-message-draft chat-id draft-id :markdown placeholder)
-             (catch Exception _)))
-      ;; Store refresh-thread for cleanup
-      (def ^:private draft-refresh-thread refresh-thread)
-      (def ^:private draft-refresh-running refresh-running))
+    ;; Initial draft — instant feedback
+    (try (tg/send-rich-message-draft chat-id draft-id :markdown "🧠 Так, сейчас гляну...")
+         (catch Exception _))
+    ;; Start the phase-aware drafter thread (keeps draft alive + shows status)
+    (.start drafter-thread)
     (try
       ;; Run agent with REAL streaming + card capture
       (let [result (t/ask-stream uid text status-cb {:stream-cb stream-cb})
@@ -683,6 +686,7 @@
                         (log/info :fallback-auto-search :query text)
                         (.setLength buf 0)
                         (reset! last-preview "")
+                        (reset! in-tools-phase true)
                         (try (tg/send-rich-message-draft chat-id draft-id :markdown "🔍 Ищу подробнее...")
                              (catch Exception _))
                         (t/ask-stream uid (str "найди " text) status-cb {:stream-cb stream-cb}))
@@ -699,11 +703,9 @@
             more-btn (when (seq all-cards)
                        {"inline_keyboard" [[{"text" "🔄 Ещё результаты"
                                              "callback_data" (str "more:" (truncate-cb text 58))}]]})]
-        ;; Stop drafter and draft refresher
+        ;; Stop drafter
         (reset! drafter-running false)
         (.interrupt drafter-thread)
-        (when draft-refresh-running (reset! draft-refresh-running false))
-        (when draft-refresh-thread (.interrupt draft-refresh-thread))
         ;; Send final response — draft auto-expires (30s TTL), Rich Message persists
         (log/info :stream-summary :drafts-sent @draft-count :final-len (count agent-text) :cards (count all-cards))
         (render-and-send chat-id user-id text reply :keyboard more-btn)
@@ -718,11 +720,9 @@
             (catch Exception e
               (log/warn e :track-button-fail)))))
       (catch Exception e
-        ;; Stop drafter and refresher on error
+        ;; Stop drafter on error
         (reset! drafter-running false)
         (.interrupt drafter-thread)
-        (when draft-refresh-running (reset! draft-refresh-running false))
-        (when draft-refresh-thread (.interrupt draft-refresh-thread))
         (log/error e :agent-error {:user-id uid})
         (try (tg/send-message chat-id "❌ Ошибка. Попробуйте ещё раз." :parse-mode nil)
              (catch Exception _))))))
