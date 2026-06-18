@@ -694,7 +694,7 @@
           (assoc :location {:lat (get loc "latitude")
                             :lon (get loc "longitude")}))))))
 
-(defn- extended-handler
+(defn extended-handler
   "Handler that processes both messages and callback queries."
   [parsed]
   (if (:callback-id parsed)
