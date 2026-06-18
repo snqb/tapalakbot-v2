@@ -641,19 +641,22 @@
                               (tg/send-rich-message-draft chat-id draft-id :markdown preview)))
                           (catch Exception e
                             (log/warn e :stream-draft-fail))))))
-        status-cb (fn [status-text]
-                    ;; Real phase change from harness — update current status,
-                    ;; reset to tools-phase, push immediate humanized draft
-                    (log/info :status-cb-fired :raw status-text)
-                    (reset! current-status status-text)
-                    (reset! in-tools-phase true)
-                    (.setLength buf 0)
-                    (reset! last-preview "")
-                    (swap! status-variant inc)
-                    (let [status (humanize-status status-text text @status-variant)]
-                      (try (tg/send-rich-message-draft chat-id draft-id :markdown status)
-                           (catch Exception _)))
-                    (log/info :phase-change :status status-text))]
+        status-cb (fn [& status-chars]
+                    ;; HARNESS BUG WORKAROUND: stream-agent calls
+                    ;; (apply status-cb (status-text ...)) — apply on a STRING
+                    ;; splatters it into per-character args. We reassemble.
+                    (let [status-text (apply str status-chars)]
+                      ;; Real phase change from harness — update current status,
+                      ;; reset to tools-phase, push immediate humanized draft
+                      (reset! current-status status-text)
+                      (reset! in-tools-phase true)
+                      (.setLength buf 0)
+                      (reset! last-preview "")
+                      (swap! status-variant inc)
+                      (let [status (humanize-status status-text text @status-variant)]
+                        (try (tg/send-rich-message-draft chat-id draft-id :markdown status)
+                             (catch Exception _)))
+                      (log/info :phase-change :status status-text)))]
     ;; Initial draft — instant feedback
     (try (tg/send-rich-message-draft chat-id draft-id :markdown "🧠 Так, сейчас гляну...")
          (catch Exception _))
