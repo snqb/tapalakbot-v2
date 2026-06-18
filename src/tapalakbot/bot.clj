@@ -622,16 +622,34 @@
                       (try
                         (tg/send-rich-message-draft chat-id draft-id :markdown narrator-text)
                         (catch Exception _))))]
-    ;; Initial draft — instant feedback
-    (let [placeholders ["🧠 Так, сейчас поищу..."
-                        "🔍 Секундочку, смотрю что есть..."
-                        "👀 Давайте глянем..."
-                        "🤔 Хм, интересный запрос..."
-                        "💭 Так, сейчас найду..."
-                        "🔎 Гляну на рынке..."]
-          placeholder (nth placeholders (mod (System/currentTimeMillis) (count placeholders)))]
-      (try (tg/send-rich-message-draft chat-id draft-id :markdown placeholder)
-           (catch Exception _)))
+    ;; Start draft refresher — send new draft every 25s to prevent 30s TTL expiry
+    (let [refresh-running (atom true)
+          refresh-thread (Thread.
+                         (fn []
+                           (while @refresh-running
+                             (try
+                               (Thread/sleep 25000)
+                               (when @refresh-running
+                                 (let [current-text (if (pos? (.length buf))
+                                                      (.toString buf)
+                                                      "⏳ Обрабатываю результаты...")]
+                                   (tg/send-rich-message-draft chat-id draft-id :markdown current-text)
+                                   (log/info :draft-refreshed)))
+                               (catch Exception _)))))]
+      (.start refresh-thread)
+      ;; Initial draft — instant feedback
+      (let [placeholders ["🧠 Так, сейчас поищу..."
+                          "🔍 Секундочку, смотрю что есть..."
+                          "👀 Давайте глянем..."
+                          "🤔 Хм, интересный запрос..."
+                          "💭 Так, сейчас найду..."
+                          "🔎 Гляну на рынке..."]
+            placeholder (nth placeholders (mod (System/currentTimeMillis) (count placeholders)))]
+        (try (tg/send-rich-message-draft chat-id draft-id :markdown placeholder)
+             (catch Exception _)))
+      ;; Store refresh-thread for cleanup
+      (def ^:private draft-refresh-thread refresh-thread)
+      (def ^:private draft-refresh-running refresh-running))
     (try
       ;; Run agent with REAL streaming + card capture
       (let [result (t/ask-stream uid text status-cb {:stream-cb stream-cb})
@@ -659,6 +677,9 @@
             more-btn (when (seq all-cards)
                        {"inline_keyboard" [[{"text" "🔄 Ещё результаты"
                                              "callback_data" (str "more:" (truncate-cb text 58))}]]})]
+        ;; Stop draft refresher
+        (when draft-refresh-running (reset! draft-refresh-running false))
+        (when draft-refresh-thread (.interrupt draft-refresh-thread))
         ;; Send final response — draft auto-expires (30s TTL), Rich Message persists
         (log/info :stream-summary :drafts-sent @draft-count :final-len (count agent-text) :cards (count all-cards))
         (render-and-send chat-id user-id text reply :keyboard more-btn)
