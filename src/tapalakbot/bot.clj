@@ -583,19 +583,44 @@
       phase)))
 
 (defn- handle-orchestrated
-  "Handle message via agent-first pipeline with LIVE streaming via Rich Message Drafts.
-   Agent text streams as an animated ephemeral draft, then persists as a Rich Message
-   (native tables/headings). Status updates (tool execution) reset the preview."
+  "Handle message via agent-first pipeline with LIVE streaming.
+   Uses drafter (GPT-5.4 Nano) for status during tool-calling phases.
+   Main model (Gemini 3.5 Flash) streams text when generating."
   [{:keys [chat-id user-id text] :as msg}]
   (let [uid (str "tg-" user-id)
-        draft-id (int (rand-int 999999))  ; stable draft ID for animation
+        draft-id (int (rand-int 999999))
         buf (StringBuilder.)
         last-draft (atom 0)
         last-typing (atom 0)
         last-preview (atom "")
         draft-count (atom 0)
+        ;; Track tool-calling phase
+        in-tools-phase (atom true)
+        last-content-time (atom 0)
+        ;; Drafter thread for status updates during tool-calling
+        drafter-running (atom true)
+        drafter-thread (Thread.
+                        (fn []
+                          ;; Wait 3s before first status (let model start)
+                          (try (Thread/sleep 3000) (catch Exception _))
+                          (while @drafter-running
+                            (try
+                              (when @in-tools-phase
+                                (let [status (generate-narrator-text text "searching for products")]
+                                  (when @drafter-running
+                                    (tg/send-rich-message-draft chat-id draft-id :markdown status)
+                                    (log/info :drafter-status :text status))))
+                              (Thread/sleep 8000)  ; Status every 8s during tool-calling
+                              (catch Exception _)))))
         stream-cb (fn [delta]
+                    ;; We got text content — exit tool-calling phase
+                    (when @in-tools-phase
+                      (reset! in-tools-phase false)
+                      (reset! drafter-running false)
+                      (.interrupt drafter-thread)
+                      (log/info :exited-tools-phase))
                     (.append buf delta)
+                    (reset! last-content-time (System/currentTimeMillis))
                     (let [now (System/currentTimeMillis)]
                       ;; Typing indicator every 4s
                       (when (> (- now @last-typing) 4000)
@@ -614,14 +639,11 @@
                           (catch Exception e
                             (log/warn e :stream-draft-fail))))))
         status-cb (fn [status-text]
-                    ;; Clear streaming buffer on phase change
+                    ;; Phase change — reset buffer, use drafter for status
                     (.setLength buf 0)
                     (reset! last-preview "")
-                    ;; Use narrator to generate descriptive status
-                    (let [narrator-text (generate-narrator-text text status-text)]
-                      (try
-                        (tg/send-rich-message-draft chat-id draft-id :markdown narrator-text)
-                        (catch Exception _))))]
+                    (reset! in-tools-phase true)
+                    (log/info :phase-change :status status-text))]
     ;; Start draft refresher — send new draft every 25s to prevent 30s TTL expiry
     (let [refresh-running (atom true)
           refresh-thread (Thread.
@@ -677,7 +699,9 @@
             more-btn (when (seq all-cards)
                        {"inline_keyboard" [[{"text" "🔄 Ещё результаты"
                                              "callback_data" (str "more:" (truncate-cb text 58))}]]})]
-        ;; Stop draft refresher
+        ;; Stop drafter and draft refresher
+        (reset! drafter-running false)
+        (.interrupt drafter-thread)
         (when draft-refresh-running (reset! draft-refresh-running false))
         (when draft-refresh-thread (.interrupt draft-refresh-thread))
         ;; Send final response — draft auto-expires (30s TTL), Rich Message persists
@@ -694,6 +718,11 @@
             (catch Exception e
               (log/warn e :track-button-fail)))))
       (catch Exception e
+        ;; Stop drafter and refresher on error
+        (reset! drafter-running false)
+        (.interrupt drafter-thread)
+        (when draft-refresh-running (reset! draft-refresh-running false))
+        (when draft-refresh-thread (.interrupt draft-refresh-thread))
         (log/error e :agent-error {:user-id uid})
         (try (tg/send-message chat-id "❌ Ошибка. Попробуйте ещё раз." :parse-mode nil)
              (catch Exception _))))))
