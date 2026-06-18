@@ -564,13 +564,17 @@
   "Generate status text using fast narrator model while worker is busy.
    Returns descriptive text about what's happening."
   [user-query phase]
+  (log/info :narrator-start :query user-query :phase phase)
   (try
     (let [messages [{"role" "system" "content" "You are a helpful assistant that describes what a marketplace bot is doing in Russian. Be brief and warm. Use emojis. Max 2 sentences."}
                     {"role" "user" "content" (str "The user asked: \"" user-query "\". The bot is currently: " phase ". Describe what's happening.")}]
           resp (llm/llm :gpt-5.4-nano messages [] :provider :openrouter :max-tokens 100)
           content (get-in resp ["choices" 0 "message" "content"])]
+      (log/info :narrator-result :content content)
       (or content phase))
-    (catch Exception _ phase)))
+    (catch Exception e
+      (log/warn e :narrator-error)
+      phase)))
 
 (defn- handle-orchestrated
   "Handle message via agent-first pipeline with LIVE streaming via Rich Message Drafts.
