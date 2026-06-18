@@ -636,26 +636,26 @@
         drafter-running (atom true)
         drafter-thread (Thread.
                         (fn []
-                          (while @drafter-running
-                            (try
-                              (Thread/sleep 2000)
-                              (when @drafter-running
-                                (let [buf-len (.length buf)]
-                                  (cond
-                                    ;; Buf has text (reasoning or content) — refresh it,
-                                    ;; don't overwrite. This is how reasoning models coexist.
-                                    (pos? buf-len)
-                                    (tg/send-rich-message-draft chat-id draft-id :markdown (.toString buf))
-
-                                    ;; Buf empty + silence >3s — show time-escalating status
-                                    :else
-                                    (let [silence (- (System/currentTimeMillis) @last-stream-activity)]
-                                      (when (> silence 3000)
-                                        (let [status (phase-status @current-phase silence)]
-                                          (tg/send-rich-message-draft chat-id draft-id :markdown status)
-                                          (log/info :drafter-status :text status
-                                                    :phase @current-phase :silence-ms silence)))))))
-                              (catch Exception _)))))
+                          (log/info :drafter-started)
+                          (try
+                            (while @drafter-running
+                              (try
+                                (Thread/sleep 2000)
+                                (when @drafter-running
+                                  (let [buf-len (.length buf)]
+                                    (cond
+                                      (pos? buf-len)
+                                      (tg/send-rich-message-draft chat-id draft-id :markdown (.toString buf))
+                                      :else
+                                      (let [silence (- (System/currentTimeMillis) @last-stream-activity)]
+                                        (when (> silence 3000)
+                                          (let [status (phase-status @current-phase silence)]
+                                            (tg/send-rich-message-draft chat-id draft-id :markdown status)
+                                            (log/info :drafter-status :text status
+                                                      :phase @current-phase :silence-ms silence)))))))
+                                (catch Exception _)))
+                            (catch Exception e
+                              (log/error e :drafter-crashed)))))
         stream-cb (fn [delta]
                     ;; Mark stream activity — drafter yields when text flows
                     (reset! last-stream-activity (System/currentTimeMillis))
