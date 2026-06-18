@@ -101,12 +101,20 @@ clojure -M:test -n tapalakbot.render-test -n tapalakbot.policy-test
 
 ### Webhook mode
 
-Set `WEBHOOK_URL` env var to enable webhooks (e.g. `https://your-domain.com/webhook`).
-Optionally set `WEBHOOK_PORT` (default 8080). Without `WEBHOOK_URL`, falls back to polling.
+Set `WEBHOOK_URL` env var to enable webhooks. Works with bare public IP (no domain needed).
+Optionally set `WEBHOOK_PORT` (default 8443 — one of Telegram's allowed ports: 443, 80, 88, 8443).
 
-On startup: calls Telegram `deleteWebhook` (clears stale), then `setWebhook`. If setWebhook fails, auto-falls back to polling.
+```bash
+# Bare IP — self-signed cert auto-generated in certs/
+WEBHOOK_URL='https://1.2.3.4:8443/webhook' WEBHOOK_PORT=8443 clojure -M:bot
 
-Jetty serves POST `/webhook` (Telegram updates) and GET `/health` (healthcheck). Everything else 404s.
+# With domain + Let's Encrypt (certs already exist)
+WEBHOOK_URL='https://your-domain.com/webhook' WEBHOOK_PORT=443 clojure -M:bot
+```
+
+On startup: generates self-signed TLS cert (first run only), calls `deleteWebhook` + `setWebhook` (uploads public cert). If `setWebhook` fails, auto-falls back to polling.
+
+Jetty serves HTTPS on `WEBHOOK_PORT` and HTTP on 8088 (unused). `/health` endpoint for monitoring.
 
 ## Testing
 
