@@ -374,7 +374,12 @@
                 (if (seq agent-text)
                   (tg/send-md chat-id agent-text :reply_markup track-btn)
                   (tg/send-message chat-id "🔄 Больше вариантов не нашлось." :parse-mode nil))
-                (catch Exception _))))))
+                (catch Exception e
+                  ;; Final delivery failed (e.g. markdown entity parse error) —
+                  ;; log it AND fall back to plain text so the user gets something.
+                  (log/error e :more-results-send-failed :text-len (count agent-text))
+                  (try (tg/send-message chat-id (or agent-text "🔄 Готово.") :parse-mode nil)
+                       (catch Exception _))))))))
 
     ;; === DRILL-DOWN: Show detailed ad ===
       (re-matches #"ad:(\d+)" data)

@@ -87,10 +87,12 @@
         notify_count INTEGER DEFAULT 0,
         notify_interval INTEGER DEFAULT 24
       )"])
-    ;; Migration: add notify_interval if missing
+    ;; Migration: add notify_interval if missing.
+    ;; Throws "duplicate column" on every restart after the first — benign,
+    ;; SQLite has no ADD COLUMN IF NOT EXISTS. Intentionally swallowed.
     (try (jdbc/execute! d ["ALTER TABLE user_tracks ADD COLUMN notify_interval INTEGER DEFAULT 24"])
          (catch Exception _))
-    ;; Migration: add category_id if missing
+    ;; Migration: add category_id if missing (same idempotency note as above).
     (try (jdbc/execute! d ["ALTER TABLE user_tracks ADD COLUMN category_id INTEGER"])
          (catch Exception _))
     (jdbc/execute! d ["CREATE TABLE IF NOT EXISTS track_seen_items (
