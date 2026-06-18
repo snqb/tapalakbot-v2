@@ -86,26 +86,37 @@ cd /Users/sn/Projects/tapalakbot-v2
 # Terminal test (one-shot, no Telegram)
 clojure -M:run "роутер до 4000"
 
-# Telegram bot locally (auto-starts monitor)
+# Telegram bot locally (polling mode, auto-starts monitor)
 BOT_TOKEN='...' clojure -M:bot
+
+# Telegram bot with webhooks (faster, needs public HTTPS URL)
+BOT_TOKEN='...' WEBHOOK_URL='https://your-domain.com/webhook' WEBHOOK_PORT=8080 clojure -M:bot
 
 # Monitor only (standalone, no Telegram)
 clojure -M:monitor
 
 # Run tests
-clojure -M:test -d test/tapalakbot/render_test.clj test/tapalakbot/policy_test.clj test/tapalakbot/orchestrator_test.clj
+clojure -M:test -n tapalakbot.render-test -n tapalakbot.policy-test
 ```
+
+### Webhook mode
+
+Set `WEBHOOK_URL` env var to enable webhooks (e.g. `https://your-domain.com/webhook`).
+Optionally set `WEBHOOK_PORT` (default 8080). Without `WEBHOOK_URL`, falls back to polling.
+
+On startup: calls Telegram `deleteWebhook` (clears stale), then `setWebhook`. If setWebhook fails, auto-falls back to polling.
+
+Jetty serves POST `/webhook` (Telegram updates) and GET `/health` (healthcheck). Everything else 404s.
 
 ## Testing
 
 ```bash
-# All new tests (28 tests, 111 assertions)
-clojure -M:test -d test/tapalakbot/render_test.clj test/tapalakbot/policy_test.clj test/tapalakbot/orchestrator_test.clj
+# All core tests (24 tests, 86 assertions)
+clojure -M:test -n tapalakbot.render-test -n tapalakbot.policy-test
 
-# Individual test files
-clojure -M:test -d test/tapalakbot/render_test.clj
-clojure -M:test -d test/tapalakbot/policy_test.clj
-clojure -M:test -d test/tapalakbot/orchestrator_test.clj
+# Individual test namespaces
+clojure -M:test -n tapalakbot.render-test
+clojure -M:test -n tapalakbot.policy-test
 ```
 
 ## Gotchas

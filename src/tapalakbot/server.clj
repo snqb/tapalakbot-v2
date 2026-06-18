@@ -73,7 +73,6 @@
   [request]
   (try
     (let [body   (slurp (:body request))
-          update (json/parse-string body true)
           parsed (parse-update (json/parse-string body false))]
       (when parsed
         ;; Process async — return 200 immediately
@@ -107,7 +106,7 @@
   [webhook-url token]
   (try
     (let [url  (str "https://api.telegram.org/bot" token "/setWebhook")
-          resp (clj-http.client/post url
+          resp (http/post url
                  {:body    (json/generate-string {"url" webhook-url
                                                   "allowed_updates" ["message" "callback_query"]})
                   :headers {"Content-Type" "application/json"}
@@ -126,7 +125,7 @@
   [token]
   (try
     (let [url  (str "https://api.telegram.org/bot" token "/deleteWebhook")
-          resp (clj-http.client/post url {:as :json})]
+          resp (http/post url {:as :json})]
       (log/info :webhook-deleted :ok (get-in resp [:body :ok]))
       (get-in resp [:body :ok]))
     (catch Exception e
@@ -192,7 +191,7 @@
             ;; Make sure no stale webhook is blocking polling
             (delete-webhook! token)
             (.start (Thread. ^Runnable (fn [] (bot/start-polling)) "tapalakbot-poller"))
-            (log/info :polling-mode))))))
+            (log/info :polling-mode)))))
 
     ;; Interactive mode fallback
     (println "TapalakBot v2 running. Press Ctrl+C to stop.")

@@ -12,6 +12,7 @@
             [cheshire.core :as json]
             [clj-harness.telegram :as tg]
             [clj-harness.core :as hc]
+            [clj-harness.llm :as llm]
             [clojure.string :as str]
             [clojure.tools.logging :as log]))
 
@@ -559,6 +560,18 @@
         (try (tg/send-message chat-id (or intro "Ошибка — попробуйте ещё раз.") :parse-mode nil)
              (catch Exception _))))))
 
+(defn- generate-narrator-text
+  "Generate status text using fast narrator model while worker is busy.
+   Returns descriptive text about what's happening."
+  [user-query phase]
+  (try
+    (let [messages [{"role" "system" "content" "You are a helpful assistant that describes what a marketplace bot is doing in Russian. Be brief and warm. Use emojis. Max 2 sentences."}
+                    {"role" "user" "content" (str "The user asked: \"" user-query "\". The bot is currently: " phase ". Describe what's happening.")}]
+          resp (llm/llm :gpt-5.4-nano messages [] :provider :openrouter :max-tokens 100)
+          content (get-in resp ["choices" 0 "message" "content"])]
+      (or content phase))
+    (catch Exception _ phase)))
+
 (defn- handle-orchestrated
   "Handle message via agent-first pipeline with LIVE streaming via Rich Message Drafts.
    Agent text streams as an animated ephemeral draft, then persists as a Rich Message
@@ -591,12 +604,14 @@
                           (catch Exception e
                             (log/warn e :stream-draft-fail))))))
         status-cb (fn [status-text]
-                    ;; Clear streaming buffer on phase change, show status as draft
+                    ;; Clear streaming buffer on phase change
                     (.setLength buf 0)
                     (reset! last-preview "")
-                    (try
-                      (tg/send-rich-message-draft chat-id draft-id :markdown status-text)
-                      (catch Exception _)))]
+                    ;; Use narrator to generate descriptive status
+                    (let [narrator-text (generate-narrator-text text status-text)]
+                      (try
+                        (tg/send-rich-message-draft chat-id draft-id :markdown narrator-text)
+                        (catch Exception _))))]
     ;; Initial draft — instant feedback
     (let [placeholders ["🧠 Так, сейчас поищу..."
                         "🔍 Секундочку, смотрю что есть..."
