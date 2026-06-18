@@ -644,6 +644,7 @@
         status-cb (fn [status-text]
                     ;; Real phase change from harness — update current status,
                     ;; reset to tools-phase, push immediate humanized draft
+                    (log/info :status-cb-fired :raw status-text)
                     (reset! current-status status-text)
                     (reset! in-tools-phase true)
                     (.setLength buf 0)
