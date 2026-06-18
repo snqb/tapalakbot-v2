@@ -22,7 +22,8 @@
       api.clj                     — Ring/Jetty HTTP API (:8787)
       client.clj                  — HTTP client for monitor API
       main.clj                    — Monitor standalone entry point
-/etc/tapalakbot/secrets.env      ← BOT_TOKEN, DEEPSEEK_API_KEY, EXA_API_KEY (chmod 600)
+/etc/tapalakbot/secrets.env      ← BOT_TOKEN, DEEPSEEK_API_KEY, EXA_API_KEY, WEBHOOK_URL (chmod 600)
+/opt/tapalakbot-v2/certs/        ← Self-signed TLS cert (key.pem, cert.pem, keystore.p12)
 /tmp/tapalakbot-monitor.db       ← SQLite DB (ephemeral, recreated on reboot)
 ```
 
@@ -41,7 +42,10 @@ The bot runs as a single systemd service. On startup, `server.clj`:
 1. Initializes the agent (clj-harness + DeepSeek)
 2. Auto-starts the price monitor in a background thread (scanner + API on :8787)
 3. Runs Lalafo healthcheck
-4. Starts Telegram polling
+4. Starts Telegram webhook (HTTPS on :8443) or falls back to polling
+
+Webhook mode is enabled via `WEBHOOK_URL` in secrets.env. Self-signed TLS cert
+is generated on first run in `certs/` (uploaded to Telegram via setWebhook).
 
 ```bash
 systemctl restart tapalakbot    # Deploy latest code
@@ -49,6 +53,22 @@ systemctl status tapalakbot     # Check status
 journalctl -u tapalakbot -f     # Follow logs
 journalctl -u tapalakbot | grep healthcheck  # Verify health
 ```
+
+### Webhook (port 8443)
+
+Telegram sends updates to `https://<IP>:8443/webhook`. Self-signed cert, CN=IP.
+Endpoints: `/webhook` (Telegram updates), `/health` (healthcheck).
+
+```bash
+# Verify webhook status from Telegram's perspective
+curl -s "https://api.telegram.org/bot$BOT_TOKEN/getWebhookInfo"
+
+# Local health check (from VPS)
+curl -sk https://localhost:8443/health
+```
+
+**⚠️ Timeweb security group**: port 8443 must be open for inbound TCP.
+Check in Timeweb dashboard → Security Groups → add rule for port 8443.
 
 ### Monitor API (port 8787)
 
