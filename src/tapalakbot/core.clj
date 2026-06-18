@@ -758,7 +758,7 @@ Rules:
      {:name "tapalakbot"
       :prompt system-prompt
       :tools tools
-      :model :gpt-5.4-mini
+      :model :deepseek-v4
       :provider :openrouter
       :max-turns 8
       :nudges {:max-step-blocks 3
