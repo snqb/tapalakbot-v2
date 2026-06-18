@@ -1,7 +1,12 @@
 (ns tapalakbot.server
-  "Entry point — starts TapalakBot with HTTP webhook or Telegram polling.
-   Set WEBHOOK_URL env var (e.g. https://your-domain.com/webhook) to use webhooks.
-   Without it, falls back to long-polling."
+  "Entry point — starts TapalakBot with HTTPS webhook or Telegram polling.
+
+   WEBHOOK_URL=https://1.2.3.4:8443/webhook enables webhook mode with self-signed cert.
+   Without WEBHOOK_URL, falls back to long-polling.
+
+   Telegram webhook requires HTTPS. With a public IP and no domain, we generate
+   a self-signed cert and upload the public key to Telegram via setWebhook.
+   Telegram accepts self-signed certs if you pass the certificate file."
   (:require [tapalakbot.core :as t]
             [tapalakbot.bot :as bot]
             [tapalakbot.lalafo :as lalafo]
@@ -10,8 +15,10 @@
             [cheshire.core :as json]
             [clj-http.client :as http]
             [ring.adapter.jetty :refer [run-jetty]]
+            [clojure.java.io :as io]
             [clojure.string :as str]
-            [clojure.tools.logging :as log]))
+            [clojure.tools.logging :as log])
+  (:import [java.io File]))
 
 ;; ══════════════════════ MONITOR ══════════════════════
 
@@ -36,6 +43,46 @@
                 (log/warn :monitor-start-failed)))))
         (catch Exception e
           (log/warn :monitor-start-error (.getMessage e)))))))
+
+;; ══════════════════════ TLS CERTIFICATE ══════════════════════
+
+(def cert-dir "certs")
+
+(defn- sh!
+  "Run shell command, throw on non-zero exit."
+  [& args]
+  (let [{:keys [exit err]} (apply clojure.java.shell/sh args)]
+    (when (pos? exit)
+      (throw (ex-info (str "Command failed: " (str/join " " args) "\n" err)
+                      {:exit exit :err err})))))
+
+(defn- ensure-certs!
+  "Generate self-signed TLS cert if not already present.
+   Creates certs/key.pem, certs/cert.pem, certs/keystore.p12."
+  []
+  (let [dir    (io/file cert-dir)
+        keyf   (io/file dir "key.pem")
+        certf  (io/file dir "cert.pem")
+        ksp12  (io/file dir "keystore.p12")]
+    (when-not (.exists ksp12)
+      (log/info :generating-certs :dir (.getAbsolutePath dir))
+      (.mkdirs dir)
+      ;; Generate private key + self-signed cert (valid 10 years)
+      (sh! "openssl" "req" "-x509" "-newkey" "rsa:2048"
+          "-keyout" (.getAbsolutePath keyf)
+          "-out" (.getAbsolutePath certf)
+          "-days" "3650" "-nodes"
+          "-subj" "/CN=tapalakbot/O=TapalakBot/C=KG")
+      ;; Convert to PKCS12 for Jetty
+      (sh! "openssl" "pkcs12" "-export"
+          "-in" (.getAbsolutePath certf)
+          "-inkey" (.getAbsolutePath keyf)
+          "-out" (.getAbsolutePath ksp12)
+          "-password" "pass:tapalakbot")
+      (log/info :certs-generated :cert (.getAbsolutePath certf)))
+    ;; Return paths
+    {:keystore (.getAbsolutePath ksp12)
+     :cert     (.getAbsolutePath certf)}))
 
 ;; ══════════════════════ TELEGRAM UPDATE PARSER ══════════════════════
 
@@ -102,15 +149,18 @@
      :body "{\"error\":\"not found\"}"}))
 
 (defn- set-webhook!
-  "Register webhook URL with Telegram. Returns true on success."
-  [webhook-url token]
+  "Register webhook URL with Telegram, uploading self-signed cert.
+   Returns true on success."
+  [webhook-url token cert-path]
   (try
     (let [url  (str "https://api.telegram.org/bot" token "/setWebhook")
           resp (http/post url
-                 {:body    (json/generate-string {"url" webhook-url
-                                                  "allowed_updates" ["message" "callback_query"]})
-                  :headers {"Content-Type" "application/json"}
-                  :as      :json})
+                 {:multipart [{:name "url" :content webhook-url}
+                              {:name "allowed_updates"
+                               :content (json/generate-string ["message" "callback_query"])}
+                              {:name "certificate"
+                               :content (io/file cert-path)}]
+                  :as :json})
           ok?  (get-in resp [:body :ok])]
       (if ok?
         (log/info :webhook-set :url webhook-url)
@@ -137,7 +187,7 @@
 (defn -main [& args]
   (let [token       (or (System/getenv "BOT_TOKEN") "")
         webhook-url (System/getenv "WEBHOOK_URL")
-        webhook-port (or (some-> (System/getenv "WEBHOOK_PORT") parse-long) 8080)]
+        webhook-port (or (some-> (System/getenv "WEBHOOK_PORT") parse-long) 8443)]
 
     ;; Init bot (pre-loads categories, starts SQLite sessions)
     (log/info :tapalakbot-start)
@@ -171,15 +221,21 @@
         (cond
           ;; Webhook mode — WEBHOOK_URL is set
           (and webhook-url (not (str/blank? webhook-url)))
-          (do
-            ;; Clear any existing webhook first, then set new one
+          (let [{:keys [keystore cert]} (ensure-certs!)]
+            ;; Clear any existing webhook first
             (delete-webhook! token)
-            (if (set-webhook! webhook-url token)
+            (if (set-webhook! webhook-url token cert)
               (do
                 (log/info :webhook-mode :url webhook-url :port webhook-port)
-                ;; Start Jetty in background thread
-                (run-jetty app {:port webhook-port :join? false})
-                (log/info :webhook-server-started :port webhook-port))
+                ;; Start Jetty HTTPS in background
+                (run-jetty app {:port        8088   ;; HTTP (unused, Jetty requires it)
+                                :ssl?        true
+                                :ssl-port    webhook-port
+                                :keystore    keystore
+                                :key-password "tapalakbot"
+                                :keystore-type "PKCS12"
+                                :join?       false})
+                (log/info :webhook-server-started :ssl-port webhook-port))
               (do
                 (log/warn :webhook-failed-falling-back-to-polling)
                 (.start (Thread. ^Runnable (fn [] (bot/start-polling)) "tapalakbot-poller"))

@@ -35,3 +35,4 @@ uv.lock
 qa_*.py
 cycle_tuner.py
 .clerk/
+certs/
