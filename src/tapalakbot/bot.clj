@@ -623,15 +623,20 @@
                         (fn []
                           (while @drafter-running
                             (try
-                              (Thread/sleep 2000)  ; check every 2s
+                              (Thread/sleep 2000)
                               (when @drafter-running
-                                (let [silence (- (System/currentTimeMillis) @last-stream-activity)]
-                                  ;; Only show status if: no text flowing for >3s
-                                  (when (> silence 3000)
-                                    (swap! status-variant inc)
-                                    (let [status (humanize-status @current-status text @status-variant)]
-                                      (tg/send-rich-message-draft chat-id draft-id :markdown status)
-                                      (log/info :drafter-status :text status :silence-ms silence)))))
+                                (let [silence (- (System/currentTimeMillis) @last-stream-activity)
+                                      buf-len (.length buf)]
+                                  (cond
+                                    (pos? buf-len)
+                                    (tg/send-rich-message-draft chat-id draft-id :markdown (.toString buf))
+
+                                    (> silence 3000)
+                                    (do
+                                      (swap! status-variant inc)
+                                      (let [status (humanize-status @current-status text @status-variant)]
+                                        (tg/send-rich-message-draft chat-id draft-id :markdown status)
+                                        (log/info :drafter-status :text status :silence-ms silence))))))
                               (catch Exception _)))))
         stream-cb (fn [delta]
                     ;; Mark stream activity — drafter yields when this fires
