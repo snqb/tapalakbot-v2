@@ -262,6 +262,8 @@
 
 ;; ══════════════════════ CALLBACK ROUTER ══════════════════════
 
+(declare handle-orchestrated)  ;; Forward declaration — defined below
+
 (defn- handle-callback
   "Handle inline keyboard callback queries."
   [{:keys [callback-id data user-id chat-id msg-id]}]
@@ -381,6 +383,23 @@
                   (try (tg/send-message chat-id (or agent-text "🔄 Готово.") :parse-mode nil)
                        (catch Exception _))))))))
 
+    ;; === CHEAPER: Re-search with "подешевле" modifier ===
+      (re-matches #"cheaper:(.+)" data)
+      (let [[_ query] (re-matches #"cheaper:(.+)" data)]
+        (tg/answer-callback-query callback-id :text "Ищу дешевле...")
+        ;; Trigger search via the orchestrator — policy.clj handles "подешевле" as refine
+        (future
+          (handle-orchestrated {:chat-id chat-id :user-id user-id
+                                :text (str query " подешевле")})))
+
+    ;; === DEARER: Re-search with "подороже" modifier ===
+      (re-matches #"dearer:(.+)" data)
+      (let [[_ query] (re-matches #"dearer:(.+)" data)]
+        (tg/answer-callback-query callback-id :text "Ищу дороже...")
+        (future
+          (handle-orchestrated {:chat-id chat-id :user-id user-id
+                                :text (str query " подороже")})))
+
     ;; === DRILL-DOWN: Show detailed ad ===
       (re-matches #"ad:(\d+)" data)
       (let [[_ idx-str] (re-matches #"ad:(\d+)" data)
@@ -487,6 +506,45 @@
   ;; Use the user's text as the query (it's what they searched for)
   (when (and user-text (not (str/blank? user-text)))
     (str/trim user-text)))
+
+(defn- suggest-alternatives
+  "Generate smart suggestions when search returns nothing.
+   Analyzes the query and suggests broader or alternative terms."
+  [query]
+  (when query
+    (let [q (str/lower-case (str/trim query))
+          ;; Extract the core "product" part (strip common modifiers)
+          clean (-> q
+                    (str/replace #"\b(купи|ищи|ищу|найди|покажи|хочу|нужен|надо|ищем)\b" "")
+                    (str/replace #"\b(дешев|дорог|новы|бу|б/у|подешевле|подороже)\b" "")
+                    (str/replace #"\bот\s+\d+\b" "")
+                    (str/replace #"\bдо\s+\d+\b" "")
+                    (str/replace #"\s{2,}" " ")
+                    str/trim)
+          suggestions (cond-> []
+                        ;; If query has specific model → suggest brand-level
+                        (re-find #"(iphone|айфон)\s*\d+" q)
+                        (conj "айфон" "смартфон")
+
+                        (re-find #"(samsung|самсунг)\s*(galaxy|галакси)?" q)
+                        (conj "смартфон" "телефон")
+
+                        (re-find #"(macbook|макбук)" q)
+                        (conj "ноутбук" "laptop")
+
+                        ;; If query is very specific → suggest broader
+                        (> (count (str/split clean #"\s+")) 2)
+                        (conj (str/join " " (take 2 (str/split clean #"\s+"))))
+
+                        ;; Generic fallback — just the cleaned core
+                        (and (seq clean) (not (str/blank? clean)))
+                        (conj clean)
+
+                        ;; Auto-related → suggest Mashina
+                        (re-find #"(машин|авто|hyundai|toyota|honda|bmw|mercedes|lexus|kia|nissan)" q)
+                        (conj "mashina.kg"))]
+      (when (seq suggestions)
+        (distinct suggestions)))))
 
 (defn- render-orchestrated
   "Render a reply to Telegram HTML + buttons."
@@ -629,16 +687,38 @@
                       result)
             agent-text (:text result*)
             all-cards (:cards result*)
+            ;; Smart "nothing found" — suggest alternatives
+            suggestions (when (empty? all-cards) (suggest-alternatives text))
+            no-results-intro (if (seq agent-text)
+                               agent-text
+                               (if (seq suggestions)
+                                 (str "Ничего не нашлось по запросу «" text "».\n\n"
+                                      "Попробуйте:\n"
+                                      (str/join "\n" (map #(str "• " %) (take 4 suggestions))))
+                                 (str "Ничего не нашлось по запросу «" text "».\n\n"
+                                      "Попробуйте переформулировать или убрать лишние детали.")))
             ;; Reply: agent text only, no card dump. Agent already formats listings in its response.
             reply {:mode (if (seq all-cards) :shortlist :no-results)
-                   :intro (or agent-text "Ничего не нашлось. Попробуйте переформулировать запрос 🔍")
+                   :intro (if (seq all-cards) (or agent-text "") no-results-intro)
                    :cards []  ;; Don't render cards — agent text already has curated listings
                    :cta nil
                    :assumptions []}
-            ;; Build inline keyboard: "Ещё результаты" only
-            more-btn (when (seq all-cards)
-                       {"inline_keyboard" [[{"text" "🔄 Ещё результаты"
-                                             "callback_data" (str "more:" (truncate-cb text 58))}]]})]
+            ;; Build inline keyboard: action buttons after results, suggestions after no-results
+            more-btn (cond
+                       ;; Results found → action buttons
+                       (seq all-cards)
+                       (let [q (truncate-cb text 58)]
+                         {"inline_keyboard"
+                          [[{"text" "🔄 Ещё результаты" "callback_data" (str "more:" q)}]
+                           [{"text" "⬇️ Дешевле" "callback_data" (str "cheaper:" q)}
+                            {"text" "⬆️ Дороже" "callback_data" (str "dearer:" q)}]]})
+
+                       ;; No results but have suggestions → clickable suggestion buttons
+                       (seq suggestions)
+                       {"inline_keyboard"
+                        (mapv (fn [s]
+                                [{"text" (str "🔍 " s) "callback_data" (str "more:" (truncate-cb s 58))}])
+                              (take 3 suggestions))})]
         (log/info :stream-summary :drafts-sent @draft-count :final-len (count agent-text) :cards (count all-cards))
         (render-and-send chat-id user-id text reply :keyboard more-btn)
         ;; Send track button after a short delay
