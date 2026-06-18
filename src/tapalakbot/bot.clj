@@ -601,8 +601,8 @@
         drafter-running (atom true)
         drafter-thread (Thread.
                         (fn []
-                          ;; Wait 3s before first status (let model start)
-                          (try (Thread/sleep 3000) (catch Exception _))
+                          ;; Wait 2s before first status (let model start)
+                          (try (Thread/sleep 2000) (catch Exception _))
                           (while @drafter-running
                             (try
                               (when @in-tools-phase
@@ -613,12 +613,12 @@
                               (Thread/sleep 8000)  ; Status every 8s during tool-calling
                               (catch Exception _)))))
         stream-cb (fn [delta]
-                    ;; We got text content — exit tool-calling phase
-                    (when @in-tools-phase
+                    ;; Only exit tools phase when we get substantial text (>100 chars total)
+                    (when (and @in-tools-phase (> (.length buf) 100))
                       (reset! in-tools-phase false)
                       (reset! drafter-running false)
                       (.interrupt drafter-thread)
-                      (log/info :exited-tools-phase))
+                      (log/info :exited-tools-phase :buf-len (.length buf)))
                     (.append buf delta)
                     (reset! last-content-time (System/currentTimeMillis))
                     (let [now (System/currentTimeMillis)]
