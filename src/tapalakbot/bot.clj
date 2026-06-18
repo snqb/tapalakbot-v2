@@ -570,30 +570,45 @@
         (try (tg/send-message chat-id (or intro "Ошибка — попробуйте ещё раз.") :parse-mode nil)
              (catch Exception _))))))
 
-(defn- humanize-status
-  "Map harness status text to warm Russian phrases. Rotates variants
-   to keep the draft alive and feeling responsive during long phases."
-  [status-text user-query variant]
-  (let [phase (cond
-                (re-find #"Анализ" status-text) :analyzing
-                (re-find #"research" status-text) :researching
-                (re-find #"Выполня" status-text) :tooling
-                (re-find #"Обрабат" status-text) :processing
-                :else :working)
-        variants {:analyzing  ["🧠 Так, давай разберёмся что тебе нужно..."
-                               "🤔 Понял запрос, прикидываю варианты..."]
-                  :researching ["📚 Смотрю что вообще стоит брать..."
-                                "🔬 Изучаю какие модели хорошие..."]
-                  :tooling    ["🔍 Ищу на Lalafo и Mashina..."
+(defn- phase-status
+  "Time-aware status string for a given phase and silence duration.
+   Variants escalate — short silence gets first variant, longer silence
+   gets later variants (5s per step). Model-agnostic: works for both
+   reasoning and non-reasoning models because the drafter checks buf
+   before calling this."
+  [phase-key silence-ms]
+  (let [step (quot silence-ms 5000)
+        ;; Phase-specific variants that escalate (first = 0-5s, then 5-10s, etc.)
+        variants {:starting   ["🧠 Так, давай разберёмся что тебе нужно..."
+                               "🤔 Понял запрос, прикидываю варианты..."
+                               "💭 Думаю над твоим запросом..."]
+                  :tool-call  ["🔍 Ищу на Lalafo и Mashina..."
                                "👀 Прочёсываю объявления..."
-                               "🔎 Копаюсь в свежих лотах..."]
-                  :processing ["📊 Нашёл варианты, отбираю лучшие..."
+                               "🔎 Копаюсь в свежих лотах..."
+                               "⏳ Много объявлений, фильтрую..."
+                               "📦 Почти всё, ещё немного..."]
+                  :after-tool ["📊 Нашёл варианты, отбираю лучшие..."
                                "⚖️ Сравниваю цены и состояние..."
-                               "🧮 Считаю что выгоднее..."]
+                               "🧮 Считаю что выгоднее..."
+                               "🎯 Подбираю оптимальный вариант..."]
+                  :max-turns  ["⚠️ Много шагов, уже формирую ответ..."]
+                  :retry      ["⚠️ Перепроверяю..."]
                   :working    ["⏳ Секунду, почти готово..."
-                               "💭 Думаю над лучшим ответом..."]}
-        opts (get variants phase ["⏳ Работаю..."])]
-    (nth opts (mod variant (count opts)))))
+                               "💭 Собираю информацию..."]}
+        opts (get variants phase-key [(str "⏳ Обрабатываю...")])]
+    (nth opts (min step (dec (count opts))))))
+
+(defn- classify-phase
+  "Classify harness status text into a stable phase key. Regex matches
+   Russian status messages from clj-harness status-text function."
+  [status-text]
+  (cond
+    (str/includes? status-text "Анализ")   :starting
+    (str/includes? status-text "Выполня")  :tool-call
+    (str/includes? status-text "Обрабат")  :after-tool
+    (str/includes? status-text "слишком")  :max-turns
+    (str/includes? status-text "Перепров") :retry
+    :else                                   :working))
 
 (defn- handle-orchestrated
   "Handle message via agent-first pipeline with LIVE streaming.
@@ -614,10 +629,10 @@
         draft-count (atom 0)
         ;; Track stream activity — drafter only fires during silence
         last-stream-activity (atom (System/currentTimeMillis))
-        ;; Current phase status from harness (for humanize-status)
-        current-status (atom "🧠 Анализирую запрос...")
-        status-variant (atom 0)
-        ;; Drafter thread — fires only after 3s of stream silence
+        ;; Current phase from harness (for time-aware drafter status)
+        current-phase (atom :starting)
+        phase-started-at (atom (System/currentTimeMillis))
+        ;; Drafter thread — model-agnostic, yields when text is flowing
         drafter-running (atom true)
         drafter-thread (Thread.
                         (fn []
@@ -625,21 +640,24 @@
                             (try
                               (Thread/sleep 2000)
                               (when @drafter-running
-                                (let [silence (- (System/currentTimeMillis) @last-stream-activity)
-                                      buf-len (.length buf)]
+                                (let [buf-len (.length buf)]
                                   (cond
+                                    ;; Buf has text (reasoning or content) — refresh it,
+                                    ;; don't overwrite. This is how reasoning models coexist.
                                     (pos? buf-len)
                                     (tg/send-rich-message-draft chat-id draft-id :markdown (.toString buf))
 
-                                    (> silence 3000)
-                                    (do
-                                      (swap! status-variant inc)
-                                      (let [status (humanize-status @current-status text @status-variant)]
-                                        (tg/send-rich-message-draft chat-id draft-id :markdown status)
-                                        (log/info :drafter-status :text status :silence-ms silence))))))
+                                    ;; Buf empty + silence >3s — show time-escalating status
+                                    :else
+                                    (let [silence (- (System/currentTimeMillis) @last-stream-activity)]
+                                      (when (> silence 3000)
+                                        (let [status (phase-status @current-phase silence)]
+                                          (tg/send-rich-message-draft chat-id draft-id :markdown status)
+                                          (log/info :drafter-status :text status
+                                                    :phase @current-phase :silence-ms silence)))))))
                               (catch Exception _)))))
         stream-cb (fn [delta]
-                    ;; Mark stream activity — drafter yields when this fires
+                    ;; Mark stream activity — drafter yields when text flows
                     (reset! last-stream-activity (System/currentTimeMillis))
                     (.append buf delta)
                     (let [now (System/currentTimeMillis)]
@@ -659,12 +677,14 @@
                           (catch Exception e
                             (log/warn e :stream-draft-fail))))))
         status-cb (fn [status-text]
-                    ;; Real phase change from harness — update current status
-                    ;; for the drafter to use during silence. Do NOT clear buf —
-                    ;; reasoning models stream text we want the user to see.
-                    (reset! current-status status-text)
-                    (swap! status-variant inc)
-                    (log/info :phase-change :status status-text))]
+                    ;; Phase change from harness — classify phase,
+                    ;; push IMMEDIATE draft update (don't wait for drafter loop)
+                    (reset! current-phase (classify-phase status-text))
+                    (reset! phase-started-at (System/currentTimeMillis))
+                    (let [status (phase-status @current-phase 0)]
+                      (try (tg/send-rich-message-draft chat-id draft-id :markdown status)
+                           (catch Exception _)))
+                    (log/info :phase-change :status status-text :phase @current-phase))]
     ;; Initial draft — instant feedback
     (try (tg/send-rich-message-draft chat-id draft-id :markdown "🧠 Так, сейчас гляну...")
          (catch Exception _))

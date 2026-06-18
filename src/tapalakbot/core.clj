@@ -772,7 +772,7 @@ Rules:
      {:name "tapalakbot"
       :prompt system-prompt
       :tools tools
-      :model :glm-5.2
+      :model :deepseek-v4
       :provider :openrouter
       :max-turns 8
       :max-tokens 4096
