@@ -525,10 +525,10 @@ Rules:
               resp (llm/llm :kimi-k2 messages [] :provider :openrouter :max-tokens 300)
               content (get-in resp ["choices" 0 "message" "content"])]
           (when content
-            (let [cat-id (some-> content
-                                 (re-find #"\"category_id\":\s*(\d+)\"")
-                                 second
-                                 parse-long)]
+            (let [cat-id (some->> content
+                                  (re-find #"category_id[\":\s]*(\d+)")
+                                  second
+                                  parse-long)]
               (when cat-id
                 (log/info :category-resolved :query user-query :category-id cat-id)
                 cat-id)))))
