@@ -260,7 +260,7 @@ Example: [113171780, 112908144, 111226783]")
 
 (defn- relevance-filter
   "LLM pass 1: filter listings by relevance to user query.
-   Returns vector of relevant items (max 60)."
+   Returns vector of relevant items (max 100)."
   [items user-query]
   (if (<= (count items) 12)
     ;; Very few items — no need for relevance pass
@@ -292,10 +292,10 @@ Example: [113171780, 112908144, 111226783]")
       (if (pos? (count relevant))
         (do
           (println (str "  [relevance] " (count items) " → " (count relevant) " items"))
-          (take 60 relevant))
+          (take 100 relevant))
         (do
-          (println "[relevance] no parseable relevant IDs — showing first 60 candidates")
-          (take 60 items))))))
+          (println "[relevance] no parseable relevant IDs — showing first 100 candidates")
+          (take 100 items))))))
 
 (defn- filter-price-outliers
   "Filter out items with prices >max-sigma standard deviations from the mean.

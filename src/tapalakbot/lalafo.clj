@@ -138,7 +138,7 @@
   "Search all pages for one query, returns vector of unique items.
    Returns [found-count items pages-scanned]."
   [client query & {:keys [category-id price-min price-max city-id max-pages per-page]
-                   :or {city-id 103184 max-pages 3 per-page 200}}]
+                   :or {city-id 103184 max-pages 5 per-page 200}}]
   (loop [page 1
          seen (transient {})
          pages 0]
@@ -182,7 +182,7 @@
    
    Returns JSON string (for LLM tool output compatibility)."
   [{:strs [queries category_id price_min price_max city_id max_pages per_page candidate_limit]
-    :or {city_id 103184 max_pages 3 per_page 200 candidate_limit 250}
+    :or {city_id 103184 max_pages 5 per_page 200 candidate_limit 400}
     :as _args}]
   (let [qs (if (sequential? queries) (vec queries) [(str queries)])
         ;; Limit to 6 parallel queries
