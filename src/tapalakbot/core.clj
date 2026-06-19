@@ -202,6 +202,11 @@ When recommending products, follow this pattern:
    Atom holding {:avg :min :max :count}."
   nil)
 
+(def ^:dynamic *user-city-id*
+  "User's preferred city_id for search. nil = all cities.
+   Bound by ask-stream from user state."
+  nil)
+
 (def url-store
   "Map of user-id → {letter-token {:url :title :item-id}}. Populated by format-search-results, consumed by bot.clj.
    Per-user for concurrent searches. Tokens: A-Z, AA-AZ, BA-BZ, ... (base-26 like spreadsheet columns)."
@@ -645,7 +650,7 @@ Rules:
                                                                   (:lalafo-category-id qb-result))
                                                 "price_min" final-price-min
                                                 "price_max" final-price-max
-                                                "city_id" (get args "city_id")
+                                                :city_id (or (get args :city_id) *user-city-id*)
                                                 "candidate_limit" 100}
                                    result (lalafo/search search-args)]
                                (log/info :search-lalafo :queries enhanced-queries :price [final-price-min final-price-max])
@@ -792,12 +797,13 @@ Rules:
    Also caches ads for /N drill-down."
   ([user-id text status-cb]
    (ask-stream user-id text status-cb {}))
-  ([user-id text status-cb {:keys [stream-cb]}]
+  ([user-id text status-cb {:keys [stream-cb city-id]}]
    (let [cards-atom (atom [])
          stats-atom (atom nil)
          effective-stream-cb (or stream-cb (fn [_]))
          result (binding [*captured-cards* cards-atom
-                          *captured-stats* stats-atom]
+                          *captured-stats* stats-atom
+                          *user-city-id* city-id]
                   (h/handle-message-stream!
                    @tapalakbot user-id text
                    effective-stream-cb

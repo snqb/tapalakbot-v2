@@ -37,7 +37,8 @@
 
 (defn- get-user-state [uid]
   (or (get @user-state uid)
-      (let [s {:lock (atom :idle) :pending (atom nil) :last-seen (atom (System/currentTimeMillis))}]
+      (let [s {:lock (atom :idle) :pending (atom nil) :last-seen (atom (System/currentTimeMillis))
+           :city-id (atom nil)}]
         (swap! user-state assoc uid s)
         s)))
 
@@ -99,7 +100,7 @@
   "Create ReplyKeyboardMarkup with persistent buttons."
   []
   {"keyboard"
-   [[{"text" "🔄 Новый диалог"} {"text" "🔔 Отслеживание"}]]
+   [[{"text" "🔄 Новый диалог"} {"text" "📍 Город"} {"text" "🔔 Отслеживание"}]]
    "resize_keyboard" true
    "one_time" false})
 
@@ -270,6 +271,12 @@
   (log/info :callback-received :data data :user user-id :chat chat-id :msg msg-id)
   (try
     (cond
+    ;; === CITY SELECTION ===
+      (str/starts-with? data "city:")
+      (let [city-id (some-> (subs data 5) (not= "nil") (#(when % (Integer/parseInt %))))]
+        (tg/answer-callback-query callback-id :text (if city-id "✅ Город выбран!" "✅ Весь Кыргызстан"))
+        (set-city! (str "tg-" user-id) city-id))
+
     ;; === TRACKING: Quick create from search result ===
       (re-matches #"track_quick:(.+)" data)
       (let [[_ query] (re-matches #"track_quick:(.+)" data)]
@@ -462,6 +469,21 @@
     (store-pending! uid nil)
     (send-menu! chat-id "🗑️ Контекст очищен. Начнём заново!"))
   nil)
+
+(def cities
+  "City name → Lalafo city_id map."
+  [{"text" "🇰🇬 Весь Кыргызстан" "callback_data" "city:nil"}
+   {"text" "🏙️ Бишкек" "callback_data" "city:103184"}
+   {"text" "🏔️ Ош" "callback_data" "city:103185"}])
+
+(defn- handle-city [{:keys [chat-id user-id]}]
+  (tg/send-message chat-id "📍 Выберите город для поиска:"
+                   :reply_markup {"inline_keyboard" (partition-all 1 cities)})
+  nil)
+
+(defn- set-city! [uid city-id]
+  (let [st (get-user-state uid)]
+    (reset! (:city-id st) (when city-id (Integer/parseInt city-id)))))
 
 (defn- handle-tracking [{:keys [chat-id user-id]}]
   (show-tracking-list chat-id user-id)
@@ -674,7 +696,8 @@
            (catch Exception _)))
     (try
       ;; Run agent with REAL streaming + card capture
-      (let [result (t/ask-stream uid text status-cb {:stream-cb stream-cb})
+      (let [city-id @(:city-id (get-user-state uid))
+            result (t/ask-stream uid text status-cb {:stream-cb stream-cb :city-id city-id})
             ;; Fallback: retry with explicit search prefix if no cards
             result* (if (and (not (seq (:cards result)))
                             (> (count text) 3)
@@ -685,7 +708,7 @@
                         (reset! last-preview "")
                         (try (tg/send-rich-message-draft chat-id draft-id :markdown "🔍 Ищу подробнее...")
                              (catch Exception _))
-                        (t/ask-stream uid (str "найди " text) status-cb {:stream-cb stream-cb}))
+                        (t/ask-stream uid (str "найди " text) status-cb {:stream-cb stream-cb :city-id city-id}))
                       result)
             agent-text (:text result*)
             all-cards (:cards result*)
@@ -800,6 +823,9 @@
         ;; Persistent menu buttons
         (= text "🔄 Новый диалог")
         (do (handler-future (fn [] (handle-reset parsed))) nil)
+
+        (= text "📍 Город")
+        (do (handler-future (fn [] (handle-city parsed))) nil)
 
         (= text "🔔 Отслеживание")
         (do (handler-future (fn [] (handle-tracking parsed))) nil)
