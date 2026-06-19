@@ -664,8 +664,10 @@
                           (catch Exception e
                             (log/warn e :stream-draft-fail))))))
         status-cb (fn [_]
-                    ;; Harness phase change — ignored. We just wait for real text.
-                    )]
+                    ;; Gemini generates English text between turns.
+                    ;; Clear buf on phase change — only final turn's Russian text stays.
+                    (.setLength buf 0)
+                    (reset! last-preview ""))]
     ;; Initial draft — simple, honest
     (let [query-preview (str "🔍 Ищу «" (subs text 0 (min 40 (count text))) "»...")]
       (try (tg/send-rich-message-draft chat-id draft-id :markdown query-preview)
