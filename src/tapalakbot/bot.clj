@@ -265,6 +265,10 @@
 
 (declare handle-orchestrated)  ;; Forward declaration — defined below
 
+(defn- set-city! [uid city-id]
+  (let [st (get-user-state uid)]
+    (reset! (:city-id st) (when city-id (Integer/parseInt city-id)))))
+
 (defn- handle-callback
   "Handle inline keyboard callback queries."
   [{:keys [callback-id data user-id chat-id msg-id]}]
