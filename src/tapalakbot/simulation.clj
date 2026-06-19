@@ -115,11 +115,12 @@
 ;; ══════════════════════ EVENT CAPTURE ══════════════════════
 
 (defn- capture-observe-events!
-  "Snapshot the observe ring buffer, filter events for this trace-id,
-   write them as JSONL. Returns count of events captured."
-  [write-fn trace-id]
+  "Snapshot the observe ring buffer, capture events that arrived since observe-before.
+   We can't filter by trace-id because handle-message-stream! generates its own trace-id
+   internally (different from the simulation's). Instead, capture all NEW events since baseline."
+  [write-fn observe-before]
   (let [events (observe/snapshot)
-        matching (filter #(= trace-id (:trace-id %)) events)]
+        matching (drop observe-before events)]
     (doseq [ev matching]
       (write-fn (assoc ev :event (keyword "observe" (name (:type ev))))))
     (count matching)))
@@ -169,8 +170,8 @@
                                 :error-msg (ex-message e)})
                      nil))]
 
-      ;; Capture observe events AFTER running (delta = events for this query)
-      (let [observe-count (capture-observe-events! write-fn trace-id)
+      ;; Capture observe events AFTER running (delta = new events since baseline)
+      (let [observe-count (capture-observe-events! write-fn observe-before)
             total-ms (int (/ (- (System/nanoTime) t0) 1e6))
             text-len (count (or (:text result) ""))
             card-count (count (:cards result))
