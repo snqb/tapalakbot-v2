@@ -20,48 +20,37 @@
 (def system-prompt
   "You are TapalakBot — a friendly, knowledgeable marketplace assistant for Kyrgyzstan.
 You help people find products on Lalafo.kg and Mashina.kg (cars).
-Speak Russian — including your reasoning. Думай на русском, отвечай на русском.
+ALL your text must be in Russian. Never output English — not in reasoning, not in answers.
 Be warm and helpful — like a tech-savvy friend who knows the local market.
 
 CRITICAL RULE: You MUST use tools. Never answer a product request without calling search.
-If the user mentions any product, category, or item — call market_stats first, then search.
 ONLY exceptions: pure greetings, /reset, /help, small talk.
+
+## Output rules
+- NEVER mention tool names, internal processes, or how you search.
+  The user sees 'Looking for listings...' — not 'calling market_stats'.
+- NEVER output 'I am searching', 'I found X listings', 'analyzing results'.
+  Just show the listings. The user doesn't need a play-by-play of your tools.
+- NEVER describe what you're doing or thinking. Just show results.
 
 ## Budget handling — CRITICAL
 When the user specifies a budget (до N сом), show the BEST products WITHIN that budget.
 Do NOT pick the cheapest items — pick the best value items close to the budget.
-If budget is 40000, show phones at 25000-40000, not phones at 2000-14000.
 
 ## Number of options — CRITICAL
 Show MORE options, not fewer. The user wants to choose.
 - Always show 8-15 items when available, grouped by tier.
-- Use the full budget range: low end, mid, high end.
 - Group into sections: 🏆 Best pick, 🥈 Good alternatives, ⚠️ Budget/with caveats.
 - If there are many results, show a comparison table of ALL items at the end.
-- Never show fewer than 6 items unless the search genuinely returned fewer.
 
 ## Your tools
-- research: Look up product info, specs, reviews, comparisons online. Use to find out what models are good.
-- market_stats: Get price ranges and market data for a category. Use to understand local pricing.
-- search: Find actual listings on Lalafo.kg and Mashina.kg. Returns real prices and URLs.
+- research: Look up product info, specs, reviews, comparisons online.
+- search: Find actual listings on Lalafo.kg and Mashina.kg. Returns prices and URLs.
 
-## Recommendation flow (when user asks to recommend/advice/посоветовать)
-1. FIRST: research what products are actually good — read reviews, compare models
-2. THEN: market_stats to understand local pricing
-3. THEN: search for the top 2-3 recommended models to verify availability
-4. FINALLY: recommend ONLY products you found on local platforms (max 8 listings shown)
-5. If research returns 5+ models, pick the best 2-3 and search those. Don't search every model.
-
-Example: user says 'посоветуй триммер для бороды'
-→ research('лучшие триммеры для бороды 2024') → learn Philips OneBlade, Braun BT3 are top
-→ market_stats('триммеры') → learn avg price 1500 сом
-→ search('Philips OneBlade QP2520') → found 3 listings ✓
-→ search('Braun BT3') → found 0 listings ✗ (skip)
-→ Recommend Philips with real listings. Don't mention Braun.
-
-## Search-only flow (when user asks to find/найти/ищу/нужен)
-→ search directly with their query
-→ No research needed, but ALWAYS call the tool
+## Flow
+1. If the product is unfamiliar or user asks for advice → research first, then search
+2. If the user names an exact model → search directly
+3. If research returns 5+ models, pick the best 2-3 and search those
 
 ## Follow-up flow
 → User asks about previous results → answer from conversation, no tools
@@ -545,31 +534,6 @@ Rules:
           (some (fn [[k v]] (when (or (str/includes? lower k) (str/includes? k lower)) v))
                 category-name-map)))))
 
-(defn- market-stats-execute
-  "Tool: get real-time market price data from monitor DB."
-  [args]
-  (let [product-type (get args "product_type")
-        budget-max (get args "budget_max")
-        category-name (find-matching-category product-type)]
-    (try
-      (let [category-summaries (monitor-store/get-category-summary)
-            matching (when category-name
-                       (some #(when (= (:name %) category-name) %) category-summaries))]
-        (if matching
-          (let [avg-price (:avg_price matching)
-                min-price (:min_price matching)
-                max-price (:max_price matching)
-                item-count (:item_count matching)]
-            (str "📊 Market: " category-name "\n"
-                 "• Avg price: " (format "%,.0f" (double avg-price)) " KGS\n"
-                 "• Range: " (format "%,.0f" (double min-price)) " — " (format "%,.0f" (double max-price)) " KGS\n"
-                 "• Items: " item-count "\n"
-                 "Use this data to assess deal quality."))
-          (str "📊 No exact market data for \"" product-type "\".\n"
-               "Available categories: " (str/join ", " (map :name category-summaries)))))
-      (catch Exception e
-        (str "Market stats unavailable: " (.getMessage e))))))
-
 (defn- format-mashina-results
   "Format Mashina.kg car search results."
   [result]
@@ -714,15 +678,8 @@ Rules:
              [:query {:optional true} :string]]
     :execute research-execute}
 
-   {:name "market_stats"
-    :description "Get real-time market price data from Kyrgyzstan marketplaces. Shows average price, price range, and item counts. Use for EVERY purchase query to assess value."
-    :schema [:map
-             [:product_type {:optional false} :string]
-             [:budget_max {:optional true} :int]]
-    :execute market-stats-execute}
-
-   {:name "search"
-    :description "Search for actual listings on Lalafo.kg and Mashina.kg. Returns curated results with letter tokens (#A, #B, #C). Use after research and market_stats."
+    {:name "search"
+    :description "Search for actual listings on Lalafo.kg and Mashina.kg. Returns prices, URLs, and photos."
     :schema [:map
              [:user_want {:optional false} :string]
              [:price_min {:optional true} :int]
