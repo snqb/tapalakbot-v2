@@ -478,7 +478,12 @@
   "City name → Lalafo city_id map."
   [{"text" "🇰🇬 Весь Кыргызстан" "callback_data" "city:nil"}
    {"text" "🏙️ Бишкек" "callback_data" "city:103184"}
-   {"text" "🏔️ Ош" "callback_data" "city:103185"}])
+   {"text" "🏔️ Ош" "callback_data" "city:103185"}
+   {"text" "🌊 Каракол" "callback_data" "city:103202"}
+   {"text" "🏭 Джалал-Абад" "callback_data" "city:103199"}
+   {"text" "🏛️ Нарын" "callback_data" "city:103203"}
+   {"text" "🌿 Талас" "callback_data" "city:103207"}
+   {"text" "🕌 Баткен" "callback_data" "city:103206"}])
 
 (defn- handle-city [{:keys [chat-id user-id]}]
   (tg/send-message chat-id "📍 Выберите город для поиска:"
