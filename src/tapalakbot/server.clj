@@ -12,6 +12,7 @@
             [tapalakbot.lalafo :as lalafo]
             [tapalakbot.monitor.client :as monitor]
             [clj-harness.telegram :as tg]
+            [com.brunobonacci.mulog :as u]
             [cheshire.core :as json]
             [clj-http.client :as http]
             [ring.adapter.jetty :refer [run-jetty]]
@@ -188,6 +189,13 @@
   (let [token       (or (System/getenv "BOT_TOKEN") "")
         webhook-url (System/getenv "WEBHOOK_URL")
         webhook-port (or (some-> (System/getenv "WEBHOOK_PORT") parse-long) 8443)]
+
+    ;; mulog observability — structured event logging
+    (u/set-global-context!
+     {:service "tapalakbot" :env (or (System/getenv "ENV") "dev")})
+    (u/start-publisher!
+     {:type :console :pretty-print true})
+    (log/info :mulog-started)
 
     ;; Init bot (pre-loads categories, starts SQLite sessions)
     (log/info :tapalakbot-start)
