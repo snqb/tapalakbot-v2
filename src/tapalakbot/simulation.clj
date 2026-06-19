@@ -100,22 +100,17 @@
 ;; ══════════════════════ JSONL WRITER ══════════════════════
 
 (defn- make-jsonl-writer
-  "Returns a function that appends a JSON line to file.
+  "Returns {:write fn :close fn} for appending JSON lines to file.
    Thread-safe via synchronized PrintWriter."
   [^File file]
-  (let [pw (PrintWriter. (io/writer file :append true))]
-    (fn [event]
-      (locking pw
-        (.println pw (json/generate-string
-                      (assoc event :ts (System/currentTimeMillis))))
-        (.flush pw)))
-    ;; Return a close fn too
-    {:write (fn [event]
-              (locking pw
-                (.println pw (json/generate-string
-                              (assoc event :ts (System/currentTimeMillis))))
-                (.flush pw)))
-     :close (fn [] (.close pw))}))
+  (let [pw (PrintWriter. (io/writer file :append true))
+        write-fn (fn [event]
+                   (locking pw
+                     (.println pw (json/generate-string
+                                    (assoc event :ts (System/currentTimeMillis))))
+                     (.flush pw)))
+        close-fn (fn [] (.close pw))]
+    {:write write-fn :close close-fn}))
 
 ;; ══════════════════════ EVENT CAPTURE ══════════════════════
 
@@ -220,8 +215,9 @@
          {:keys [write close]} (make-jsonl-writer jsonl-file)
          queries (if custom-query
                    [{:id :custom :query custom-query :expect-tools #{}}]
-                   (cond-> query-catalog
-                     n (take n)))]
+                   (if n
+                     (take n query-catalog)
+                     query-catalog))]
 
      (println "═══════════════════════════════════════════════════")
      (println "  TapalakBot v2 — Simulation Runner")
