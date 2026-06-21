@@ -272,12 +272,8 @@ Rules:
 - Different product category entirely → NOT relevant
 - Wrong brand/model when user asked for specific → NOT relevant
 - Services/repairs → NOT relevant
-- If user asked for router: chargers, antennas, modems → NOT relevant (unless they ARE routers)
-- If user asked for phone: cases, screen protectors, chargers, boxes → NOT relevant
-- If user asked for laptop: RAM sticks, chargers, bags, stickers → NOT relevant
-- If user asked for iPad: ONLY actual Apple iPad tablets are relevant. Android tablets, graphic tablets, children tablets, keyboards, Apple Pencil/stylus-only, cases, glass, cables, hubs, monitors, phones → NOT relevant unless the description clearly says an actual Apple iPad tablet is included
-- If user asked for IQOS/айкос/electronic cigarette: ONLY actual heating devices (Iluma, 3 Duo, Originals, IQOS device) are relevant. Cases, holders, chargers, lighters, power banks, cigarette cases, accessories → NOT relevant
-- If user asked for generic tablet: actual tablets are relevant; accessories, graphic tablets, cases, cables, stylus-only → NOT relevant
+- Be STRICT: if in doubt, exclude. Better to return 5 perfect matches than 50 maybes.
+- Return at MOST 15 items — only the best matches.
 
 Return ONLY a JSON array of relevant listing IDs. Nothing else.
 Example: [113171780, 112908144, 111226783]")
@@ -667,7 +663,7 @@ Rules:
                                                                         (get-in item ["images" 0 "original_url"])
                                                                         (get-in item ["images" 0 "thumbnail_url"]))
                                                           :desc     (get item "desc")})
-                                                      (:items fmt))]
+                                                      (take 20 (:items fmt)))]
                                        (swap! *captured-cards* into cards)))
                                    txt)
                                  (catch Exception e
