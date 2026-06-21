@@ -635,8 +635,9 @@
    sends raw markdown via Rich Messages API so Telegram renders tables,
    headings, etc. natively. When cards are present, uses deterministic HTML.
    After text, sends up to 8 card images as a media group (album).
+   If photos-already-sent? is true, skips the final photo album.
    Optional :keyboard overrides the default track keyboard."
-  [chat-id user-id text reply & {:keys [keyboard]}]
+  [chat-id user-id text reply & {:keys [keyboard photos-already-sent?]}]
   (let [default-kb (when (seq (:cards reply)) (track-context-button user-id text))
         kb (or keyboard default-kb)
         intro (:intro reply)
@@ -656,8 +657,9 @@
             (tg/send-message chat-id html :parse-mode "HTML" :reply_markup kb)
             (tg/send-message chat-id html :parse-mode "HTML"))
           (log/info :send-html-done)
-          ;; Send card photos as a media group album
-          (let [photo-items (->> cards
+          ;; Send card photos as a media group album (skip if already sent early)
+          (when-not photos-already-sent?
+            (let [photo-items (->> cards
                                  (filter :image)
                                  (filter #(not (str/blank? (:image %))))
                                  (take 8)
@@ -668,7 +670,7 @@
                                                           (str " — " (render/format-price p) " " (or (:currency c) "сом"))))})))]
             (when (seq photo-items)
               (log/info :send-photos :count (count photo-items))
-              (tg/send-media-group chat-id photo-items)))))
+              (tg/send-media-group chat-id photo-items))))))
       (catch Exception e
         (log/error e :tg-send-failed :msg (.getMessage e))
         (try (tg/send-message chat-id (or intro "Ошибка — попробуйте ещё раз.") :parse-mode nil)
@@ -713,7 +715,33 @@
                     ;; Phase change — update draft to show we're still working.
                     ;; Don't clear buf — the text is real model output (brief, fast).
                     (try (tg/send-rich-message-draft chat-id draft-id :markdown "🔍 Ищу...")
-                         (catch Exception _)))]
+                         (catch Exception _)))
+        ;; Rich search status — shows real progress from inside search-execute
+        search-status-cb (fn [status]
+                           (try
+                             (tg/send-rich-message-draft chat-id draft-id :markdown status)
+                             (catch Exception _)))
+        ;; Early photos — send top 5 as album immediately after search, before LLM text
+        early-photos-sent (atom false)
+        early-photos-cb (fn [cards]
+                          (when (and (seq cards) (not @early-photos-sent))
+                            (reset! early-photos-sent true)
+                            (let [photo-items
+                                  (->> cards
+                                       (filter :image)
+                                       (filter #(not (str/blank? (:image %))))
+                                       (take 5)
+                                       (mapv (fn [c]
+                                               {:url (:image c)
+                                                :caption
+                                                (str "<b>" (render/escape-html (:title c "")) "</b>"
+                                                     (when-let [p (:price c)]
+                                                       (str " — " (render/format-price p) " "
+                                                            (or (:currency c) "сом"))))})))]
+                              (when (seq photo-items)
+                                (log/info :early-photos :count (count photo-items))
+                                (try (tg/send-media-group chat-id photo-items)
+                                     (catch Exception _))))))]
     ;; Initial draft — simple, honest
     (let [query-preview (str "🔍 Ищу «" (subs text 0 (min 40 (count text))) "»...")]
       (try (tg/send-rich-message-draft chat-id draft-id :markdown query-preview)
@@ -721,7 +749,9 @@
     (try
       ;; Run agent with REAL streaming + card capture
       (let [city-id @(:city-id (get-user-state uid))
-            result (t/ask-stream uid text status-cb {:stream-cb stream-cb :city-id city-id})
+            result (t/ask-stream uid text status-cb {:stream-cb stream-cb :city-id city-id
+                                                      :search-status-cb search-status-cb
+                                                      :early-photos-cb early-photos-cb})
             ;; Fallback: retry with explicit search prefix if no cards
             result* (if (and (not (seq (:cards result)))
                             (> (count text) 3)
@@ -732,7 +762,9 @@
                         (reset! last-preview "")
                         (try (tg/send-rich-message-draft chat-id draft-id :markdown "🔍 Ищу подробнее...")
                              (catch Exception _))
-                        (t/ask-stream uid (str "найди " text) status-cb {:stream-cb stream-cb :city-id city-id}))
+                        (t/ask-stream uid (str "найди " text) status-cb {:stream-cb stream-cb :city-id city-id
+                                                                          :search-status-cb search-status-cb
+                                                                          :early-photos-cb early-photos-cb}))
                       result)
             agent-text (:text result*)
             all-cards (:cards result*)
@@ -769,7 +801,8 @@
                                 [{"text" (str "🔍 " s) "callback_data" (str "more:" (truncate-cb s 58))}])
                               (take 3 suggestions))})]
         (log/info :stream-summary :drafts-sent @draft-count :final-len (count agent-text) :cards (count all-cards))
-        (render-and-send chat-id user-id text reply :keyboard more-btn)
+        (render-and-send chat-id user-id text reply :keyboard more-btn
+                         :photos-already-sent? @early-photos-sent)
         ;; Send track button after a short delay
         (when-let [query (when (and text (> (count text) 3)) (str/trim text))]
           (try

@@ -207,6 +207,18 @@ When recommending products, follow this pattern:
    Bound by ask-stream from user state."
   nil)
 
+(def ^:dynamic *search-status-cb*
+  "Status callback inside search-execute: (fn [status-text]).
+   Lets the search pipeline send rich progress updates to the user
+   (e.g. '📊 Найдено 150 объявлений'). nil = no-op."
+  nil)
+
+(def ^:dynamic *early-photos-cb*
+  "Called when search cards are captured but before LLM text generation:
+   (fn [cards]). Lets bot.clj send an early photo album immediately.
+   nil = no-op."
+  nil)
+
 (def url-store
   "Map of user-id → {letter-token {:url :title :item-id}}. Populated by format-search-results, consumed by bot.clj.
    Per-user for concurrent searches. Tokens: A-Z, AA-AZ, BA-BZ, ... (base-26 like spreadsheet columns)."
@@ -617,6 +629,10 @@ Rules:
         (let [_ (swap! url-store dissoc user-id)
             ;; Step 0: LLM-based category resolution
             category-id (resolve-category user-want)
+            _ (when *search-status-cb*
+                (if category-id
+                  (*search-status-cb* (str "📂 Категория найдена"))
+                  (*search-status-cb* (str "🔍 Без категории — ищем по всем"))))
             ;; Step 1: Parse user intent with QueryBuilder (price, platform)
             qb-result (qb/build user-want :use-llm? true)
         ;; Helper: check if platform should be searched (handles :all)
@@ -650,8 +666,11 @@ Rules:
                                (log/info :search-lalafo :queries enhanced-queries :price [final-price-min final-price-max])
                                (try
                                  (let [fmt (format-search-results result :user-query user-want :price-min final-price-min :price-max final-price-max)
-                                       txt (:text fmt)]
+                                       txt (:text fmt)
+                                       item-count (count (:items fmt))]
                                    (log/info :search-done :urls (count (get-url-store user-id)) :chars (count txt))
+                                   (when *search-status-cb*
+                                     (*search-status-cb* (str "📊 Найдено " item-count " объявлений")))
                                    ;; Capture structured cards for deterministic rendering
                                    (when (and *captured-cards* (seq (:items fmt)))
                                      (let [remaining (- 20 (count @*captured-cards*))
@@ -668,7 +687,13 @@ Rules:
                                                             :desc     (get item "desc")})
                                                          (take remaining (:items fmt))))]
                                        (when (seq cards)
-                                         (swap! *captured-cards* into cards))))
+                                         (swap! *captured-cards* into cards)
+                                         (when *search-status-cb*
+                                           (*search-status-cb* (str "✨ Отобрано " (count @*captured-cards*) " объявлений")))
+                                         ;; Early photo preview — send immediately, before LLM text gen
+                                         (when *early-photos-cb*
+                                           (try (*early-photos-cb* @*captured-cards*)
+                                                (catch Exception _))))))
                                    txt)
                                  (catch Exception e
                                    (log/error :search-format-failed (.getMessage e)
@@ -797,16 +822,20 @@ Rules:
    Captures structured search results for deterministic card rendering.
    status-cb called with progress updates during tool execution.
    stream-cb (optional) called with each text delta for live preview.
+   search-status-cb (optional) called with rich search progress (found N items, etc).
+   early-photos-cb (optional) called with captured cards for immediate photo preview.
    Also caches ads for /N drill-down."
   ([user-id text status-cb]
    (ask-stream user-id text status-cb {}))
-  ([user-id text status-cb {:keys [stream-cb city-id]}]
+  ([user-id text status-cb {:keys [stream-cb city-id search-status-cb early-photos-cb]}]
    (let [cards-atom (atom [])
          stats-atom (atom nil)
          effective-stream-cb (or stream-cb (fn [_]))
          result (binding [*captured-cards* cards-atom
                           *captured-stats* stats-atom
-                          *user-city-id* city-id]
+                          *user-city-id* city-id
+                          *search-status-cb* search-status-cb
+                          *early-photos-cb* early-photos-cb]
                   (h/handle-message-stream!
                    @tapalakbot user-id text
                    effective-stream-cb
