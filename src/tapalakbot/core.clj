@@ -279,12 +279,13 @@ Return ONLY a JSON array of relevant listing IDs. Nothing else.
 Example: [113171780, 112908144, 111226783]")
 
 (defn- parse-id-array
-  "Parse a JSON ID array even if the model wraps it in text/fences."
+  "Parse a JSON ID array even if the model wraps it in text/fences.
+   Returns IDs as strings (Lalafo IDs are strings)."
   [content]
   (let [clean (str/replace (or content "[]") #"```json|```" "")
         array-text (or (second (re-find #"(?s)(\[[^\]]*\])" clean)) "[]")]
     (try
-      (json/parse-string (str/trim array-text) false)
+      (map str (json/parse-string (str/trim array-text) false))
       (catch Exception _ []))))
 
 (defn- relevance-filter
