@@ -160,10 +160,9 @@
                             "снять" "нежилое" "commercial" "коммерческая"}
         is-real-estate? (boolean (some real-estate-words words))]
     {:platforms (cond
-                  is-auto? [:mashina]  ;; Cars: Mashina
-                  is-electronics? [:lalafo :mashina]  ;; Electronics: Lalafo
-                  is-real-estate? [:lalafo]  ;; Real estate: Lalafo only
-                  :else [:lalafo :mashina])  ;; Default: Lalafo
+                  is-auto? [:mashina]              ;; Cars: Mashina only
+                  (or is-electronics? is-real-estate?) [:lalafo]  ;; Everything else: Lalafo only
+                  :else [:lalafo])}                ;; Default: Lalafo
      :is-auto? is-auto?
      :is-electronics? is-electronics?
      :is-real-estate? is-real-estate?}))
@@ -285,8 +284,8 @@ Rules:
                             llm-plat [llm-plat]
                             ;; Deterministic detection
                             det det
-                            ;; Fallback: all platforms
-                            :else [:lalafo :mashina]))
+                            ;; Fallback: Lalafo only (not Mashina — it's cars-only)
+                            :else [:lalafo]))
         ;; Step 7: Mashina query (for cars)
         mashina-query (or (:mashina-query llm-params)
                           (when (:is-auto? platform-params) text))]
