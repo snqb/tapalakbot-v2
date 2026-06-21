@@ -189,24 +189,23 @@
         qs (take 6 qs)
         client (build-client)
         quality-min (max 50 (or price_min 0))]
-    (loop [results []
-           [q & more] qs]
-      (if q
-        (let [[found items pages] (search-all-pages client q
-                                                    :category-id category_id
-                                                    :price-min price_min
-                                                    :price-max price_max
-                                                    :city-id city_id
-                                                    :max-pages max_pages
-                                                    :per-page per_page)]
-          (recur (conj results {:query q :found found :items items :pages pages})
-                 more))
-        ;; All queries done — deduplicate, quality-filter, format
-        (let [all-items (reduce (fn [acc {:keys [items]}]
-                                  (reduce (fn [m item] (assoc m (get item "id") item)) acc items))
-                                {}
-                                results)
-              total-raw (count all-items)
+    (let [;; Parallel search — all queries run concurrently
+          results (pmap (fn [q]
+                          (let [[found items pages] (search-all-pages client q
+                                                                      :category-id category_id
+                                                                      :price-min price_min
+                                                                      :price-max price_max
+                                                                      :city-id city_id
+                                                                      :max-pages max_pages
+                                                                      :per-page per_page)]
+                            {:query q :found found :items items :pages pages}))
+                        qs)
+          ;; All queries done — deduplicate, quality-filter, format
+          all-items (reduce (fn [acc {:keys [items]}]
+                              (reduce (fn [m item] (assoc m (get item "id") item)) acc items))
+                            {}
+                            results)
+          total-raw (count all-items)
               total-pages (reduce + (map :pages results))
               filtered (quality-filter (vals all-items))
               ;; Apply price filter on top of quality filter
@@ -242,7 +241,7 @@
             :truncated (> total-qf cand-limit)
             :items items-out
             :stats {:raw total-raw :filtered total-qf :pages total-pages}}
-           {:pretty true}))))))
+           {:pretty true}))))
 
 ;; ══════════════════════════ CATEGORIES ══════════════════════════
 

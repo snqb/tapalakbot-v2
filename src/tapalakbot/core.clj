@@ -314,13 +314,13 @@ Example: [113171780, 112908144, 111226783]")
               relevant (filter #(contains? id-set (get % "id")) items)]
           (if (pos? (count relevant))
             (do
-              (println (str "  [relevance] " (count items) " → " (count relevant) " items"))
+              (log/info :relevance-filter :input (count items) :output (count relevant))
               (take 100 relevant))
             (do
-              (println "[relevance] no parseable relevant IDs — showing first 100 candidates")
+              (log/warn :relevance-filter :fallback :reason "no parseable IDs" :raw-response (subs content 0 (min 200 (count content))))
               (take 100 items))))
         (catch Exception e
-          (println "[relevance] LLM failed:" (.getMessage e))
+          (log/warn :relevance-filter :error (.getMessage e))
           (take 100 items))))))
 
 (defn- filter-price-outliers
@@ -464,7 +464,7 @@ Example: [113171780, 112908144, 111226783]")
         (log/warn :query-gen-all-attempts-failed :user-want user-want))
       (let [result
             (try
-              (let [resp (llm/llm :kimi-k2 messages [] :provider :openrouter :max-tokens 500)
+              (let [resp (llm/llm :gemini-3.5-flash messages [] :provider :openrouter :max-tokens 500)
                     content (get-in resp ["choices" 0 "message" "content"])]
                 (if (or (nil? content) (str/blank? content))
                   (do (log/warn :query-gen-empty-content :attempt attempts)
@@ -515,7 +515,7 @@ Rules:
             categories-str (or categories "No categories available")]
         (let [messages [{:role "system" :content category-picker-prompt}
                         {:role "user" :content (str "Query: " user-query "\n\n" categories-str)}]
-              resp (llm/llm :kimi-k2 messages [] :provider :openrouter :max-tokens 300)
+              resp (llm/llm :gemini-3.5-flash messages [] :provider :openrouter :max-tokens 300)
               content (get-in resp ["choices" 0 "message" "content"])]
           (when content
             (let [cat-id (some->> content
@@ -653,18 +653,21 @@ Rules:
                                    (log/info :search-done :urls (count (get-url-store user-id)) :chars (count txt))
                                    ;; Capture structured cards for deterministic rendering
                                    (when (and *captured-cards* (seq (:items fmt)))
-                                     (let [cards (mapv (fn [item]
-                                                         {:title    (get item "title")
-                                                          :price    (when (get item "price") (long (get item "price")))
-                                                          :currency (get item "currency" "KGS")
-                                                          :url      (get item "url")
-                                                          :platform :lalafo
-                                                          :image    (or (get item "thumbnail_url")
-                                                                        (get-in item ["images" 0 "original_url"])
-                                                                        (get-in item ["images" 0 "thumbnail_url"]))
-                                                          :desc     (get item "desc")})
-                                                      (take 20 (:items fmt)))]
-                                       (swap! *captured-cards* into cards)))
+                                     (let [remaining (- 20 (count @*captured-cards*))
+                                           cards (when (pos? remaining)
+                                                   (mapv (fn [item]
+                                                           {:title    (get item "title")
+                                                            :price    (when (get item "price") (long (get item "price")))
+                                                            :currency (get item "currency" "KGS")
+                                                            :url      (get item "url")
+                                                            :platform :lalafo
+                                                            :image    (or (get item "thumbnail_url")
+                                                                          (get-in item ["images" 0 "original_url"])
+                                                                          (get-in item ["images" 0 "thumbnail_url"]))
+                                                            :desc     (get item "desc")})
+                                                         (take remaining (:items fmt))))]
+                                       (when (seq cards)
+                                         (swap! *captured-cards* into cards))))
                                    txt)
                                  (catch Exception e
                                    (log/error :search-format-failed (.getMessage e)
@@ -677,21 +680,24 @@ Rules:
                                       mr (mashina/search-cars :query q :size 10)]
                                   (log/info :smart-search-mashina :query q :found (:total mr))
                                   (when (seq (:listings mr))
-                                    ;; Capture Mashina cards for deterministic rendering
+                                    ;; Capture Mashina cards (respect 20-card total cap)
                                     (when *captured-cards*
-                                      (let [cards (mapv (fn [item]
-                                                          {:title    (:title item)
-                                                           :price    (when-let [p (get-in item [:price :amount])]
-                                                                       (long p))
-                                                           :currency (get-in item [:price :currency] "KGS")
-                                                           :url      (:url item)
-                                                           :platform :mashina
-                                                           :year     (:year item)
-                                                           :mileage  (when-let [m (:mileage item)]
-                                                                       (when (number? m) (long m)))
-                                                           :city     (:city item)})
-                                                        (:listings mr))]
-                                        (swap! *captured-cards* into cards)))
+                                      (let [remaining (- 20 (count @*captured-cards*))
+                                            cards (when (pos? remaining)
+                                                    (mapv (fn [item]
+                                                            {:title    (:title item)
+                                                             :price    (when-let [p (get-in item [:price :amount])]
+                                                                         (long p))
+                                                             :currency (get-in item [:price :currency] "KGS")
+                                                             :url      (:url item)
+                                                             :platform :mashina
+                                                             :year     (:year item)
+                                                             :mileage  (when-let [m (:mileage item)]
+                                                                         (when (number? m) (long m)))
+                                                             :city     (:city item)})
+                                                          (take remaining (:listings mr))))]
+                                        (when (seq cards)
+                                          (swap! *captured-cards* into cards))))
                                     (format-mashina-results mr)))
                                 (catch Exception e
                                   (log/warn :mashina-search-failed (.getMessage e))
