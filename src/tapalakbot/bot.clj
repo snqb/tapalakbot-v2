@@ -634,26 +634,41 @@
   "Send reply to Telegram. When the reply is pure agent text (no cards),
    sends raw markdown via Rich Messages API so Telegram renders tables,
    headings, etc. natively. When cards are present, uses deterministic HTML.
+   After text, sends up to 8 card images as a media group (album).
    Optional :keyboard overrides the default track keyboard."
   [chat-id user-id text reply & {:keys [keyboard]}]
   (let [default-kb (when (seq (:cards reply)) (track-context-button user-id text))
         kb (or keyboard default-kb)
-        intro (:intro reply)]
-    (log/info :render-and-send :text-len (count intro) :has-kb (boolean kb) :has-cards (seq (:cards reply)))
+        intro (:intro reply)
+        cards (:cards reply)]
+    (log/info :render-and-send :text-len (count intro) :has-kb (boolean kb) :has-cards (seq cards))
     (try
-      (if (and (seq intro) (empty? (:cards reply)))
+      (if (and (seq intro) (empty? cards))
         ;; Pure agent text → Rich Messages (native tables/headings/code)
         (do
           (log/info :send-md-start :text-len (count intro))
           (tg/send-md chat-id intro :reply_markup kb)
           (log/info :send-md-done))
-        ;; Cards present → deterministic HTML render
+        ;; Cards present → deterministic HTML render + photos
         (let [html (render/render-reply reply)]
           (log/info :send-html-start :html-len (count html))
           (if kb
             (tg/send-message chat-id html :parse-mode "HTML" :reply_markup kb)
             (tg/send-message chat-id html :parse-mode "HTML"))
-          (log/info :send-html-done)))
+          (log/info :send-html-done)
+          ;; Send card photos as a media group album
+          (let [photo-items (->> cards
+                                 (filter :image)
+                                 (filter #(not (str/blank? (:image %))))
+                                 (take 8)
+                                 (mapv (fn [c]
+                                         {:url (:image c)
+                                          :caption (str "<b>" (render/escape-html (:title c "")) "</b>"
+                                                        (when-let [p (:price c)]
+                                                          (str " — " (render/format-price p) " " (or (:currency c) "сом"))))})))]
+            (when (seq photo-items)
+              (log/info :send-photos :count (count photo-items))
+              (tg/send-media-group chat-id photo-items)))))
       (catch Exception e
         (log/error e :tg-send-failed :msg (.getMessage e))
         (try (tg/send-message chat-id (or intro "Ошибка — попробуйте ещё раз.") :parse-mode nil)

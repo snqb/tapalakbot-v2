@@ -7,7 +7,7 @@
         aero/aero {:mvn/version "1.1.6"}
         clj-http/clj-http {:mvn/version "3.13.0"}
         clj-harness/clj-harness {:git/url "https://github.com/snqb/clj-harness.git"
-                                 :git/sha "68da341aa49b0719e4968342bda1b260d10e044f"}
+                                 :git/sha "7fa5477a2638bfe1ab1b1b4c0292ed79b7f8fa0b"}
         ring/ring-core {:mvn/version "1.13.0"}
         ring/ring-jetty-adapter {:mvn/version "1.13.0"}
         ring/ring-json {:mvn/version "0.5.1"}

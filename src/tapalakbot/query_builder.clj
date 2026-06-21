@@ -162,7 +162,7 @@
     {:platforms (cond
                   is-auto? [:mashina]              ;; Cars: Mashina only
                   (or is-electronics? is-real-estate?) [:lalafo]  ;; Everything else: Lalafo only
-                  :else [:lalafo])}                ;; Default: Lalafo
+                  :else [:lalafo])                 ;; Default: Lalafo
      :is-auto? is-auto?
      :is-electronics? is-electronics?
      :is-real-estate? is-real-estate?}))

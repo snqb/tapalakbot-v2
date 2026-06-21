@@ -293,7 +293,7 @@ Example: [113171780, 112908144, 111226783]")
 
 (defn- relevance-filter
   "LLM pass 1: filter listings by relevance to user query.
-   Returns vector of relevant items (max 100)."
+   Single LLM call with Gemini Flash. Returns vector of relevant items (max 100)."
   [items user-query]
   (if (<= (count items) 12)
     ;; Very few items — no need for relevance pass
@@ -305,29 +305,26 @@ Example: [113171780, 112908144, 111226783]")
                                (when-let [p (get item "price")]
                                  (str (format "%,.0f" (double p)) " KGS"))
                                (when (not (str/blank? desc))
-                                 (str " — " desc)))))
-          score-chunk (fn [chunk]
-                        (let [items-text (str/join "\n" (map-indexed format-item chunk))
-                              messages [{"role" "system" "content" relevance-system-prompt}
-                                        {"role" "user"
-                                         "content" (str "User is looking for: " user-query "\n\nListings:\n" items-text
-                                                        "\n\nReturn JSON array of relevant listing IDs.")}]]
-                          (try
-                            (let [resp (llm/llm :kimi-k2 messages [] :provider :openrouter :max-tokens 2000)
-                                  content (get-in resp ["choices" 0 "message" "content"])
-                                  id-set (set (parse-id-array content))]
-                              (filter #(contains? id-set (get % "id")) chunk))
-                            (catch Exception e
-                              (println "[relevance] LLM chunk failed:" (.getMessage e))
-                              []))))
-          chunks (partition-all 80 items)
-          relevant (doall (mapcat score-chunk chunks))]
-      (if (pos? (count relevant))
-        (do
-          (println (str "  [relevance] " (count items) " → " (count relevant) " items"))
-          (take 100 relevant))
-        (do
-          (println "[relevance] no parseable relevant IDs — showing first 100 candidates")
+                                 (str " — " (subs desc 0 (min 100 (count desc))))))))
+          items-text (str/join "\n" (map-indexed format-item items))
+          messages [{"role" "system" "content" relevance-system-prompt}
+                    {"role" "user"
+                     "content" (str "User is looking for: " user-query "\n\nListings:\n" items-text
+                                    "\n\nReturn JSON array of relevant listing IDs.")}]]
+      (try
+        (let [resp (llm/llm :gemini-3.5-flash messages [] :provider :openrouter :max-tokens 4000)
+              content (get-in resp ["choices" 0 "message" "content"])
+              id-set (set (parse-id-array content))
+              relevant (filter #(contains? id-set (get % "id")) items)]
+          (if (pos? (count relevant))
+            (do
+              (println (str "  [relevance] " (count items) " → " (count relevant) " items"))
+              (take 100 relevant))
+            (do
+              (println "[relevance] no parseable relevant IDs — showing first 100 candidates")
+              (take 100 items))))
+        (catch Exception e
+          (println "[relevance] LLM failed:" (.getMessage e))
           (take 100 items))))))
 
 (defn- filter-price-outliers
@@ -402,13 +399,13 @@ Example: [113171780, 112908144, 111226783]")
           (if (zero? found)
             {:text (get data "message" "Nothing found.") :url-store {} :items []}
             {:text
-             (str "🔍 Showing " (min (count relevant) 12) " relevant candidates"
+             (str "🔍 Showing " (min (count relevant) 20) " relevant candidates"
                   (str " (from " raw " raw listings across " pages " pages)")
                   (when truncated " [truncated]")
                   ". STRICT: Use the title in [brackets] for each item. Each item has a real Lalafo URL — include it. DO NOT invent iPhones for items that are MacBooks/accessories. Check the URL slug."
                   "\n"
                   (str/join "\n"
-                            (for [item (take 12 relevant)]
+                            (for [item (take 20 relevant)]
                               (let [item-id (str (get item "id"))
                                     url (get item "url" "")
                                     price (get item "price")
@@ -666,8 +663,11 @@ Rules:
                                                           :currency (get item "currency" "KGS")
                                                           :url      (get item "url")
                                                           :platform :lalafo
+                                                          :image    (or (get item "thumbnail_url")
+                                                                        (get-in item ["images" 0 "original_url"])
+                                                                        (get-in item ["images" 0 "thumbnail_url"]))
                                                           :desc     (get item "desc")})
-                                                       (:items fmt))]
+                                                      (:items fmt))]
                                        (swap! *captured-cards* into cards)))
                                    txt)
                                  (catch Exception e
