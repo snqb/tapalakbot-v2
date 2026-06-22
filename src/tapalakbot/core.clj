@@ -324,7 +324,7 @@ Example: [113171780, 112908144, 111226783]")
         (let [resp (llm/llm :gemini-3.5-flash messages [] :provider :openrouter :max-tokens 4000)
               content (get-in resp ["choices" 0 "message" "content"])
               id-set (set (parse-id-array content))
-              relevant (filter #(contains? id-set (get % "id")) items)]
+              relevant (filter #(contains? id-set (str (get % "id"))) items)]
           (if (pos? (count relevant))
             (do
               (log/info :relevance-filter :input (count items) :output (count relevant))

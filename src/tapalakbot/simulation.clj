@@ -160,9 +160,23 @@
                       (write-fn {:event :status
                                  :trace-id trace-id
                                  :status status}))
+          ;; search-status-cb captures rich search progress (category found, N items, etc)
+          search-status-cb (fn [status]
+                              (write-fn {:event :search-status
+                                         :trace-id trace-id
+                                         :status status}))
+          ;; early-photos-cb tracks when photos would be sent (no Telegram in sim)
+          early-photos-cb (fn [cards]
+                            (write-fn {:event :early-photos
+                                       :trace-id trace-id
+                                       :card-count (count cards)
+                                       :photo-count (count (filter :image cards))}))
           ;; Run the actual query through the real pipeline
           result (try
-                   (t/ask-stream user-id query status-cb {:stream-cb stream-cb})
+                   (t/ask-stream user-id query status-cb
+                                 {:stream-cb stream-cb
+                                  :search-status-cb search-status-cb
+                                  :early-photos-cb early-photos-cb})
                    (catch Exception e
                      (write-fn {:event :query.error
                                 :trace-id trace-id
@@ -177,7 +191,16 @@
             card-count (count (:cards result))
             stats (:stats result)
             draft-count (count @draft-chunks)
-            status-count (count @status-log)]
+            status-count (count @status-log)
+            ;; Quality assessment
+            quality (cond
+                      (and (zero? card-count) (> text-len 100)) :good
+                      (and (<= 1 card-count 25) (> text-len 500)) :good
+                      (and (> text-len 500) (<= card-count 25)) :good
+                      (and (> text-len 100) (zero? card-count)) :good
+                      (and (zero? text-len) (> card-count 0)) :empty-text
+                      (> card-count 25) :too-many-cards
+                      :else :ok)]
 
         (write-fn {:event :query.end
                    :trace-id trace-id
@@ -193,13 +216,13 @@
 
         {:query-id (name id)
          :query query
-         :trace-id trace-id
          :text-len text-len
          :card-count card-count
          :total-ms total-ms
          :draft-chunks draft-count
          :observe-events observe-count
          :ok (some? result)
+         :quality quality
          :stats stats}))))
 
 ;; ══════════════════════ BATCH RUNNER ══════════════════════
@@ -264,6 +287,12 @@
              latencies (sort (map :total-ms results))
              p50 (when (seq latencies) (nth latencies (int (/ (count latencies) 2))))
              p99 (when (seq latencies) (nth latencies (dec (count latencies))))
+             ;; Quality breakdown
+             quality-counts (frequencies (map :quality results))
+             good-count (or (:good quality-counts) 0)
+             empty-text-count (or (:empty-text quality-counts) 0)
+             too-many-count (or (:too-many-cards quality-counts) 0)
+             ok-count* (or (:ok quality-counts) 0)
              summary {:timestamp (str (Instant/now))
                       :queries (count results)
                       :ok ok-count
@@ -275,6 +304,10 @@
                       :total-cards total-cards
                       :total-draft-chunks total-chunks
                       :total-observe-events total-observe
+                      :quality {:good good-count
+                                :empty-text empty-text-count
+                                :too-many-cards too-many-count
+                                :ok ok-count*}
                       :results results}]
 
          (spit summary-file (with-out-str (clojure.pprint/pprint summary)))
@@ -291,6 +324,7 @@
          (println "  Total cards:" total-cards)
          (println "  Total draft chunks:" total-chunks)
          (println "  Total observe events:" total-observe)
+         (println "  Quality: " good-count "good," empty-text-count "empty-text," too-many-count "too-many-cards," ok-count* "ok")
          (println)
          (println "  Events JSONL:" (.getAbsolutePath jsonl-file))
          (println "  Summary EDN:" (.getAbsolutePath summary-file))
