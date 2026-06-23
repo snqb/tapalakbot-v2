@@ -435,14 +435,10 @@ Example: [113171780, 112908144, 111226783]")
                                 (let [thumb (or (get item "thumbnail_url")
                                                 (get-in item ["images" 0 "original_url"])
                                                 (get-in item ["images" 0 "thumbnail_url"]))]
-                                  (str "- " (get item "title" "")
+                                  (str letter ". " (get item "title" "")
                                        " — " price-str
-                                       (when (not (str/blank? url))
-                                         (str " — " url))
-                                       (when (not (str/blank? thumb))
-                                         (str " — img:" thumb))
                                        (when (not (str/blank? desc))
-                                         (str " — " desc))))))))
+                                          (str " — " (subs desc 0 (min 80 (count desc)))))))))))
              :url-store {}
              :items (vec relevant)}))))))
 
@@ -585,36 +581,28 @@ Rules:
                 category-name-map)))))
 
 (defn- format-mashina-results
-  "Format Mashina.kg car search results."
+  "Format Mashina.kg car search results. Compact format to save LLM context tokens."
   [result]
   (let [listings (:listings result)
         total (:total result)]
     (str "🚗 **Mashina.kg** — " (count listings) " авто"
-         (when (> total (count listings)) (str " из " total " объявлений")) "\n\n"
+         (when (> total (count listings)) (str " из " total " объявлений")) "\n"
          (str/join "\n"
                    (mapv (fn [item]
                            (let [idx (count (get @url-store *current-user-id* {}))
                                  letter (col-letter idx)
                                  price (get-in item [:price :amount])
                                  price-str (if price
-                                             (str (format "%,.0f" (double price))
-                                                  " " (get-in item [:price :currency] "сом"))
+                                             (str (format "%,.0f" (double price)) " сом")
                                              "цена не указана")
                                  url (:url item)]
-                             ;; Store in url-store for anti-hallucination citation validation
                              (when (and *current-user-id* url (not (str/blank? url)))
                                (swap! url-store assoc-in [*current-user-id* letter]
                                       {:url url :title (:title item) :item-id (str (:id item))}))
-                             (str "- " (:title item)
-                                  " — " price-str
-                                  (when (:year item) (str ", " (:year item) " г."))
-                                  (when (:mileage item) (str ", " (:mileage item) " км"))
-                                  (when (:city item) (str ", " (:city item)))
-                                  (when (and url (not (str/blank? url)))
-                                    (str " — " url))
-                                  (when (seq (:images item))
-                                    (str " — img:" (first (:images item)))))))
-                         (take 8 listings))))))
+                             (str letter ". " (:title item) " — " price-str
+                                  (when (:year item) (str ", " (:year item)))
+                                  (when (:mileage item) (str ", " (:mileage item) "км"))))
+                         (take 8 listings)))))))
 
 (defn- search-execute
   "Smart search pipeline: QueryBuilder → platform routing → multi-platform search."
@@ -703,7 +691,7 @@ Rules:
             mashina-results (when (search? :mashina)
                               (try
                                 (let [q (or (:mashina-query qb-result) (first enhanced-queries))
-                                      mr (mashina/search-cars :query q :size 10)]
+                                      mr (mashina/search-cars :query q :size 6)]
                                   (log/info :smart-search-mashina :query q :found (:total mr))
                                   (when (seq (:listings mr))
                                     ;; Capture Mashina cards (respect 20-card total cap)
