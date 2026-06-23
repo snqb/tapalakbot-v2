@@ -294,11 +294,17 @@ Example: [113171780, 112908144, 111226783]")
   "Parse a JSON ID array even if the model wraps it in text/fences.
    Returns IDs as strings (Lalafo IDs are strings)."
   [content]
-  (let [clean (str/replace (or content "[]") #"```json|```" "")
+  (let [clean (str/replace (or content "[]") #"\`\`\`json|```|\`" "")
         array-text (or (second (re-find #"(?s)(\[[^\]]*\])" clean)) "[]")]
     (try
-      (map str (json/parse-string (str/trim array-text) false))
-      (catch Exception _ []))))
+      (let [parsed (json/parse-string (str/trim array-text) false)
+            ids (mapv str parsed)]
+        (when (empty? ids)
+          (log/warn :parse-id-array-empty :raw (subs (or content "") 0 (min 200 (count (or content ""))))))
+        ids)
+      (catch Exception e
+        (log/warn :parse-id-array-error :msg (.getMessage e) :raw (subs (or content "") 0 (min 200 (count (or content "")))))
+        []))))
 
 (defn- relevance-filter
   "LLM pass 1: filter listings by relevance to user query.

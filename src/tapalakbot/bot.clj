@@ -788,11 +788,11 @@
             more-btn (cond
                        ;; Results found → action buttons
                        (seq all-cards)
-                       (let [q (truncate-cb text 58)]
+                       (let [max-q (- 64 8)]  ;; "cheaper:" = 8 bytes, longest prefix
                          {"inline_keyboard"
-                          [[{"text" "🔄 Ещё результаты" "callback_data" (str "more:" q)}]
-                           [{"text" "⬇️ Дешевле" "callback_data" (str "cheaper:" q)}
-                            {"text" "⬆️ Дороже" "callback_data" (str "dearer:" q)}]]})
+                          [[{"text" "🔄 Ещё результаты" "callback_data" (str "more:" (truncate-cb text (- 64 5)))}]
+                           [{"text" "⬇️ Дешевле" "callback_data" (str "cheaper:" (truncate-cb text max-q))}
+                            {"text" "⬆️ Дороже" "callback_data" (str "dearer:" (truncate-cb text (- 64 7)))}]]})
 
                        ;; No results but have suggestions → clickable suggestion buttons
                        (seq suggestions)
