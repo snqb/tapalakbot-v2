@@ -38,7 +38,8 @@
 (defn- get-user-state [uid]
   (or (get @user-state uid)
       (let [s {:lock (atom :idle) :pending (atom nil) :last-seen (atom (System/currentTimeMillis))
-           :city-id (atom nil)}]
+               :city-id (atom nil)
+               :thread-id (atom nil)}]
         (swap! user-state assoc uid s)
         s)))
 
@@ -72,6 +73,33 @@
       (reset! pending nil)
       m)))
 
+;; ══════════════════════ THREAD MANAGEMENT ══════════════════════
+
+(defn- get-thread-id
+  "Get current thread-id for user. Returns message_thread_id or nil."
+  [uid]
+  (let [st (get-user-state uid)]
+    @(:thread-id st)))
+
+(defn- set-thread-id!
+  "Set current thread-id for user."
+  [uid thread-id]
+  (let [st (get-user-state uid)]
+    (reset! (:thread-id st) thread-id)))
+
+(defn- ensure-topic!
+  "Create a new forum topic for the user if they don't have one.
+   Stores the message_thread_id in user-state. Returns thread-id or nil.
+   Topic name is derived from a short version of the query or 'Новый диалог'."
+  ([chat-id uid] (ensure-topic! chat-id uid "Новый диалог"))
+  ([chat-id uid topic-name]
+   (or (get-thread-id uid)
+       (when-let [result (tg/create-forum-topic chat-id topic-name :icon-color 0x6FB9F0)]
+         (let [thread-id (get result "message_thread_id")]
+           (set-thread-id! uid thread-id)
+           (log/info :topic-created :user uid :thread-id thread-id :name topic-name)
+           thread-id)))))
+
 ;; ══════════════════════ INLINE KEYBOARD HELPERS ══════════════════════
 ;; Uses tg/inline-keyboard with VECTOR form [label {:callback_data ...}] —
 ;; the map form {:text ... :callback_data ...} is buggy in the pinned clj-harness
@@ -79,20 +107,28 @@
 ;; Uses tg/answer-callback-query (public API)
 
 (defn- edit-with-buttons
-  "Edit message to show new text + inline keyboard."
-  [chat-id msg-id text keyboard]
-  (try
-    (tg/edit-message chat-id msg-id text :reply_markup keyboard)
-    (catch Exception e
-      (log/warn e :edit-with-buttons-fail))))
+  "Edit message to show new text + inline keyboard. Optional :thread-id."
+  ([chat-id msg-id text keyboard] (edit-with-buttons chat-id msg-id text keyboard nil))
+  ([chat-id msg-id text keyboard opts]
+   (let [thread-id (:thread-id opts)]
+     (try
+       (if thread-id
+         (tg/edit-message chat-id msg-id text :reply_markup keyboard :thread-id thread-id)
+         (tg/edit-message chat-id msg-id text :reply_markup keyboard))
+       (catch Exception e
+         (log/warn e :edit-with-buttons-fail))))))
 
 (defn- send-with-buttons
-  "Send message with inline keyboard."
-  [chat-id text keyboard]
-  (try
-    (tg/send-md chat-id text :reply_markup keyboard)
-    (catch Exception e
-      (log/warn e :send-with-buttons-fail))))
+  "Send message with inline keyboard. Optional :thread-id."
+  ([chat-id text keyboard] (send-with-buttons chat-id text keyboard nil))
+  ([chat-id text keyboard opts]
+   (let [thread-id (:thread-id opts)]
+     (try
+       (if thread-id
+         (tg/send-md chat-id text :reply_markup keyboard :thread-id thread-id)
+         (tg/send-md chat-id text :reply_markup keyboard))
+       (catch Exception e
+         (log/warn e :send-with-buttons-fail))))))
 
 ;; ══════════════════════ PERSISTENT MENU ══════════════════════
 
@@ -105,9 +141,13 @@
    "one_time" false})
 
 (defn- send-menu!
-  "Send message with persistent menu."
-  [chat-id text]
-  (tg/send-md chat-id text :reply_markup (persistent-menu)))
+  "Send message with persistent menu. Optional :thread-id for forum topics."
+  ([chat-id text] (send-menu! chat-id text nil))
+  ([chat-id text opts]
+   (let [thread-id (:thread-id opts)]
+     (if thread-id
+       (tg/send-md chat-id text :reply_markup (persistent-menu) :thread-id thread-id)
+       (tg/send-md chat-id text :reply_markup (persistent-menu))))))
 
 ;; ══════════════════════ RESPONSES ══════════════════════
 
@@ -122,11 +162,11 @@
 Просто напишите, что вам нужно 🔍")
 
 (def fast-responses
-  {"привет"   greeting-resp "салам"   greeting-resp "хай"     greeting-resp
+  {"привет" greeting-resp "салам" greeting-resp "хай" greeting-resp
    "здравствуйте" greeting-resp "hello" greeting-resp "hi" greeting-resp
-   "спасибо"  "Пожалуйста! 😊 Если нужно найти что-то ещё — пишите."
-   "спс"      "Пожалуйста! 😊" "thanks" "You're welcome! 😊"
-   "ок"       "👌" "окей" "👌" "ладно" "👌" "понял" "👌"})
+   "спасибо" "Пожалуйста! 😊 Если нужно найти что-то ещё — пишите."
+   "спс" "Пожалуйста! 😊" "thanks" "You're welcome! 😊"
+   "ок" "👌" "окей" "👌" "ладно" "👌" "понял" "👌"})
 
 ;; ══════════════════════ TRACKING — CONTEXTUAL BUTTON ══════════════════════
 
@@ -420,11 +460,11 @@
         (tg/answer-callback-query callback-id)
         (if ad
           (let [card-text (str "<b>" (render/escape-html (:title ad)) "</b>\n\n"
-                              "💰 " (when (:price ad) (format "%,d" (:price ad)))
-                              " " (:currency ad "KGS") "\n"
-                              (when (:desc ad) (str "\n" (render/escape-html (:desc ad)) "\n")) "\n"
-                              "📍 " (get ad :platform "lalafo") "\n\n"
-                              "<a href=\"" (:url ad) "\">🔗 Открыть на площадке</a>")
+                               "💰 " (when (:price ad) (format "%,d" (:price ad)))
+                               " " (:currency ad "KGS") "\n"
+                               (when (:desc ad) (str "\n" (render/escape-html (:desc ad)) "\n")) "\n"
+                               "📍 " (get ad :platform "lalafo") "\n\n"
+                               "<a href=\"" (:url ad) "\">🔗 Открыть на площадке</a>")
                 kb {"inline_keyboard"
                     [[{"text" "🔗 Открыть на Lalafo"
                        "url" (:url ad)}]
@@ -450,6 +490,11 @@
 
 (defn- handle-start [{:keys [chat-id user-id first-name]}]
   (hc/reset-session! @t/tapalakbot (str "tg-" user-id))
+  ;; Create initial topic for this conversation
+  (let [uid (str "tg-" user-id)
+        topic-name (str "👋 " first-name)]
+    (set-thread-id! uid nil)  ;; clear any old topic
+    (ensure-topic! chat-id uid topic-name))
   (let [stats (monitor/fetch-categories)
         cats (:categories stats)
         total-items (reduce + 0 (map :item_count cats))
@@ -463,7 +508,8 @@
           "• " cat-count " категорий отслеживается\n"
           "• " total-items " товаров в базе\n"
           "━━━━━━━━━━━━━━━━━━━━\n\n"
-          "Просто напиши что ищешь! 🔍")))
+          "Просто напиши что ищешь! 🔍\n\n"
+          "💡 Каждый поиск — в отдельном топике. Кнопка «🔄 Новый диалог» создаст новую тему.")))
   nil)
 
 (defn- handle-reset [{:keys [chat-id user-id]}]
@@ -471,7 +517,13 @@
     (hc/reset-session! @t/tapalakbot uid)
     (release! uid)
     (store-pending! uid nil)
-    (send-menu! chat-id "🗑️ Контекст очищен. Начнём заново!"))
+    ;; Create a fresh topic for the new conversation
+    (set-thread-id! uid nil)
+    (let [topic-name (str "🔄 " (java.time.format.DateTimeFormatter/ofPattern "HH:mm")
+                          (.format (java.time.LocalDateTime/now)))
+          thread-id (ensure-topic! chat-id uid topic-name)]
+      (send-menu! chat-id "🗑️ Контекст очищен. Новая тема создана! Начнём заново!"
+                  (when thread-id {:thread-id thread-id}))))
   nil)
 
 (def cities
@@ -526,9 +578,6 @@
         (if (and results (pos? (:count results)))
           (tg/send-md chat-id (monitor/format-search-results results))
           (tg/send-md chat-id (str "🔍 Ничего не найдено по запросу «" query "»")))))))
-
-
-
 
 (defn- extract-search-query
   "Try to extract the original search query from agent response.
@@ -621,13 +670,13 @@
   "Log a transcript entry for later review."
   [user-id user-text reply]
   (try
-    (log/info :transcript {:user-id    user-id
-                           :user-text  user-text
-                           :mode       (:mode reply)
-                           :intro      (:intro reply)
+    (log/info :transcript {:user-id user-id
+                           :user-text user-text
+                           :mode (:mode reply)
+                           :intro (:intro reply)
                            :card-count (count (:cards reply))
-                           :cta        (:cta reply)
-                           :timestamp  (System/currentTimeMillis)})
+                           :cta (:cta reply)
+                           :timestamp (System/currentTimeMillis)})
     (catch Exception _)))
 
 (defn- render-and-send
@@ -636,57 +685,86 @@
    headings, etc. natively. When cards are present, uses deterministic HTML.
    After text, sends up to 8 card images as a media group (album).
    If photos-already-sent? is true, skips the final photo album.
-   Optional :keyboard overrides the default track keyboard."
-  [chat-id user-id text reply & {:keys [keyboard photos-already-sent?]}]
+   Optional :keyboard overrides the default track keyboard.
+   Optional :thread-id routes messages to a forum topic."
+  [chat-id user-id text reply & {:keys [keyboard photos-already-sent? thread-id]}]
   (let [default-kb (when (seq (:cards reply)) (track-context-button user-id text))
         kb (or keyboard default-kb)
         intro (:intro reply)
         cards (:cards reply)]
-    (log/info :render-and-send :text-len (count intro) :has-kb (boolean kb) :has-cards (seq cards))
+    (log/info :render-and-send :text-len (count intro) :has-kb (boolean kb) :has-cards (seq cards) :thread-id thread-id)
     (try
       (if (and (seq intro) (empty? cards))
         ;; Pure agent text → Rich Messages (native tables/headings/code)
         (do
           (log/info :send-md-start :text-len (count intro))
-          (tg/send-md chat-id intro :reply_markup kb)
+          (tg/send-md chat-id intro :reply_markup kb :thread-id thread-id)
           (log/info :send-md-done))
         ;; Cards present → deterministic HTML render + photos
         (let [html (render/render-reply reply)]
           (log/info :send-html-start :html-len (count html))
           (if kb
-            (tg/send-message chat-id html :parse-mode "HTML" :reply_markup kb)
-            (tg/send-message chat-id html :parse-mode "HTML"))
+            (tg/send-message chat-id html :parse-mode "HTML" :reply_markup kb :thread-id thread-id)
+            (tg/send-message chat-id html :parse-mode "HTML" :thread-id thread-id))
           (log/info :send-html-done)
           ;; Send card photos as a media group album (skip if already sent early)
           (when-not photos-already-sent?
-            (let [photo-items (->> cards
-                                 (filter :image)
-                                 (filter #(not (str/blank? (:image %))))
-                                 (take 8)
-                                 (mapv (fn [c]
-                                         {:url (:image c)
-                                          :caption (str "<b>" (render/escape-html (:title c "")) "</b>"
-                                                        (when-let [p (:price c)]
-                                                          (str " — " (render/format-price p) " " (or (:currency c) "сом"))))})))]
-            (when (seq photo-items)
-              (log/info :send-photos :count (count photo-items))
-              (tg/send-media-group chat-id photo-items))))))
+            (let [photo-items (mapv (fn [c]
+                                      {:url (:image c)
+                                       :caption (str "<b>" (render/escape-html (:title c "")) "</b>"
+                                                     (when-let [p (:price c)]
+                                                       (str " — " (render/format-price p) " " (or (:currency c) "сом"))))})
+                                    (take 8 (filter #(not (str/blank? (:image %)))
+                                                    (filter :image cards))))]
+              (when (seq photo-items)
+                (log/info :send-photos :count (count photo-items))
+                (tg/send-media-group chat-id photo-items :thread-id thread-id))))))
       (catch Exception e
         (log/error e :tg-send-failed :msg (.getMessage e))
-        (try (tg/send-message chat-id (or intro "Ошибка — попробуйте ещё раз.") :parse-mode nil)
+        (try (tg/send-message chat-id (or intro "Ошибка — попробуйте ещё раз.") :parse-mode nil :thread-id thread-id)
              (catch Exception _))))))
 
 (defn- handle-orchestrated
   "Handle message via agent-first pipeline with LIVE streaming.
-   Simple: show draft, stream text, send final Rich Message."
-  [{:keys [chat-id user-id text] :as msg}]
+   Threaded mode: all responses go to the user's active forum topic.
+   Streaming: sendMessage placeholder → editMessageText progress → delete → sendRichMessage final."
+  [{:keys [chat-id user-id text thread-id] :as msg}]
   (let [uid (str "tg-" user-id)
-        draft-id (int (rand-int 999999))
+        ;; Resolve thread-id: use incoming, or stored, or create new topic
+        thread-id (or thread-id
+                      (get-thread-id uid)
+                      (ensure-topic! chat-id uid (str "🔍 " (subs text 0 (min 30 (count text)))))
+                      nil)
         buf (StringBuilder.)
-        last-draft (atom 0)
+        last-edit (atom 0)
         last-typing (atom 0)
         last-preview (atom "")
-        draft-count (atom 0)
+        edit-count (atom 0)
+        ;; Send placeholder message, progressively edit it, delete at end
+        placeholder-msg (atom nil)
+        send-placeholder!
+        (fn [preview-text]
+          (when-not @placeholder-msg
+            (let [result (try (tg/send-message chat-id preview-text :parse-mode nil :thread-id thread-id)
+                              (catch Exception _))]
+              (reset! placeholder-msg result)
+              (when result
+                (log/info :placeholder-created :msg-id (get result "message_id") :thread-id thread-id))))
+          (when @placeholder-msg
+            (let [msg-id (get @placeholder-msg "message_id")]
+              msg-id)))
+        update-placeholder!
+        (fn [new-text]
+          (when-let [msg-id (when @placeholder-msg (get @placeholder-msg "message_id"))]
+            (try
+              (tg/edit-message chat-id msg-id new-text :parse-mode nil :thread-id thread-id)
+              (catch Exception _))))
+        delete-placeholder!
+        (fn []
+          (when-let [msg-id (when @placeholder-msg (get @placeholder-msg "message_id"))]
+            (try (tg/delete-message chat-id msg-id)
+                 (catch Exception _))
+            (reset! placeholder-msg nil)))
         stream-cb (fn [delta]
                     (.append buf delta)
                     (let [now (System/currentTimeMillis)]
@@ -697,74 +775,61 @@
                         (when (zero? (.length buf))
                           (let [emoji (nth ["🔍" "🔎" "👀" "🔬"] (mod (quot (- now @last-typing) 4000) 4))
                                 query-preview (str emoji " Ищу «" (subs text 0 (min 30 (count text))) "»...")]
-                            (try (tg/send-rich-message-draft chat-id draft-id :markdown query-preview)
-                                 (catch Exception _)))))
-                      ;; Animated draft preview (throttled 1200ms)
-                      (when (and (> (- now @last-draft) 1200)
+                            (update-placeholder! query-preview))))
+                      ;; Progressive edit (throttled 1200ms)
+                      (when (and (> (- now @last-edit) 1200)
                                  (> (.length buf) 30))
-                        (reset! last-draft now)
+                        (reset! last-edit now)
                         (try
-                          (let [preview (.toString buf)]
+                          (let [preview (str/trimr (subs (.toString buf) 0 (min (count (.toString buf)) 800)))]
                             (when (not= preview @last-preview)
                               (reset! last-preview preview)
-                              (swap! draft-count inc)
-                              (tg/send-rich-message-draft chat-id draft-id :markdown preview)))
+                              (swap! edit-count inc)
+                              (update-placeholder! preview)))
                           (catch Exception e
-                            (log/warn e :stream-draft-fail))))))
-        status-cb (fn [_]
-                    ;; Phase change — update draft to show we're still working.
-                    ;; Don't clear buf — the text is real model output (brief, fast).
-                    (try (tg/send-rich-message-draft chat-id draft-id :markdown "🔍 Ищу...")
-                         (catch Exception _)))
-        ;; Rich search status — shows real progress from inside search-execute
+                            (log/warn e :stream-edit-fail))))))
+        status-cb (fn [status]
+                    ;; Phase change — update placeholder to show we're still working.
+                    (update-placeholder! (or status "🔍 Ищу...")))
         search-status-cb (fn [status]
-                           (try
-                             (tg/send-rich-message-draft chat-id draft-id :markdown status)
-                             (catch Exception _)))
+                           (update-placeholder! status))
         ;; Early photos — send top 5 as album immediately after search, before LLM text
         early-photos-sent (atom false)
         early-photos-cb (fn [cards]
                           (when (and (seq cards) (not @early-photos-sent))
                             (reset! early-photos-sent true)
-                            (let [photo-items
-                                  (->> cards
-                                       (filter :image)
-                                       (filter #(not (str/blank? (:image %))))
-                                       (take 5)
-                                       (mapv (fn [c]
-                                               {:url (:image c)
-                                                :caption
-                                                (str "<b>" (render/escape-html (:title c "")) "</b>"
-                                                     (when-let [p (:price c)]
-                                                       (str " — " (render/format-price p) " "
-                                                            (or (:currency c) "сом"))))})))]
+                            (let [photo-items (mapv (fn [c]
+                                                      {:url (:image c)
+                                                       :caption (str "<b>" (render/escape-html (:title c "")) "</b>"
+                                                                     (when-let [p (:price c)]
+                                                                       (str " — " (render/format-price p) " " (or (:currency c) "сом"))))})
+                                                    (take 5 (filter #(not (str/blank? (:image %)))
+                                                                    (filter :image cards))))]
                               (when (seq photo-items)
                                 (log/info :early-photos :count (count photo-items))
-                                (try (tg/send-media-group chat-id photo-items)
+                                (try (tg/send-media-group chat-id photo-items :thread-id thread-id)
                                      (catch Exception _))))))]
-    ;; Initial draft — simple, honest
+    ;; Initial placeholder — create the message we'll edit
     (let [query-preview (str "🔍 Ищу «" (subs text 0 (min 40 (count text))) "»...")]
-      (try (tg/send-rich-message-draft chat-id draft-id :markdown query-preview)
-           (catch Exception _)))
+      (send-placeholder! query-preview))
     (try
       ;; Run agent with REAL streaming + card capture
       (let [city-id @(:city-id (get-user-state uid))
             result (t/ask-stream uid text status-cb {:stream-cb stream-cb :city-id city-id
-                                                      :search-status-cb search-status-cb
-                                                      :early-photos-cb early-photos-cb})
+                                                     :search-status-cb search-status-cb
+                                                     :early-photos-cb early-photos-cb})
             ;; Fallback: retry with explicit search prefix if no cards
             result* (if (and (not (seq (:cards result)))
-                            (> (count text) 3)
-                            (not (re-find #"(?i)^\s*(привет|здрав|спасибо|ок|да|нет|/reset|/start)" text)))
+                             (> (count text) 3)
+                             (not (re-find #"(?i)^\s*(привет|здрав|спасибо|ок|да|нет|/reset|/start)" text)))
                       (do
                         (log/info :fallback-auto-search :query text)
                         (.setLength buf 0)
                         (reset! last-preview "")
-                        (try (tg/send-rich-message-draft chat-id draft-id :markdown "🔍 Ищу подробнее...")
-                             (catch Exception _))
+                        (update-placeholder! "🔍 Ищу подробнее...")
                         (t/ask-stream uid (str "найди " text) status-cb {:stream-cb stream-cb :city-id city-id
-                                                                          :search-status-cb search-status-cb
-                                                                          :early-photos-cb early-photos-cb}))
+                                                                         :search-status-cb search-status-cb
+                                                                         :early-photos-cb early-photos-cb}))
                       result)
             agent-text (:text result*)
             all-cards (:cards result*)
@@ -800,22 +865,25 @@
                         (mapv (fn [s]
                                 [{"text" (str "🔍 " s) "callback_data" (str "more:" (truncate-cb s 58))}])
                               (take 3 suggestions))})]
-        (log/info :stream-summary :drafts-sent @draft-count :final-len (count agent-text) :cards (count all-cards))
+        (log/info :stream-summary :edits-sent @edit-count :final-len (count agent-text) :cards (count all-cards) :thread-id thread-id)
+        ;; Delete placeholder before sending final Rich Message
+        (delete-placeholder!)
         (render-and-send chat-id user-id text reply :keyboard more-btn
-                         :photos-already-sent? @early-photos-sent)
+                         :photos-already-sent? @early-photos-sent
+                         :thread-id thread-id)
         ;; Send track button after a short delay
-        (when-let [query (when (and text (> (count text) 3)) (str/trim text))]
+        (when (and (seq all-cards) (> (count text) 3))
           (try
             (Thread/sleep 500)
-            (let [track-btn (track-context-button user-id query)]
-              (when (seq all-cards)
-                (tg/send-message chat-id (str "🔔 Хотите отслеживать «" query "»?")
-                                 :reply_markup track-btn)))
+            (let [track-btn (track-context-button user-id text)]
+              (tg/send-message chat-id (str "🔔 Хотите отслеживать «" text "»?")
+                               :reply_markup track-btn :thread-id thread-id))
             (catch Exception e
               (log/warn e :track-button-fail)))))
       (catch Exception e
         (log/error e :agent-error {:user-id uid})
-        (try (tg/send-message chat-id "❌ Ошибка. Попробуйте ещё раз." :parse-mode nil)
+        (delete-placeholder!)
+        (try (tg/send-message chat-id "❌ Ошибка. Попробуйте ещё раз." :parse-mode nil :thread-id thread-id)
              (catch Exception _))))))
 
 (defn- handle-market-stats [{:keys [chat-id]}]
@@ -849,13 +917,15 @@
     (when-let [msg (or (get update "message") (get update "edited_message"))]
       (let [chat (get msg "chat")
             user (get msg "from")
-            loc (get msg "location")]
+            loc (get msg "location")
+            thread-id (get msg "message_thread_id")]
         (cond->
-         {:chat-id    (get chat "id")
-          :user-id    (get user "id")
+         {:chat-id (get chat "id")
+          :user-id (get user "id")
           :first-name (get user "first_name" "друг")
-          :text       (get msg "text")
+          :text (get msg "text")
           :message-id (get msg "message_id")}
+          thread-id (assoc :thread-id thread-id)
           loc
           (assoc :location {:lat (get loc "latitude")
                             :lon (get loc "longitude")}))))))
@@ -894,10 +964,10 @@
           (do (handler-future
                (fn []
                  (case cmd
-                   "/start"    (handle-start parsed)
-                   "/help"     (handle-help parsed)
-                   "/prices"   (handle-prices parsed)
-                   "/reset"    (handle-reset parsed)
+                   "/start" (handle-start parsed)
+                   "/help" (handle-help parsed)
+                   "/prices" (handle-prices parsed)
+                   "/reset" (handle-reset parsed)
                    "/tracking" (handle-tracking parsed)
                    nil)))
               nil))
