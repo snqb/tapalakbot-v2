@@ -90,11 +90,14 @@
 (defn- ensure-topic!
   "Create a new forum topic for the user if they don't have one.
    Stores the message_thread_id in user-state. Returns thread-id or nil.
-   Topic name is derived from a short version of the query or 'Новый диалог'."
+   Returns nil gracefully if the chat doesn't support forum topics (e.g. private DMs)."
   ([chat-id uid] (ensure-topic! chat-id uid "Новый диалог"))
   ([chat-id uid topic-name]
    (or (get-thread-id uid)
-       (when-let [result (tg/create-forum-topic chat-id topic-name :icon-color 0x6FB9F0)]
+       (when-let [result (try (tg/create-forum-topic chat-id topic-name :icon-color 0x6FB9F0)
+                              (catch Exception e
+                                (log/info :topic-create-skipped :chat chat-id :reason (.getMessage e))
+                                nil))]
          (let [thread-id (get result "message_thread_id")]
            (set-thread-id! uid thread-id)
            (log/info :topic-created :user uid :thread-id thread-id :name topic-name)
