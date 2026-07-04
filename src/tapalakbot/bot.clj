@@ -103,6 +103,21 @@
            (log/info :topic-created :user uid :thread-id thread-id :name topic-name)
            thread-id)))))
 
+(defn- rename-topic!
+  "Rename the user's active forum topic. Silently skips if no topic or not a forum."
+  [chat-id uid new-name]
+  (when-let [thread-id (get-thread-id uid)]
+    (try (tg/edit-forum-topic chat-id thread-id :name new-name)
+         (catch Exception _
+           ;; Non-forum chat or no permission — silently ignore
+           nil))))
+
+(defn- topic-name-for-query
+  "Generate a short topic name from the user's query text."
+  [query]
+  (let [clean (-> query str/trim (subs 0 (min 60 (count query))))]
+    (if (empty? clean) "Новый диалог" clean)))
+
 ;; ══════════════════════ INLINE KEYBOARD HELPERS ══════════════════════
 ;; Uses tg/inline-keyboard with VECTOR form [label {:callback_data ...}] —
 ;; the map form {:text ... :callback_data ...} is buggy in the pinned clj-harness
@@ -874,6 +889,9 @@
         (render-and-send chat-id user-id text reply :keyboard more-btn
                          :photos-already-sent? @early-photos-sent
                          :thread-id thread-id)
+        ;; Rename topic to reflect the conversation content
+        (let [topic-name (topic-name-for-query text)]
+          (rename-topic! chat-id uid topic-name))
         ;; Send track button after a short delay
         (when (and (seq all-cards) (> (count text) 3))
           (try
