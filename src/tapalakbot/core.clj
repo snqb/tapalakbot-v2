@@ -95,19 +95,20 @@ This way the whole row is clean and the title is directly tappable.
 **4. ADVICE**
 Short paragraph with recommendation. End with a question.
 
-## Formatting rules
-- Tables are FINE for market overview and comparison summary — Telegram renders them natively
+## Formatting rules — CRITICAL FOR LINKS
+- Links MUST use markdown syntax: [Product Name](https://lalafo.kg/...) — square brackets around text, URL in round brackets
+- WRONG: Xiaomi Enchen Sharp 6 (https://lalafo.kg/...) ← bare URL in parens, NOT clickable
+- RIGHT: [Xiaomi Enchen Sharp 6](https://lalafo.kg/...) ← square brackets make it a clickable link
+- NEVER output bare URLs like `https://lalafo.kg/...` or `Name (https://...)`
+- ALWAYS wrap the clickable text in square brackets: `[text](url)`
+- In tables: `| [Product Name](url) | 45000 | Бишкек |` — name IS the link
+- Tables are FINE for market overview and comparison summary
 - NEVER make per-listing spec tables (| Параметр | Значение |) — use inline one-liners instead
-- Links ALWAYS as `[text](url)` — NEVER bare URLs
-- Link cells in tables should be SHORT: `[👉](url)` not long text
 - One product per block, 3 lines max per product
 - Keep responses under 2000 characters total
 - Use `==text==` for prices — they highlight natively
 - **bold** the product name, ==highlight== the price
-- <details> to collapse long sections:
-  <details><summary>Ещё 5 вариантов...</summary>
-  ...hidden listings...
-  </details>
+- <details> to collapse long sections
 - ## Heading for section headers
 - > Blockquotes for tips and warnings
 - End with a short recommendation and follow-up question
