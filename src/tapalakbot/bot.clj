@@ -744,8 +744,7 @@
 
 (defn- handle-orchestrated
   "Handle message via agent-first pipeline.
-   Streaming: typing indicator during search → final Rich Message + photos after.
-   Photos come AFTER text so user sees context first."
+   Loading: sendMessage status → editMessageText progress → final Rich Message after."
   [{:keys [chat-id user-id text thread-id] :as msg}]
   (let [uid (str "tg-" user-id)
         thread-id (or thread-id
@@ -753,16 +752,38 @@
                       (ensure-topic! chat-id uid (str "🔍 " (subs text 0 (min 30 (count text)))))
                       nil)
         buf (StringBuilder.)
+        last-edit (atom 0)
         last-typing (atom 0)
+        status-msg (atom nil)
+        ;; Status message: send once, edit with progress, leave it (don't delete)
+        show-status!
+        (fn [status-text]
+          (if-not @status-msg
+            ;; First call — send the message
+            (let [result (try (tg/send-message chat-id status-text :parse-mode nil :thread-id thread-id)
+                              (catch Exception _))]
+              (reset! status-msg result))
+            ;; Subsequent calls — edit it
+            (when-let [mid (get @status-msg "message_id")]
+              (try (tg/edit-message chat-id mid status-text :parse-mode nil :thread-id thread-id)
+                   (catch Exception _)))))
         stream-cb (fn [delta]
                     (.append buf delta)
                     (let [now (System/currentTimeMillis)]
+                      ;; Typing indicator
                       (when (> (- now @last-typing) 4000)
                         (reset! last-typing now)
-                        (try (tg/send-typing chat-id) (catch Exception _)))))
-        status-cb (fn [_]
-                    (try (tg/send-typing chat-id) (catch Exception _)))]
-    (try (tg/send-typing chat-id) (catch Exception _))
+                        (try (tg/send-typing chat-id) (catch Exception _)))
+                      ;; Update status with streaming text preview (throttled 1500ms)
+                      (when (and (> (- now @last-edit) 1500)
+                                 (> (.length buf) 50))
+                        (reset! last-edit now)
+                        (let [preview (str/trimr (subs (.toString buf) 0 (min (count (.toString buf)) 600)))]
+                          (show-status! preview)))))
+        status-cb (fn [status]
+                    (when status (show-status! status)))]
+    ;; Initial status message
+    (show-status! (str "🔍 Ищу «" (subs text 0 (min 40 (count text))) "»..."))
     (try
       (let [city-id @(:city-id (get-user-state uid))
             result (t/ask-stream uid text status-cb {:stream-cb stream-cb :city-id city-id})
@@ -772,7 +793,7 @@
                       (do
                         (log/info :fallback-auto-search :query text)
                         (.setLength buf 0)
-                        (try (tg/send-typing chat-id) (catch Exception _))
+                        (show-status! "🔍 Ищу подробнее...")
                         (t/ask-stream uid (str "найди " text) status-cb {:stream-cb stream-cb :city-id city-id}))
                       result)
             agent-text (:text result*)
@@ -804,9 +825,14 @@
                                 [{"text" (str "🔍 " s) "callback_data" (str "more:" (truncate-cb s 58))}])
                               (take 3 suggestions))})]
         (log/info :stream-summary :final-len (count agent-text) :cards (count all-cards) :thread-id thread-id)
+        ;; Delete status message now — we have the real result
+        (when-let [mid (get @status-msg "message_id")]
+          (try (tg/delete-message chat-id mid) (catch Exception _)))
+        ;; Send final Rich Message (text analysis with links)
         (render-and-send chat-id user-id text reply :keyboard more-btn
                          :photos-already-sent? true
                          :thread-id thread-id)
+        ;; Photos AFTER text
         (when (seq all-cards)
           (let [photo-items (mapv (fn [c]
                                     {:url (:image c)
@@ -819,8 +845,10 @@
               (log/info :send-photos :count (count photo-items))
               (try (tg/send-media-group chat-id photo-items :thread-id thread-id)
                    (catch Exception _)))))
+        ;; Rename topic
         (let [topic-name (topic-name-for-query text)]
           (rename-topic! chat-id uid topic-name))
+        ;; Track button
         (when (and (seq all-cards) (> (count text) 3))
           (try
             (Thread/sleep 500)
@@ -831,6 +859,8 @@
               (log/warn e :track-button-fail)))))
       (catch Exception e
         (log/error e :agent-error {:user-id uid})
+        (when-let [mid (get @status-msg "message_id")]
+          (try (tg/delete-message chat-id mid) (catch Exception _)))
         (try (tg/send-message chat-id "❌ Ошибка. Попробуйте ещё раз." :parse-mode nil :thread-id thread-id)
              (catch Exception _))))))
 
