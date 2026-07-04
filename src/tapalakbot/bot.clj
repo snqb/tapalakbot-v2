@@ -743,115 +743,40 @@
              (catch Exception _))))))
 
 (defn- handle-orchestrated
-  "Handle message via agent-first pipeline with LIVE streaming.
-   Threaded mode: all responses go to the user's active forum topic.
-   Streaming: sendMessage placeholder → editMessageText progress → delete → sendRichMessage final."
+  "Handle message via agent-first pipeline.
+   Streaming: typing indicator during search → final Rich Message + photos after.
+   Photos come AFTER text so user sees context first."
   [{:keys [chat-id user-id text thread-id] :as msg}]
   (let [uid (str "tg-" user-id)
-        ;; Resolve thread-id: use incoming, or stored, or create new topic
         thread-id (or thread-id
                       (get-thread-id uid)
                       (ensure-topic! chat-id uid (str "🔍 " (subs text 0 (min 30 (count text)))))
                       nil)
         buf (StringBuilder.)
-        last-edit (atom 0)
         last-typing (atom 0)
-        last-preview (atom "")
-        edit-count (atom 0)
-        ;; Send placeholder message, progressively edit it, delete at end
-        placeholder-msg (atom nil)
-        send-placeholder!
-        (fn [preview-text]
-          (when-not @placeholder-msg
-            (let [result (try (tg/send-message chat-id preview-text :parse-mode nil :thread-id thread-id)
-                              (catch Exception _))]
-              (reset! placeholder-msg result)
-              (when result
-                (log/info :placeholder-created :msg-id (get result "message_id") :thread-id thread-id))))
-          (when @placeholder-msg
-            (let [msg-id (get @placeholder-msg "message_id")]
-              msg-id)))
-        update-placeholder!
-        (fn [new-text]
-          (when-let [msg-id (when @placeholder-msg (get @placeholder-msg "message_id"))]
-            (try
-              (tg/edit-message chat-id msg-id new-text :parse-mode nil :thread-id thread-id)
-              (catch Exception _))))
-        delete-placeholder!
-        (fn []
-          (when-let [msg-id (when @placeholder-msg (get @placeholder-msg "message_id"))]
-            (try (tg/delete-message chat-id msg-id)
-                 (catch Exception _))
-            (reset! placeholder-msg nil)))
         stream-cb (fn [delta]
                     (.append buf delta)
                     (let [now (System/currentTimeMillis)]
                       (when (> (- now @last-typing) 4000)
                         (reset! last-typing now)
-                        (try (tg/send-typing chat-id) (catch Exception _))
-                        ;; Animate the search emoji while waiting (no text yet)
-                        (when (zero? (.length buf))
-                          (let [emoji (nth ["🔍" "🔎" "👀" "🔬"] (mod (quot (- now @last-typing) 4000) 4))
-                                query-preview (str emoji " Ищу «" (subs text 0 (min 30 (count text))) "»...")]
-                            (update-placeholder! query-preview))))
-                      ;; Progressive edit (throttled 1200ms)
-                      (when (and (> (- now @last-edit) 1200)
-                                 (> (.length buf) 30))
-                        (reset! last-edit now)
-                        (try
-                          (let [preview (str/trimr (subs (.toString buf) 0 (min (count (.toString buf)) 800)))]
-                            (when (not= preview @last-preview)
-                              (reset! last-preview preview)
-                              (swap! edit-count inc)
-                              (update-placeholder! preview)))
-                          (catch Exception e
-                            (log/warn e :stream-edit-fail))))))
-        status-cb (fn [status]
-                    ;; Phase change — update placeholder to show we're still working.
-                    (update-placeholder! (or status "🔍 Ищу...")))
-        search-status-cb (fn [status]
-                           (update-placeholder! status))
-        ;; Early photos — send top 5 as album immediately after search, before LLM text
-        early-photos-sent (atom false)
-        early-photos-cb (fn [cards]
-                          (when (and (seq cards) (not @early-photos-sent))
-                            (reset! early-photos-sent true)
-                            (let [photo-items (mapv (fn [c]
-                                                      {:url (:image c)
-                                                       :caption (str "<b>" (render/escape-html (:title c "")) "</b>"
-                                                                     (when-let [p (:price c)]
-                                                                       (str " — " (render/format-price p) " " (or (:currency c) "сом"))))})
-                                                    (take 5 (filter #(not (str/blank? (:image %)))
-                                                                    (filter :image cards))))]
-                              (when (seq photo-items)
-                                (log/info :early-photos :count (count photo-items))
-                                (try (tg/send-media-group chat-id photo-items :thread-id thread-id)
-                                     (catch Exception _))))))]
-    ;; Initial placeholder — create the message we'll edit
-    (let [query-preview (str "🔍 Ищу «" (subs text 0 (min 40 (count text))) "»...")]
-      (send-placeholder! query-preview))
+                        (try (tg/send-typing chat-id) (catch Exception _)))))
+        status-cb (fn [_]
+                    (try (tg/send-typing chat-id) (catch Exception _)))]
+    (try (tg/send-typing chat-id) (catch Exception _))
     (try
-      ;; Run agent with REAL streaming + card capture
       (let [city-id @(:city-id (get-user-state uid))
-            result (t/ask-stream uid text status-cb {:stream-cb stream-cb :city-id city-id
-                                                     :search-status-cb search-status-cb
-                                                     :early-photos-cb early-photos-cb})
-            ;; Fallback: retry with explicit search prefix if no cards
+            result (t/ask-stream uid text status-cb {:stream-cb stream-cb :city-id city-id})
             result* (if (and (not (seq (:cards result)))
                              (> (count text) 3)
                              (not (re-find #"(?i)^\s*(привет|здрав|спасибо|ок|да|нет|/reset|/start)" text)))
                       (do
                         (log/info :fallback-auto-search :query text)
                         (.setLength buf 0)
-                        (reset! last-preview "")
-                        (update-placeholder! "🔍 Ищу подробнее...")
-                        (t/ask-stream uid (str "найди " text) status-cb {:stream-cb stream-cb :city-id city-id
-                                                                         :search-status-cb search-status-cb
-                                                                         :early-photos-cb early-photos-cb}))
+                        (try (tg/send-typing chat-id) (catch Exception _))
+                        (t/ask-stream uid (str "найди " text) status-cb {:stream-cb stream-cb :city-id city-id}))
                       result)
             agent-text (:text result*)
             all-cards (:cards result*)
-            ;; Smart "nothing found" — suggest alternatives
             suggestions (when (empty? all-cards) (suggest-alternatives text))
             no-results-intro (if (seq agent-text)
                                agent-text
@@ -861,38 +786,41 @@
                                       (str/join "\n" (map #(str "• " %) (take 4 suggestions))))
                                  (str "Ничего не нашлось по запросу «" text "».\n\n"
                                       "Попробуйте переформулировать или убрать лишние детали.")))
-            ;; Reply: agent text only, no card dump. Agent already formats listings in its response.
             reply {:mode (if (seq all-cards) :shortlist :no-results)
                    :intro (if (seq all-cards) (or agent-text "") no-results-intro)
-                   :cards []  ;; Don't render cards — agent text already has curated listings
+                   :cards []
                    :cta nil
                    :assumptions []}
-            ;; Build inline keyboard: action buttons after results, suggestions after no-results
             more-btn (cond
-                       ;; Results found → action buttons
                        (seq all-cards)
-                       (let [max-q (- 64 8)]  ;; "cheaper:" = 8 bytes, longest prefix
+                       (let [max-q (- 64 8)]
                          {"inline_keyboard"
                           [[{"text" "🔄 Ещё результаты" "callback_data" (str "more:" (truncate-cb text (- 64 5)))}]
                            [{"text" "⬇️ Дешевле" "callback_data" (str "cheaper:" (truncate-cb text max-q))}
                             {"text" "⬆️ Дороже" "callback_data" (str "dearer:" (truncate-cb text (- 64 7)))}]]})
-
-                       ;; No results but have suggestions → clickable suggestion buttons
                        (seq suggestions)
                        {"inline_keyboard"
                         (mapv (fn [s]
                                 [{"text" (str "🔍 " s) "callback_data" (str "more:" (truncate-cb s 58))}])
                               (take 3 suggestions))})]
-        (log/info :stream-summary :edits-sent @edit-count :final-len (count agent-text) :cards (count all-cards) :thread-id thread-id)
-        ;; Delete placeholder before sending final Rich Message
-        (delete-placeholder!)
+        (log/info :stream-summary :final-len (count agent-text) :cards (count all-cards) :thread-id thread-id)
         (render-and-send chat-id user-id text reply :keyboard more-btn
-                         :photos-already-sent? @early-photos-sent
+                         :photos-already-sent? true
                          :thread-id thread-id)
-        ;; Rename topic to reflect the conversation content
+        (when (seq all-cards)
+          (let [photo-items (mapv (fn [c]
+                                    {:url (:image c)
+                                     :caption (str "<b>" (render/escape-html (:title c "")) "</b>"
+                                                   (when-let [p (:price c)]
+                                                     (str " — " (render/format-price p) " " (or (:currency c) "сом"))))})
+                                  (take 5 (filter #(not (str/blank? (:image %)))
+                                                  (filter :image all-cards))))]
+            (when (seq photo-items)
+              (log/info :send-photos :count (count photo-items))
+              (try (tg/send-media-group chat-id photo-items :thread-id thread-id)
+                   (catch Exception _)))))
         (let [topic-name (topic-name-for-query text)]
           (rename-topic! chat-id uid topic-name))
-        ;; Send track button after a short delay
         (when (and (seq all-cards) (> (count text) 3))
           (try
             (Thread/sleep 500)
@@ -903,7 +831,6 @@
               (log/warn e :track-button-fail)))))
       (catch Exception e
         (log/error e :agent-error {:user-id uid})
-        (delete-placeholder!)
         (try (tg/send-message chat-id "❌ Ошибка. Попробуйте ещё раз." :parse-mode nil :thread-id thread-id)
              (catch Exception _))))))
 
