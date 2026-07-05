@@ -180,17 +180,14 @@ If a listing price is less than 50% of market average OR less than 50% of known 
   (atom {}))
 
 (defn cache-ads!
-  "Store ads in cache for a user. Returns {:start N :count N}."
+  "Store ads in cache for a user. REPLACES previous cache (each search is fresh).
+   Returns {:start N :count N}."
   [user-id cards]
   (when (and user-id (seq cards))
-    (let [existing (get @ad-cache user-id {})
-          start-idx (if (seq existing)
-                     (inc (apply max (keys existing)))
-                     1)
-          indexed (into {} (map-indexed (fn [i card] [(+ start-idx i) card]) cards))]
+    (let [indexed (into {} (map-indexed (fn [i card] [(inc i) card]) cards))]
       (swap! ad-cache assoc user-id indexed)
-      (log/info :ad-cache-update :user user-id :count (count indexed) :start start-idx)
-      {:start start-idx :count (count indexed)})))
+      (log/info :ad-cache-update :user user-id :count (count indexed))
+      {:start 1 :count (count indexed)})))
 
 (defn get-ad
   "Get a cached ad by user-id and index."

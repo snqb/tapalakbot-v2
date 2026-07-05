@@ -104,13 +104,14 @@
            thread-id)))))
 
 (defn- rename-topic!
-  "Rename the user's active forum topic. Silently skips if no topic or not a forum."
+  "Rename the user's active forum topic. Logs errors."
   [chat-id uid new-name]
   (when-let [thread-id (get-thread-id uid)]
-    (try (tg/edit-forum-topic chat-id thread-id :name new-name)
-         (catch Exception _
-           ;; Non-forum chat or no permission — silently ignore
-           nil))))
+    (try (let [r (tg/edit-forum-topic chat-id thread-id :name new-name)]
+           (log/info :topic-renamed :user uid :thread-id thread-id :name new-name))
+         (catch Exception e
+           (log/warn e :topic-rename-failed :user uid :thread-id thread-id :name new-name
+                     :error (.getMessage e))))))
 
 (defn- topic-name-for-query
   "Generate a short topic name from the user's query text."
