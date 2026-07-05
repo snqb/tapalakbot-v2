@@ -778,8 +778,8 @@ Rules:
   (let [session-data (or @session {})
         intent (policy/classify text session-data)
         msg-count (count (get session-data "messages" []))]
-    ;; On new search intent with existing history, clear old context
-    (when (and (= intent :search) (> msg-count 1))
+    ;; On new search intent (including :unknown product queries), clear old context
+    (when (and (contains? #{:search :unknown} intent) (> msg-count 1))
       (log/info :intent-reset :user-id user-id :intent intent :msgs-cleared (- msg-count 1))
       ;; Keep only system prompt + current user message (already appended)
       (let [msgs (get session-data "messages" [])

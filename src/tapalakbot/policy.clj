@@ -73,11 +73,12 @@
       (re-find help-re tl)        :help
       (re-find thanks-re tl)      :thanks
 
-      ;; Refine: short message with refine keyword, OR short message with prior session
+      ;; Refine: ONLY explicit refinement language (not catch-all for short messages)
       (or (and (< (count t) 30)
                (contains? refine-keywords tl))
           (and (< (count t) 40)
-               (get-in session-state [:data :last-search])))
+               (get-in session-state [:data :last-search])
+               (re-find #"(?i)(дешевл|дорож|друг|ещё|еще|покажи\s+ещ|больше|меньше|другие|вариант)" tl)))
       :refine
 
       ;; Fallback
