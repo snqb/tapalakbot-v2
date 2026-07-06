@@ -329,7 +329,7 @@ Example: [113171780, 112908144, 111226783]")
                      "content" (str "User is looking for: " user-query "\n\nListings:\n" items-text
                                     "\n\nReturn JSON array of relevant listing IDs.")}]]
       (try
-        (let [resp (llm/llm :gemini-3.5-flash messages [] :provider :openrouter :max-tokens 4000)
+        (let [resp (llm/llm :deepseek-v4-pro messages [] :provider :deepseek :max-tokens 4000)
               content (get-in resp ["choices" 0 "message" "content"])
               id-set (set (parse-id-array content))
               relevant (filter #(contains? id-set (str (get % "id"))) items)]
@@ -482,7 +482,7 @@ Example: [113171780, 112908144, 111226783]")
         (log/warn :query-gen-all-attempts-failed :user-want user-want))
       (let [result
             (try
-              (let [resp (llm/llm :gemini-3.5-flash messages [] :provider :openrouter :max-tokens 500)
+              (let [resp (llm/llm :deepseek-v4-pro messages [] :provider :deepseek :max-tokens 500)
                     content (get-in resp ["choices" 0 "message" "content"])]
                 (if (or (nil? content) (str/blank? content))
                   (do (log/warn :query-gen-empty-content :attempt attempts)
@@ -533,7 +533,7 @@ Rules:
             categories-str (or categories "No categories available")]
         (let [messages [{:role "system" :content category-picker-prompt}
                         {:role "user" :content (str "Query: " user-query "\n\n" categories-str)}]
-              resp (llm/llm :gemini-3.5-flash messages [] :provider :openrouter :max-tokens 300)
+              resp (llm/llm :deepseek-v4-pro messages [] :provider :deepseek :max-tokens 300)
               content (get-in resp ["choices" 0 "message" "content"])]
           (when content
             (let [cat-id (some->> content
@@ -800,8 +800,8 @@ Rules:
      {:name "tapalakbot"
       :prompt system-prompt
       :tools tools
-      :model :gemini-3.5-flash
-      :provider :openrouter
+      :model :deepseek-v4-pro
+      :provider :deepseek
       :max-turns 8
       :max-tokens 4096
       :nudges {:max-step-blocks 3
