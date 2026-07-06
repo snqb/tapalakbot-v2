@@ -419,7 +419,7 @@ Example: [113171780, 112908144, 111226783]")
              (str "🔍 Showing " (min (count relevant) 20) " relevant candidates"
                   (str " (from " raw " raw listings across " pages " pages)")
                   (when truncated " [truncated]")
-                  ". STRICT: Use the title in [brackets] for each item. Each item has a real Lalafo URL — include it. DO NOT invent iPhones for items that are MacBooks/accessories. Check the URL slug."
+                  ". CRITICAL: Each item includes its real Lalafo URL after 🔗. Use this exact URL in your markdown links — DO NOT invent or modify the URL. The 🔗 URL is the ONLY valid link for that item."
                   "\n"
                   (str/join "\n"
                             (for [item (take 20 relevant)]
@@ -445,8 +445,9 @@ Example: [113171780, 112908144, 111226783]")
                                                 (get-in item ["images" 0 "thumbnail_url"]))]
                                   (str letter ". " (get item "title" "")
                                        " — " price-str
+                                       " 🔗 " url
                                        (when (not (str/blank? desc))
-                                          (str " — " (subs desc 0 (min 80 (count desc)))))))))))
+                                         (str " — " (subs desc 0 (min 80 (count desc)))))))))))
              :url-store {}
              :items (vec relevant)}))))))
 
@@ -610,7 +611,7 @@ Rules:
                              (str letter ". " (:title item) " — " price-str
                                   (when (:year item) (str ", " (:year item)))
                                   (when (:mileage item) (str ", " (:mileage item) "км"))))
-                         (take 8 listings)))))))
+                           (take 8 listings)))))))
 
 (defn- search-execute
   "Smart search pipeline: QueryBuilder → platform routing → multi-platform search."
@@ -624,119 +625,119 @@ Rules:
       (binding [*current-user-id* user-id]
         (let [_ (swap! url-store dissoc user-id)
             ;; Step 0: LLM-based category resolution
-            category-id (resolve-category user-want)
-            _ (when *search-status-cb*
-                (if category-id
-                  (*search-status-cb* (str "📂 Категория найдена"))
-                  (*search-status-cb* (str "🔍 Без категории — ищем по всем"))))
+              category-id (resolve-category user-want)
+              _ (when *search-status-cb*
+                  (if category-id
+                    (*search-status-cb* (str "📂 Категория найдена"))
+                    (*search-status-cb* (str "🔍 Без категории — ищем по всем"))))
             ;; Step 1: Parse user intent with QueryBuilder (price, platform)
-            qb-result (qb/build user-want :use-llm? true)
+              qb-result (qb/build user-want :use-llm? true)
         ;; Helper: check if platform should be searched (handles :all)
-            platforms (:platforms qb-result)
-            search? (fn [p] (or (some #{p} platforms) (some #{:all} platforms)))
+              platforms (:platforms qb-result)
+              search? (fn [p] (or (some #{p} platforms) (some #{:all} platforms)))
         ;; Step 2: Generate optimal queries (LLM-based)
-            {:keys [queries needs-research research-query]}
-            (generate-search-queries user-want)
+              {:keys [queries needs-research research-query]}
+              (generate-search-queries user-want)
         ;; Merge QueryBuilder price with generated price
-            final-price-min (or (get args "price_min") (:price-min qb-result))
-            final-price-max (or (get args "price_max") (:price-max qb-result))
+              final-price-min (or (get args "price_min") (:price-min qb-result))
+              final-price-max (or (get args "price_max") (:price-max qb-result))
         ;; Step 3: Optional research for niche products
-            extra-context (when (and needs-research research-query)
-                            (do-research research-query))
+              extra-context (when (and needs-research research-query)
+                              (do-research research-query))
         ;; Step 4: If research found more models, add them to queries
-            enhanced-queries (if (and extra-context (not (str/blank? extra-context)))
-                               (let [research-terms (str/split (str extra-context) #"\s+" 3)]
-                                 (vec (concat queries (filter #(> (count %) 2) research-terms))))
-                               queries)
+              enhanced-queries (if (and extra-context (not (str/blank? extra-context)))
+                                 (let [research-terms (str/split (str extra-context) #"\s+" 3)]
+                                   (vec (concat queries (filter #(> (count %) 2) research-terms))))
+                                 queries)
         ;; Step 5: Search Lalafo (if in platforms)
-            lalafo-results (when (search? :lalafo)
-                             (let [search-args {"queries" (take 6 enhanced-queries)
-                                                "category_id" (or category-id
-                                                                  (get args "category_id")
-                                                                  (:lalafo-category-id qb-result))
-                                                "price_min" final-price-min
-                                                "price_max" final-price-max
-                                                :city_id (or (get args :city_id) *user-city-id*)
-                                                "candidate_limit" 100}
-                                   result (lalafo/search search-args)]
-                               (log/info :search-lalafo :queries enhanced-queries :price [final-price-min final-price-max])
-                               (try
-                                 (let [fmt (format-search-results result :user-query user-want :price-min final-price-min :price-max final-price-max)
-                                       txt (:text fmt)
-                                       item-count (count (:items fmt))]
-                                   (log/info :search-done :urls (count (get-url-store user-id)) :chars (count txt))
-                                   (when *search-status-cb*
-                                     (*search-status-cb* (str "📊 Найдено " item-count " объявлений")))
+              lalafo-results (when (search? :lalafo)
+                               (let [search-args {"queries" (take 6 enhanced-queries)
+                                                  "category_id" (or category-id
+                                                                    (get args "category_id")
+                                                                    (:lalafo-category-id qb-result))
+                                                  "price_min" final-price-min
+                                                  "price_max" final-price-max
+                                                  :city_id (or (get args :city_id) *user-city-id*)
+                                                  "candidate_limit" 100}
+                                     result (lalafo/search search-args)]
+                                 (log/info :search-lalafo :queries enhanced-queries :price [final-price-min final-price-max])
+                                 (try
+                                   (let [fmt (format-search-results result :user-query user-want :price-min final-price-min :price-max final-price-max)
+                                         txt (:text fmt)
+                                         item-count (count (:items fmt))]
+                                     (log/info :search-done :urls (count (get-url-store user-id)) :chars (count txt))
+                                     (when *search-status-cb*
+                                       (*search-status-cb* (str "📊 Найдено " item-count " объявлений")))
                                    ;; Capture structured cards for deterministic rendering
-                                   (when (and *captured-cards* (seq (:items fmt)))
-                                     (let [remaining (- 20 (count @*captured-cards*))
-                                           cards (when (pos? remaining)
-                                                   (mapv (fn [item]
-                                                           {:title    (get item "title")
-                                                            :price    (when (get item "price") (long (get item "price")))
-                                                            :currency (get item "currency" "KGS")
-                                                            :url      (get item "url")
-                                                            :platform :lalafo
-                                                            :image    (or (get item "thumbnail_url")
-                                                                          (get-in item ["images" 0 "original_url"])
-                                                                          (get-in item ["images" 0 "thumbnail_url"]))
-                                                            :desc     (get item "desc")})
-                                                         (take remaining (:items fmt))))]
-                                       (when (seq cards)
-                                         (swap! *captured-cards* into cards)
-                                         (when *search-status-cb*
-                                           (*search-status-cb* (str "✨ Отобрано " (count @*captured-cards*) " объявлений")))
+                                     (when (and *captured-cards* (seq (:items fmt)))
+                                       (let [remaining (- 20 (count @*captured-cards*))
+                                             cards (when (pos? remaining)
+                                                     (mapv (fn [item]
+                                                             {:title (get item "title")
+                                                              :price (when (get item "price") (long (get item "price")))
+                                                              :currency (get item "currency" "KGS")
+                                                              :url (get item "url")
+                                                              :platform :lalafo
+                                                              :image (or (get item "thumbnail_url")
+                                                                         (get-in item ["images" 0 "original_url"])
+                                                                         (get-in item ["images" 0 "thumbnail_url"]))
+                                                              :desc (get item "desc")})
+                                                           (take remaining (:items fmt))))]
+                                         (when (seq cards)
+                                           (swap! *captured-cards* into cards)
+                                           (when *search-status-cb*
+                                             (*search-status-cb* (str "✨ Отобрано " (count @*captured-cards*) " объявлений")))
                                          ;; Early photo preview — send immediately, before LLM text gen
-                                         (when *early-photos-cb*
-                                           (try (*early-photos-cb* @*captured-cards*)
-                                                (catch Exception _))))))
-                                   txt)
-                                 (catch Exception e
-                                   (log/error :search-format-failed (.getMessage e)
-                                              :result-preview (subs result 0 (min 200 (count result))))
-                                   (str "Search error: " (.getMessage e))))))
+                                           (when *early-photos-cb*
+                                             (try (*early-photos-cb* @*captured-cards*)
+                                                  (catch Exception _))))))
+                                     txt)
+                                   (catch Exception e
+                                     (log/error :search-format-failed (.getMessage e)
+                                                :result-preview (subs result 0 (min 200 (count result))))
+                                     (str "Search error: " (.getMessage e))))))
         ;; Step 6: Search Mashina.kg (cars)
-            mashina-results (when (search? :mashina)
-                              (try
-                                (let [q (or (:mashina-query qb-result) (first enhanced-queries))
-                                      mr (mashina/search-cars :query q :size 6)]
-                                  (log/info :smart-search-mashina :query q :found (:total mr))
-                                  (when (seq (:listings mr))
+              mashina-results (when (search? :mashina)
+                                (try
+                                  (let [q (or (:mashina-query qb-result) (first enhanced-queries))
+                                        mr (mashina/search-cars :query q :size 6)]
+                                    (log/info :smart-search-mashina :query q :found (:total mr))
+                                    (when (seq (:listings mr))
                                     ;; Capture Mashina cards (respect 20-card total cap)
-                                    (when *captured-cards*
-                                      (let [remaining (- 20 (count @*captured-cards*))
-                                            cards (when (pos? remaining)
-                                                    (mapv (fn [item]
-                                                            {:title    (:title item)
-                                                             :price    (when-let [p (get-in item [:price :amount])]
-                                                                         (long p))
-                                                             :currency (get-in item [:price :currency] "KGS")
-                                                             :url      (:url item)
-                                                             :platform :mashina
-                                                             :year     (:year item)
-                                                             :mileage  (when-let [m (:mileage item)]
-                                                                         (when (number? m) (long m)))
-                                                             :city     (:city item)})
-                                                          (take remaining (:listings mr))))]
-                                        (when (seq cards)
-                                          (swap! *captured-cards* into cards))))
-                                    (format-mashina-results mr)))
-                                (catch Exception e
-                                  (log/warn :mashina-search-failed (.getMessage e))
-                                  nil)))]
+                                      (when *captured-cards*
+                                        (let [remaining (- 20 (count @*captured-cards*))
+                                              cards (when (pos? remaining)
+                                                      (mapv (fn [item]
+                                                              {:title (:title item)
+                                                               :price (when-let [p (get-in item [:price :amount])]
+                                                                        (long p))
+                                                               :currency (get-in item [:price :currency] "KGS")
+                                                               :url (:url item)
+                                                               :platform :mashina
+                                                               :year (:year item)
+                                                               :mileage (when-let [m (:mileage item)]
+                                                                          (when (number? m) (long m)))
+                                                               :city (:city item)})
+                                                            (take remaining (:listings mr))))]
+                                          (when (seq cards)
+                                            (swap! *captured-cards* into cards))))
+                                      (format-mashina-results mr)))
+                                  (catch Exception e
+                                    (log/warn :mashina-search-failed (.getMessage e))
+                                    nil)))]
         ;; Combine results + capture stats
-        (let [combined (str (when lalafo-results lalafo-results)
-                           (when mashina-results (str "\n\n" mashina-results)))]
+          (let [combined (str (when lalafo-results lalafo-results)
+                              (when mashina-results (str "\n\n" mashina-results)))]
           ;; Compute and capture stats from captured cards
-          (when (and *captured-stats* *captured-cards*)
-            (let [prices (keep :price @*captured-cards*)]
-              (when (seq prices)
-                (reset! *captured-stats*
-                        {:avg   (long (/ (reduce + prices) (count prices)))
-                         :min   (apply min prices)
-                         :max   (apply max prices)
-                         :count (count prices)}))))
-          combined))))))
+            (when (and *captured-stats* *captured-cards*)
+              (let [prices (keep :price @*captured-cards*)]
+                (when (seq prices)
+                  (reset! *captured-stats*
+                          {:avg (long (/ (reduce + prices) (count prices)))
+                           :min (apply min prices)
+                           :max (apply max prices)
+                           :count (count prices)}))))
+            combined))))))
 
 (def tools
   [{:name "research"
@@ -746,7 +747,7 @@ Rules:
              [:query {:optional true} :string]]
     :execute research-execute}
 
-    {:name "search"
+   {:name "search"
     :description "Search for actual listings on Lalafo.kg and Mashina.kg. Returns prices, URLs, and photos."
     :schema [:map
              [:user_want {:optional false} :string]
@@ -778,15 +779,17 @@ Rules:
   (let [session-data (or @session {})
         intent (policy/classify text session-data)
         msg-count (count (get session-data "messages" []))]
-    ;; On new search intent (including :unknown product queries), clear old context
+    ;; On new search intent (including :unknown product queries), clear old context + heap
     (when (and (contains? #{:search :unknown} intent) (> msg-count 1))
       (log/info :intent-reset :user-id user-id :intent intent :msgs-cleared (- msg-count 1))
-      ;; Keep only system prompt + current user message (already appended)
+      ;; Keep only current user message (system prompt is prepended by harness)
       (let [msgs (get session-data "messages" [])
-            system-msg (first (filter #(= "system" (get % "role")) msgs))
             current-user-msg (last (filter #(= "user" (get % "role")) msgs))
-            fresh-msgs (vec (remove nil? [system-msg current-user-msg]))]
-        (swap! session assoc "messages" fresh-msgs))
+            fresh-msgs (vec (remove nil? [current-user-msg]))]
+        (swap! session assoc "messages" fresh-msgs)
+        ;; Clear heap so old tool results don't leak
+        (swap! session assoc-in ["data" "heap"] nil)
+        (swap! session update "data" dissoc "last-search"))
       "Note: Fresh search — previous conversation context was cleared.")))
 
 ;; ══════════════════════ BOT FACTORY ══════════════════════
@@ -844,7 +847,7 @@ Rules:
        (cache-ads! user-id cards))
      (log/info :ask-stream-done :text-len (count agent-text) :cards (count cards)
                :has-stats (some? stats))
-     {:text  (or agent-text "")
+     {:text (or agent-text "")
       :cards cards
       :stats stats})))
 
