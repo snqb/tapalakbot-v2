@@ -1,0 +1,8 @@
+.cpcache
+target
+.git
+test
+notebooks
+AGENTS.md
+*.iml
+.cpcache
