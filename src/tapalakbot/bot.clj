@@ -794,8 +794,19 @@
                         (show-status! "🔍 Ищу подробнее...")
                         (t/ask-stream uid (str "найди " text) status-cb {:stream-cb stream-cb :city-id city-id}))
                       result)
-            agent-text (:text result*)
             all-cards (:cards result*)
+            ;; URL verification: replace any hallucinated link with warning
+            agent-text (if (seq all-cards)
+                         (let [valid-urls (set (keep :url all-cards))]
+                           (clojure.string/replace (or (:text result*) "")
+                             ;; Match [text](url) and replace if URL not in valid set
+                             #"\[([^\]]*)\]\(([^)]+)\)"
+                             (fn [[_ label url]]
+                               (if (valid-urls url)
+                                 (str "[" label "](" url ")")
+                                 (do (log/warn :url-hallucination-replaced :url url)
+                                     (str "⚠️ " label " (ссылка недоступна)"))))))
+                         (:text result*))
             suggestions (when (empty? all-cards) (suggest-alternatives text))
             no-results-intro (if (seq agent-text)
                                agent-text
