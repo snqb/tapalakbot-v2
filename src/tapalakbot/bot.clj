@@ -711,33 +711,12 @@
         kb (or keyboard default-kb)
         intro (:intro reply)
         cards (:cards reply)]
-    (log/info :render-and-send :text-len (count intro) :has-kb (boolean kb) :has-cards (seq cards) :thread-id thread-id)
+    (log/info :render-and-send :text-len (count intro) :has-kb (boolean kb) :thread-id thread-id)
     (try
-      (if (and (seq intro) (empty? cards))
-        ;; Pure agent text → Rich Messages (native tables/headings/code)
-        (do
-          (log/info :send-md-start :text-len (count intro))
-          (tg/send-md chat-id intro :reply_markup kb :thread-id thread-id)
-          (log/info :send-md-done))
-        ;; Cards present → deterministic HTML render + photos
-        (let [html (render/render-reply reply)]
-          (log/info :send-html-start :html-len (count html))
-          (if kb
-            (tg/send-message chat-id html :parse-mode "HTML" :reply_markup kb :thread-id thread-id)
-            (tg/send-message chat-id html :parse-mode "HTML" :thread-id thread-id))
-          (log/info :send-html-done)
-          ;; Send card photos as a media group album (skip if already sent early)
-          (when-not photos-already-sent?
-            (let [photo-items (mapv (fn [c]
-                                      {:url (:image c)
-                                       :caption (str "<b>" (render/escape-html (:title c "")) "</b>"
-                                                     (when-let [p (:price c)]
-                                                       (str " — " (render/format-price p) " " (or (:currency c) "сом"))))})
-                                    (take 8 (filter #(not (str/blank? (:image %)))
-                                                    (filter :image cards))))]
-              (when (seq photo-items)
-                (log/info :send-photos :count (count photo-items))
-                (tg/send-media-group chat-id photo-items :thread-id thread-id))))))
+      (when (and intro (not (str/blank? intro)))
+        (log/info :send-md-start :text-len (count intro))
+        (tg/send-md chat-id intro :reply_markup kb :thread-id thread-id)
+        (log/info :send-md-done))
       (catch Exception e
         (log/error e :tg-send-failed :msg (.getMessage e))
         (try (tg/send-message chat-id (or intro "Ошибка — попробуйте ещё раз.") :parse-mode nil :thread-id thread-id)
@@ -748,43 +727,61 @@
    Loading: sendMessage status → editMessageText progress → final Rich Message after."
   [{:keys [chat-id user-id text thread-id] :as msg}]
   (let [uid (str "tg-" user-id)
-        thread-id (or thread-id
-                      (get-thread-id uid)
-                      (ensure-topic! chat-id uid (str "🔍 " (subs text 0 (min 30 (count text)))))
-                      nil)
+        is-dm? (pos? chat-id)
+        thread-id (when-not is-dm?
+                    (or thread-id
+                        (get-thread-id uid)
+                        (ensure-topic! chat-id uid (str "🔍 " (subs text 0 (min 30 (count text)))))
+                        nil))
         buf (StringBuilder.)
         last-edit (atom 0)
         last-typing (atom 0)
-        status-msg (atom nil)
-        ;; Status message: send once, edit with progress, leave it (don't delete)
+        draft-id (when is-dm? (long (+ (System/currentTimeMillis) (rand-int 10000))))
+        status-msg (when-not is-dm? (atom nil))
+        ;; DM mode: sendRichMessageDraft animated preview (throttled 800ms)
+        send-draft!
+        (when is-dm?
+          (fn [preview]
+            (let [now (System/currentTimeMillis)]
+              (when (> (- now @last-edit) 800)
+                (reset! last-edit now)
+                (try (tg/send-rich-message-draft chat-id draft-id :markdown preview)
+                     (catch Exception _))))))
+        ;; Group mode: send/edit status message
         show-status!
-        (fn [status-text]
-          (if-not @status-msg
-            ;; First call — send the message
-            (let [result (try (tg/send-message chat-id status-text :parse-mode nil :thread-id thread-id)
-                              (catch Exception _))]
-              (reset! status-msg result))
-            ;; Subsequent calls — edit it
-            (when-let [mid (get @status-msg "message_id")]
-              (try (tg/edit-message chat-id mid status-text :parse-mode nil :thread-id thread-id)
-                   (catch Exception _)))))
+        (when-not is-dm?
+          (fn [status-text]
+            (if-not @status-msg
+              ;; First call — send the message
+              (let [result (try (tg/send-message chat-id status-text :parse-mode nil :thread-id thread-id)
+                                (catch Exception _))]
+                (reset! status-msg result))
+              ;; Subsequent calls — edit it
+              (when-let [mid (get @status-msg "message_id")]
+                (try (tg/edit-message chat-id mid status-text :parse-mode nil :thread-id thread-id)
+                     (catch Exception _))))))
         stream-cb (fn [delta]
                     (.append buf delta)
                     (let [now (System/currentTimeMillis)]
-                      ;; Typing indicator
-                      (when (> (- now @last-typing) 4000)
+                      ;; Typing indicator every 3s (avoids 5s expiry gap)
+                      (when (> (- now @last-typing) 3000)
                         (reset! last-typing now)
                         (try (tg/send-typing chat-id) (catch Exception _)))
-                      ;; Update status with streaming text preview (throttled 1500ms)
-                      (when (and (> (- now @last-edit) 1500)
-                                 (> (.length buf) 50))
+                      ;; Streaming preview (throttled 1500ms / 800ms)
+                      (when (> (- now @last-edit) (if is-dm? 800 1500))
                         (reset! last-edit now)
-                        (let [preview (str/trimr (subs (.toString buf) 0 (min (count (.toString buf)) 600)))]
-                          (show-status! preview)))))
+                        (when (and (> (.length buf) 50) (not (str/blank? (.toString buf))))
+                          (let [preview (str/trimr (subs (.toString buf) 0 (min (count (.toString buf)) 800)))]
+                            (if is-dm?
+                              (send-draft! preview)
+                              (show-status! preview)))))))
         status-cb (fn [status]
-                    (when status (show-status! status)))]
-    ;; Initial status message
-    (show-status! (str "🔍 Ищу «" (subs text 0 (min 40 (count text))) "»..."))
+                    (when status
+                      (if is-dm? (send-draft! status) (show-status! status))))]
+    ;; Initial feedback
+    (if is-dm?
+      (try (tg/send-typing chat-id) (catch Exception _))
+      (show-status! (str "🔍 Ищу «" (subs text 0 (min 40 (count text))) "»...")))
     (try
       (let [city-id @(:city-id (get-user-state uid))
             result (t/ask-stream uid text status-cb {:stream-cb stream-cb :city-id city-id})
@@ -903,11 +900,11 @@
           :user-id (get user "id")
           :first-name (get user "first_name" "друг")
           :text (get msg "text")
-          :message-id (get msg "message_id")}
+          :message-id (get msg "message_id")
           thread-id (assoc :thread-id thread-id)
           loc
           (assoc :location {:lat (get loc "latitude")
-                            :lon (get loc "longitude")}))))))
+                            :lon (get loc "longitude")})})))))
 
 (defn extended-handler
   "Handler that processes both messages and callback queries."

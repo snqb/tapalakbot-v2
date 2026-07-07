@@ -803,7 +803,7 @@ Rules:
       :model :deepseek-v4-pro
       :provider :deepseek
       :max-turns 8
-      :max-tokens 4096
+      :max-tokens 16384
       :nudges {:max-step-blocks 3
                :recover-tool-errors? true}
       :pre-hook pre-hook
