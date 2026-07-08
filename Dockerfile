@@ -1,6 +1,5 @@
 FROM clojure:temurin-21-tools-deps-bookworm-slim
 RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
-RUN echo 149.154.167.220 api.telegram.org >> /etc/hosts
 WORKDIR /app
 COPY deps.edn ./
 RUN clojure -P
