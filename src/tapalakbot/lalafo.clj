@@ -43,9 +43,11 @@
 ;; ══════════════════════════ HTTP ══════════════════════════
 
 (defn- build-client []
-  "Create a Java HttpClient with 10s connect timeout, 20s request timeout."
+  "Create a Java HttpClient with 10s connect timeout, 20s request timeout.
+   expectContinue(false) prevents 417 errors through proxies/WAFs."
   (.. (HttpClient/newBuilder)
       (connectTimeout (Duration/ofSeconds 10))
+      (.expectContinue false)
       (build)))
 
 (defn- get-json
