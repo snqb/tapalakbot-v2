@@ -729,11 +729,13 @@
   [{:keys [chat-id user-id text thread-id] :as msg}]
   (let [uid (str "tg-" user-id)
         is-dm? (pos? chat-id)
-        thread-id (when-not is-dm?
-                    ;; Always create a NEW topic per query — never reuse stored thread-ids
+        ;; In threaded DMs, pass thread-id through. Forum groups: create/rename topics.
+        thread-id (if is-dm?
+                    thread-id  ; just pass through (DM threads are auto-created by Telegram)
                     (or thread-id
-                        (ensure-topic! chat-id uid (str "🔍 " (subs text 0 (min 30 (count text)))))))
-        buf (StringBuilder.)
+                        (get-thread-id uid)
+                        (ensure-topic! chat-id uid (str "🔍 " (subs text 0 (min 30 (count text)))))
+                        nil))
         last-edit (atom 0)
         last-typing (atom 0)
         draft-id (when is-dm? (long (+ (System/currentTimeMillis) (rand-int 10000))))
@@ -745,7 +747,7 @@
             (let [now (System/currentTimeMillis)]
               (when (> (- now @last-edit) 800)
                 (reset! last-edit now)
-                (try (tg/send-rich-message-draft chat-id draft-id :markdown preview)
+                (try (tg/send-rich-message-draft chat-id draft-id :markdown preview :thread-id thread-id)
                      (catch Exception _))))))
         ;; Group mode: send/edit status message
         show-status!
