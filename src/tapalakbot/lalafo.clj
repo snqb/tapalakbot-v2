@@ -28,7 +28,6 @@
 (def ^:private default-headers
   {"Accept" "application/json, text/plain, */*"
    "Accept-Language" "en-US,en;q=0.9"
-   "Device" "pc"
    "Language" "ru_RU"
    "Country-Id" "12"
    "sec-ch-ua" "\"Chromium\";v=\"142\", \"Google Chrome\";v=\"142\""
@@ -43,11 +42,9 @@
 ;; ══════════════════════════ HTTP ══════════════════════════
 
 (defn- build-client []
-  "Create a Java HttpClient with 10s connect timeout, 20s request timeout.
-   expectContinue(false) prevents 417 errors through proxies/WAFs."
+  "Create a Java HttpClient with 10s connect timeout."
   (.. (HttpClient/newBuilder)
       (connectTimeout (Duration/ofSeconds 10))
-      (.expectContinue false)
       (build)))
 
 (defn- get-json
