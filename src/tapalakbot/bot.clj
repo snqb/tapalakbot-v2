@@ -88,20 +88,21 @@
     (reset! (:thread-id st) thread-id)))
 
 (defn- ensure-topic!
-  "Create a new forum topic for the user if they don't have one.
+  "Create a NEW forum topic EVERY time — never reuse old thread-ids.
    Stores the message_thread_id in user-state. Returns thread-id or nil.
    Returns nil gracefully if the chat doesn't support forum topics (e.g. private DMs)."
   ([chat-id uid] (ensure-topic! chat-id uid "Новый диалог"))
   ([chat-id uid topic-name]
-   (or (get-thread-id uid)
-       (when-let [result (try (tg/create-forum-topic chat-id topic-name :icon-color 0x6FB9F0)
-                              (catch Exception e
-                                (log/info :topic-create-skipped :chat chat-id :reason (.getMessage e))
-                                nil))]
-         (let [thread-id (get result "message_thread_id")]
-           (set-thread-id! uid thread-id)
-           (log/info :topic-created :user uid :thread-id thread-id :name topic-name)
-           thread-id)))))
+   (when-let [envelope (try (tg/create-forum-topic chat-id topic-name :icon-color 0x6FB9F0)
+                            (catch Exception e
+                              (log/info :topic-create-skipped :chat chat-id :reason (.getMessage e))
+                              nil))]
+     ;; tg/call returns {"ok":true, "result": {"message_thread_id": N}} — unwrap result first!
+     (let [result (get envelope "result" envelope)
+           thread-id (get result "message_thread_id")]
+       (set-thread-id! uid thread-id)
+       (log/info :topic-created :user uid :thread-id thread-id :name topic-name)
+       thread-id))))
 
 (defn- rename-topic!
   "Rename the user's active forum topic. Logs errors."
@@ -729,10 +730,9 @@
   (let [uid (str "tg-" user-id)
         is-dm? (pos? chat-id)
         thread-id (when-not is-dm?
+                    ;; Always create a NEW topic per query — never reuse stored thread-ids
                     (or thread-id
-                        (get-thread-id uid)
-                        (ensure-topic! chat-id uid (str "🔍 " (subs text 0 (min 30 (count text)))))
-                        nil))
+                        (ensure-topic! chat-id uid (str "🔍 " (subs text 0 (min 30 (count text)))))))
         buf (StringBuilder.)
         last-edit (atom 0)
         last-typing (atom 0)
@@ -922,7 +922,7 @@
   [parsed]
   (if (:callback-id parsed)
     (log/info :extended-handler :callback (:callback-id parsed) :data (:data parsed))
-    (log/info :extended-handler :text (:text parsed)))
+    (log/info :extended-handler :text (:text parsed) :chat-id (:chat-id parsed) :thread-id (:thread-id parsed)))
   (cond
     ;; Callback query (inline keyboard button pressed) — process async
     (:callback-id parsed)
