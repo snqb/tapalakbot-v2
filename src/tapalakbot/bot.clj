@@ -791,7 +791,7 @@
                       (do
                         (log/info :fallback-auto-search :query text)
                         (.setLength buf 0)
-                        (show-status! "🔍 Ищу подробнее...")
+                        (when-not is-dm? (show-status! "🔍 Ищу подробнее..."))
                         (t/ask-stream uid (str "найди " text) status-cb {:stream-cb stream-cb :city-id city-id}))
                       result)
             all-cards (:cards result*)
