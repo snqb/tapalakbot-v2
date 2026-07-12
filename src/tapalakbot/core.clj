@@ -204,6 +204,10 @@ If a listing price is less than 50% of market average OR less than 50% of known 
    Atom holding {:avg :min :max :count}."
   nil)
 
+(def ^:dynamic *captured-query*
+  "Exact marketplace query passed to the search tool during this turn."
+  nil)
+
 (def ^:dynamic *user-city-id*
   "User's preferred city_id for search. nil = all cities.
    Bound by ask-stream from user state."
@@ -636,6 +640,8 @@ Rules:
       (str "ERROR: search requires a user_want parameter — the product you want to find. "
            "Use the exact text the user asked about.")
       (binding [*current-user-id* user-id]
+        (when *captured-query*
+          (reset! *captured-query* user-want))
         (let [_ (swap! url-store dissoc user-id)
             ;; Step 0: LLM-based category resolution
               category-id (resolve-category user-want)
@@ -844,8 +850,10 @@ Rules:
   ([user-id text status-cb {:keys [stream-cb city-id search-status-cb early-photos-cb]}]
    (let [cards-atom (atom [])
          stats-atom (atom nil)
+         query-atom (atom nil)
          effective-stream-cb (or stream-cb (fn [_]))
          result (binding [*captured-cards* cards-atom
+                          *captured-query* query-atom
                           *current-user-id* user-id
                           *captured-stats* stats-atom
                           *user-city-id* city-id
@@ -857,7 +865,8 @@ Rules:
                    :status-cb status-cb))
          agent-text (if (map? result) (:content result) (str result))
          cards @cards-atom
-         stats @stats-atom]
+         stats @stats-atom
+         query @query-atom]
      ;; Cache ads for /N drill-down
      (when (seq cards)
        (cache-ads! user-id cards))
@@ -865,7 +874,8 @@ Rules:
                :has-stats (some? stats))
      {:text (or agent-text "")
       :cards cards
-      :stats stats})))
+      :stats stats
+      :query query})))
 
 ;; ══════════════════════ MAIN ══════════════════════
 

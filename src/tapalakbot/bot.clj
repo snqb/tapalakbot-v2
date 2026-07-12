@@ -811,6 +811,7 @@
                                        :city-id city-id
                                        :search-status-cb status-cb}))
                       result)
+            effective-query (or (:query result*) text)
             all-cards (:cards result*)
             ;; URL verification: replace any hallucinated link with warning
             agent-text (if (seq all-cards)
@@ -842,9 +843,9 @@
                        (seq all-cards)
                        (let [max-q (- 64 8)]
                          {"inline_keyboard"
-                          [[{"text" "🔄 Ещё результаты" "callback_data" (str "more:" (truncate-cb text (- 64 5)))}]
-                           [{"text" "⬇️ Дешевле" "callback_data" (str "cheaper:" (truncate-cb text max-q))}
-                            {"text" "⬆️ Дороже" "callback_data" (str "dearer:" (truncate-cb text (- 64 7)))}]]})
+                          [[{"text" "🔄 Ещё результаты" "callback_data" (str "more:" (truncate-cb effective-query (- 64 5)))}]
+                           [{"text" "⬇️ Дешевле" "callback_data" (str "cheaper:" (truncate-cb effective-query max-q))}
+                            {"text" "⬆️ Дороже" "callback_data" (str "dearer:" (truncate-cb effective-query (- 64 7)))}]]})
                        (seq suggestions)
                        {"inline_keyboard"
                         (mapv (fn [s]
@@ -876,14 +877,14 @@
         (when (seq all-cards)
           (t/cache-ads! user-uid all-cards))
         ;; Rename topic
-        (let [topic-name (topic-name-for-query text)]
+        (let [topic-name (topic-name-for-query effective-query)]
           (rename-topic! chat-id user-uid topic-name))
         ;; Track button
-        (when (and (seq all-cards) (> (count text) 3))
+        (when (and (seq all-cards) (> (count effective-query) 3))
           (try
             (Thread/sleep 500)
-            (let [track-btn (track-context-button user-id text)]
-              (tg/send-message chat-id (str "🔔 Хотите отслеживать «" text "»?")
+            (let [track-btn (track-context-button user-id effective-query)]
+              (tg/send-message chat-id (str "🔔 Хотите отслеживать «" effective-query "»?")
                                :reply_markup track-btn :thread-id thread-id))
             (catch Exception e
               (log/warn e :track-button-fail)))))

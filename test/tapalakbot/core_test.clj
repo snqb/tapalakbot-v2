@@ -1,5 +1,6 @@
 (ns tapalakbot.core-test
-  (:require [clj-harness.llm :as llm]
+  (:require [clj-harness.core :as harness]
+            [clj-harness.llm :as llm]
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
             [tapalakbot.core :as core]
@@ -48,3 +49,11 @@
               {"thumbnail_url" "https://cdn/thumb.jpg"
                "images" [{"original_url" "https://cdn/original.jpg"
                           "thumbnail_url" "https://cdn/nested-thumb.jpg"}]}))))))
+
+(deftest ask-stream-returns-the-query-used-by-search
+  (with-redefs [harness/handle-message-stream!
+                (fn [_bot _user-id _text _stream-cb & _options]
+                  (reset! core/*captured-query* "ноутбук i5 дешевле")
+                  {:content "Готово"})]
+    (is (= "ноутбук i5 дешевле"
+           (:query (core/ask-stream "tg-42" "дешевле" nil))))))
