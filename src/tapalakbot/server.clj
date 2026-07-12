@@ -26,16 +26,10 @@
       (log/info :monitor-not-running :starting)
       (try
         (require 'tapalakbot.monitor.main)
-        (let [main-fn (resolve 'tapalakbot.monitor.main/-main)]
-          (.start (Thread. ^Runnable (fn [] (main-fn)) "monitor-service"))
-          ;; Poll with backoff — initial scan can take 15-30s
-          (loop [attempt 0]
-            (Thread/sleep (min 3000 (* 1000 (inc attempt))))
-            (if (monitor/health-check)
-              (log/info :monitor-started :attempt (inc attempt))
-              (if (< attempt 10)
-                (recur (inc attempt))
-                (log/warn :monitor-start-failed)))))
+        (let [main-fn (resolve 'tapalakbot.monitor.main/-main)
+              worker (Thread. ^Runnable (fn [] (main-fn)) "monitor-service")]
+          (.start worker)
+          (log/info :monitor-starting))
         (catch Exception e
           (log/warn :monitor-start-error (.getMessage e)))))))
 ;; ══════════════════════ WEBHOOK AUTHENTICATION ══════════════════════
