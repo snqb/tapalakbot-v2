@@ -3,7 +3,6 @@
    Tests query generation, multi-platform search, formatting, and citation replacement."
   (:require [tapalakbot.core :as t]
             [tapalakbot.mashina :as mashina]
-            [tapalakbot.bazar :as bazar]
             [tapalakbot.lalafo :as lalafo]
             [clojure.string :as str]
             [cheshire.core :as json]
@@ -60,13 +59,6 @@
     (catch Exception e
       {:ok false :error (.getMessage e)})))
 
-(defn- test-bazar [query]
-  (try
-    (let [result (bazar/search :category :transport-cars :brand query)]
-      {:ok true :items (count (:listings result))
-       :sample (take 2 (map :title (:listings result)))})
-    (catch Exception e
-      {:ok false :error (.getMessage e)})))
 
 (defn- test-query-gen [query]
   (try
@@ -125,14 +117,8 @@
             (print (if (:ok ms) (format "✅ (%d total)" (:total ms)) "❌"))
             (println)
             (swap! results conj {:test (str "mashina:" query) :result ms})))
+        ))
 
-        ;; Bazar search
-        (when (= category "auto")
-          (print "    bazar... ") (flush)
-          (let [bz (test-bazar query)]
-            (print (if (:ok bz) (format "✅ (%d items)" (:items bz)) "❌"))
-            (println)
-            (swap! results conj {:test (str "bazar:" query) :result bz})))))
 
     ;; Summary
     (let [elapsed (- (System/currentTimeMillis) start-time)

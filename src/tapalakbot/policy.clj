@@ -55,7 +55,12 @@
                    :refine :compare :search :unknown"
   [text session-state]
   (let [t (str/trim (or text ""))
-        tl (str/lower-case t)]  ;; lowercase for Cyrillic regex (Java (?i) doesn't handle Cyrillic)
+        tl (str/lower-case t)
+        active-search? (or (get-in session-state [:data :last-search])
+                           (get-in session-state ["data" "last-search"])
+                           (> (count (or (get session-state "messages")
+                                         (:messages session-state)))
+                              1))]
     (cond
       ;; Blank → unknown
       (str/blank? t)
@@ -73,12 +78,14 @@
       (re-find help-re tl)        :help
       (re-find thanks-re tl)      :thanks
 
-      ;; Refine: ONLY explicit refinement language (not catch-all for short messages)
+      ;; Refine only explicit modifiers or short grammatical continuations
+      ;; when a conversation already exists. A bare new product remains unknown.
       (or (and (< (count t) 30)
                (contains? refine-keywords tl))
-          (and (< (count t) 40)
-               (get-in session-state [:data :last-search])
-               (re-find #"(?i)(дешевл|дорож|друг|ещё|еще|покажи\s+ещ|больше|меньше|другие|вариант)" tl)))
+          (and active-search?
+               (< (count t) 40)
+               (or (re-find #"(дешевл|дорож|друг|ещё|еще|покажи\s+ещ|больше|меньше|вариант)" tl)
+                   (re-find #"^(а\s+|с\s+|без\s+|только\s+)" tl))))
       :refine
 
       ;; Fallback

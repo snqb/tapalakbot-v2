@@ -210,22 +210,6 @@
 
 ;; ════════════════════════════ BAZAR CATEGORY TESTS ════════════════════════════
 
-(defn test-bazar-categories []
-  (println "\n🏪 === Bazar Category Tests ===")
-  (assert-eq "car → transport-cars" (qb/match-bazar-category "машина") :transport-cars)
-  (assert-eq "auto → transport-cars" (qb/match-bazar-category "авто hyundai") :transport-cars)
-  (assert-eq "moto → transport-moto" (qb/match-bazar-category "мотоцикл") :transport-moto)
-  (assert-eq "phone → electronics" (qb/match-bazar-category "телефон") :electronics)
-  (assert-eq "laptop → electronics" (qb/match-bazar-category "ноутбук") :electronics)
-  (assert-eq "home → home-garden" (qb/match-bazar-category "дом и сад") :home-garden)
-  (assert-eq "kids → children" (qb/match-bazar-category "детское кресло") :children)
-  (assert-eq "clothes → clothing" (qb/match-bazar-category "одежда") :clothing)
-  (assert-eq "service → services" (qb/match-bazar-category "услуги") :services)
-  (assert-eq "job → jobs" (qb/match-bazar-category "работа") :jobs)
-  (assert-eq "pet → animals" (qb/match-bazar-category "животные") :animals)
-  (assert-eq "realty → real-estate" (qb/match-bazar-category "недвижимость") :real-estate)
-  (assert-eq "parts → transport-parts" (qb/match-bazar-category "запчасти") :transport-parts)
-  (assert-eq "default → electronics" (qb/match-bazar-category "что-то неизвестное") :electronics))
 
 ;; ════════════════════════════ QUERY STRIPPING TESTS ════════════════════════════
 
@@ -300,7 +284,6 @@
   (test-price-extraction)
   (test-price-edge-cases)
   (test-platform-detection)
-  (test-bazar-categories)
   (test-query-stripping)
   (test-full-build)
   
@@ -320,5 +303,3 @@
     
     {:passed passed :failed failed :total total :errors errors}))
 
-;; For direct script execution
-(run-all)

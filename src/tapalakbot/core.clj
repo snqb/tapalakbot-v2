@@ -329,7 +329,7 @@ Example: [113171780, 112908144, 111226783]")
                      "content" (str "User is looking for: " user-query "\n\nListings:\n" items-text
                                     "\n\nReturn JSON array of relevant listing IDs.")}]]
       (try
-        (let [resp (llm/llm :deepseek-v4-pro messages [] :provider :deepseek :max-tokens 4000)
+        (let [resp (llm/llm :gemini-3.5-flash messages [] :provider :openrouter :max-tokens 4000)
               content (get-in resp ["choices" 0 "message" "content"])
               id-set (set (parse-id-array content))
               relevant (filter #(contains? id-set (str (get % "id"))) items)]
@@ -382,6 +382,14 @@ Example: [113171780, 112908144, 111226783]")
                 {:items [] :outliers 0}
                 by-currency)]
     (update result :items vec)))
+
+(defn preferred-lalafo-image
+  "Choose the highest-resolution image exposed by a Lalafo item."
+  [item]
+  (or (get-in item ["images" 0 "original_url"])
+      (get item "original_url")
+      (get item "thumbnail_url")
+      (get-in item ["images" 0 "thumbnail_url"])))
 
 (defn- format-search-results [result-json & {:keys [user-query price-min price-max] :or {user-query ""}}]
   "Format JSON search result into readable text for LLM.
@@ -482,7 +490,7 @@ Example: [113171780, 112908144, 111226783]")
         (log/warn :query-gen-all-attempts-failed :user-want user-want))
       (let [result
             (try
-              (let [resp (llm/llm :deepseek-v4-pro messages [] :provider :deepseek :max-tokens 500)
+              (let [resp (llm/llm :gemini-3.5-flash messages [] :provider :openrouter :max-tokens 500)
                     content (get-in resp ["choices" 0 "message" "content"])]
                 (if (or (nil? content) (str/blank? content))
                   (do (log/warn :query-gen-empty-content :attempt attempts)
@@ -533,7 +541,7 @@ Rules:
             categories-str (or categories "No categories available")]
         (let [messages [{:role "system" :content category-picker-prompt}
                         {:role "user" :content (str "Query: " user-query "\n\n" categories-str)}]
-              resp (llm/llm :deepseek-v4-pro messages [] :provider :deepseek :max-tokens 300)
+              resp (llm/llm :gemini-3.5-flash messages [] :provider :openrouter :max-tokens 300)
               content (get-in resp ["choices" 0 "message" "content"])]
           (when content
             (let [cat-id (some->> content
@@ -590,33 +598,38 @@ Rules:
                 category-name-map)))))
 
 (defn- format-mashina-results
-  "Format Mashina.kg car search results. Compact format to save LLM context tokens."
+  "Format Mashina.kg car results with the exact source URL available to the
+   answer model. Compact enough for tool context."
   [result]
   (let [listings (:listings result)
         total (:total result)]
     (str "🚗 **Mashina.kg** — " (count listings) " авто"
-         (when (> total (count listings)) (str " из " total " объявлений")) "\n"
-         (str/join "\n"
-                   (mapv (fn [item]
-                           (let [idx (count (get @url-store *current-user-id* {}))
-                                 letter (col-letter idx)
-                                 price (get-in item [:price :amount])
-                                 price-str (if price
-                                             (str (format "%,.0f" (double price)) " сом")
-                                             "цена не указана")
-                                 url (:url item)]
-                             (when (and *current-user-id* url (not (str/blank? url)))
-                               (swap! url-store assoc-in [*current-user-id* letter]
-                                      {:url url :title (:title item) :item-id (str (:id item))}))
-                             (str letter ". " (:title item) " — " price-str
-                                  (when (:year item) (str ", " (:year item)))
-                                  (when (:mileage item) (str ", " (:mileage item) "км"))))
-                           (take 8 listings)))))))
+         (when (> total (count listings)) (str " из " total " объявлений"))
+         "\n"
+         (str/join
+          "\n"
+          (mapv
+           (fn [item]
+             (let [idx (count (get @url-store *current-user-id* {}))
+                   letter (col-letter idx)
+                   price (get-in item [:price :amount])
+                   price-str (if price
+                               (str (format "%,.0f" (double price)) " сом")
+                               "цена не указана")
+                   url (:url item)]
+               (when (and *current-user-id* url (not (str/blank? url)))
+                 (swap! url-store assoc-in [*current-user-id* letter]
+                        {:url url :title (:title item) :item-id (str (:id item))}))
+               (str letter ". " (:title item) " — " price-str
+                    (when (:year item) (str ", " (:year item)))
+                    (when (:mileage item) (str ", " (:mileage item) "км"))
+                    " 🔗 " url)))
+           (take 8 listings))))))
 
 (defn- search-execute
   "Smart search pipeline: QueryBuilder → platform routing → multi-platform search."
   [args]
-  (let [user-id (or (get-thread-user-id) (get args "_user_id") "anonymous")
+  (let [user-id (or *current-user-id* (get args "_user_id") "anonymous")
         user-want (get args "user_want")]
     ;; Guard: if user_want is nil/blank, return error immediately
     (if (or (nil? user-want) (str/blank? user-want))
@@ -678,9 +691,7 @@ Rules:
                                                               :currency (get item "currency" "KGS")
                                                               :url (get item "url")
                                                               :platform :lalafo
-                                                              :image (or (get item "thumbnail_url")
-                                                                         (get-in item ["images" 0 "original_url"])
-                                                                         (get-in item ["images" 0 "thumbnail_url"]))
+                                                              :image (preferred-lalafo-image item)
                                                               :desc (get item "desc")})
                                                            (take remaining (:items fmt))))]
                                          (when (seq cards)
@@ -800,14 +811,18 @@ Rules:
      {:name "tapalakbot"
       :prompt system-prompt
       :tools tools
-      :model :deepseek-v4-pro
-      :provider :deepseek
+      :model :gemini-3.5-flash
+      :provider :openrouter
       :max-turns 8
       :max-tokens 16384
       :nudges {:max-step-blocks 3
                :recover-tool-errors? true}
       :pre-hook pre-hook
-      :persistence (sess/create "/tmp/tapalakbot-sessions.db")
+      :persistence (let [db-path (or (System/getenv "SESSION_DB_PATH")
+                                     "data/tapalakbot-sessions.db")
+                         parent (.getParentFile (java.io.File. db-path))]
+                     (when parent (.mkdirs parent))
+                     (sess/create db-path))
       :effects? true})))
 
 (defn ask
@@ -831,6 +846,7 @@ Rules:
          stats-atom (atom nil)
          effective-stream-cb (or stream-cb (fn [_]))
          result (binding [*captured-cards* cards-atom
+                          *current-user-id* user-id
                           *captured-stats* stats-atom
                           *user-city-id* city-id
                           *search-status-cb* search-status-cb
