@@ -1,18 +1,20 @@
-<!-- Updated: 2026-06-20 -->
+<!-- Updated: 2026-07-12 -->
 # tapalakbot-v2
 
 - **Agent-first architecture** — clj-harness LLM is the brain: sees conversation, decides intent, calls tools, generates text. Tools return structured data. Cards rendered deterministically. LLM never touches prices or URLs.
-- **Streaming is the production path** — `handle-message-stream!` (core.clj) is used for every Telegram message. It calls `stream/stream-agent` directly, BYPASSING the middleware pipeline. Observability hooks are in `observe/record!` + mulog events, NOT in middleware alone.
-- **Gemini 3.5 Flash** (`:gemini-3.5-flash`) via OpenRouter — main model. DeepSeek V4 Pro available as fallback. Relevance filter uses `:kimi-k2` via OpenRouter. Config: `resources/config.edn`.
+- **Streaming is the agent path** — non-fast-path Telegram messages use `handle-message-stream!` (core.clj), which calls `stream/stream-agent` directly and bypasses the middleware pipeline. Observability hooks must live in `observe/record!` + mulog, not middleware alone.
+- **Configured model contract** — production agent and helper calls use `:gemini-3.5-flash` through `:openrouter`; keep provider/model choices explicit and sourced from `resources/config.edn`.
 - **clj-harness** — middleware stack: core-agent → wrap-tools → wrap-retry → wrap-trace-id → wrap-observability → wrap-logging. `:nudges` requires tools before final answers. `:effects? true` uses effect-driven agent loop.
 - **Observability** — mulog structured events + observe ring buffer. Every LLM call emits `:llm-call` with model/latency/tokens. Every turn emits `::agent.turn.start/end`. Trace IDs correlate full request trajectories. See Observability section.
 - **Simulation** — `clojure -M:simulation` runs 20 realistic queries through the real pipeline, capturing every event (LLM calls, tool calls, draft chunks, status phases) to JSONL. See Simulation section.
 - **Monitor in same JVM** — `server.clj` auto-starts monitor thread. Notifications use same `render/render-reply`.
+- **Conversation isolation** — Telegram updates are keyed by chat/user/thread. A bounded executor processes one update per conversation and coalesces a busy conversation to its newest pending update.
 
 ## Architecture
 
 ```
-User → Telegram → bot.clj → core.clj (handle-message-stream!)
+Telegram update → clj-harness parser → bot.clj bounded per-conversation dispatcher
+    → fast path or core.clj (handle-message-stream!)
     → stream/stream-agent: SSE streaming + tool loop
     → LLM sees conversation + tools (search, research)
     → agent calls tools → structured data captured in dynamic vars
@@ -85,7 +87,7 @@ Analysis helpers in `simulation.clj`: `load-events`, `events-by-trace`, `llm-cal
 
 ## Running (local/dev)
 
-Production runs on VPS — stop VPS service first (only ONE process per token).
+Production runs in Dokploy behind a TLS-terminating reverse proxy. Never run a second poller for the same bot token.
 
 ```bash
 cd /Users/sn/Projects/tapalakbot-v2
@@ -96,8 +98,8 @@ clojure -M:run "роутер до 4000"
 # Telegram bot locally (polling mode, auto-starts monitor)
 BOT_TOKEN='...' clojure -M:bot
 
-# Telegram bot with webhooks (faster, needs public HTTPS URL)
-BOT_TOKEN='...' WEBHOOK_URL='https://your-domain.com/webhook' WEBHOOK_PORT=8080 clojure -M:bot
+# Telegram bot with a public reverse-proxy webhook
+BOT_TOKEN='...' WEBHOOK_URL='https://your-domain.com/webhook' TELEGRAM_WEBHOOK_SECRET='...' PORT=8080 clojure -M:bot
 
 # Monitor only (standalone, no Telegram)
 clojure -M:monitor
@@ -111,30 +113,32 @@ clojure -M:simulation 0 "айфон"   # single custom query
 clojure -M:test -n tapalakbot.render-test -n tapalakbot.policy-test
 ```
 
-### Webhook mode
+### Dokploy / webhook mode
 
-Set `WEBHOOK_URL` env var. Works with bare public IP (no domain). Self-signed cert auto-generated in `certs/`. Falls back to polling if `setWebhook` fails. Jetty serves HTTPS on `WEBHOOK_PORT` (default 8443). `/health` endpoint for monitoring.
+The container exposes plain HTTP on `PORT` (default 8080); Dokploy terminates TLS. `WEBHOOK_URL` enables webhook mode and requires `TELEGRAM_WEBHOOK_SECRET`; without both, startup falls back to long polling. Persist `/data` for session and monitor SQLite databases. `/health` is the container health endpoint.
 
 ## Testing
 
 ```bash
-# 24 tests, 86 assertions
-clojure -M:test -n tapalakbot.render-test -n tapalakbot.policy-test
+# Full deterministic suite (40 tests / 153 assertions as of 2026-07-12)
+clojure -M:test
 ```
 
 ## Gotchas
 
-### Deployment (NixOS VPS)
+### Deployment (Dokploy)
 
-- **Telegram blocked in Russia** — Only `149.154.167.220` works. NixOS: `networking.extraHosts = "149.154.167.220 api.telegram.org";`
-- **NixOS systemd PATH lacks git** — tools.deps needs git. Add `pkgs.git` to service `environment.PATH`.
-- **`.cpcache` stale after deps change** — `rm -rf /opt/tapalakbot-v2/.cpcache` on VPS before restart.
-- **Full SHA required** — tools.deps requires full SHA for git deps, not prefix.
-- **clj-harness pinned** — git dep SHA in deps.edn. `:local/root` for dev, git SHA for deploy.
+- **Persistent data** — mount `/data`; `SESSION_DB_PATH` defaults to `/data/tapalakbot-sessions.db` and `MONITOR_DB_PATH` to `/data/tapalakbot-monitor.db`.
+- **Webhook trust boundary** — set `TELEGRAM_WEBHOOK_SECRET`; unauthenticated POSTs to `/webhook` are rejected.
+- **Container build must fail closed** — the Dockerfile compilation step must not use `|| true`; build failures must stop deployment.
+- **Full SHA required** — tools.deps git dependencies require a full SHA.
+- **clj-harness pinned** — update its full git SHA in `deps.edn` after parent fixes; do not assume local parent changes are deployed.
 
 ### General
 
 - **Java (?i) doesn't work for Cyrillic** — `policy.clj` lowercases input before regex matching. Never use `(?i)` with Russian text.
 - **Only ONE process per bot token** — Two pollers = 409 Conflict.
+- **Forum topics are distinct conversations** — preserve `message_thread_id` through parsing, sending, and session IDs.
+- **Busy conversations coalesce** — only the newest pending update is retained while a conversation is running; never add raw `future` dispatch around this path.
 - **Lalafo search noise** — Generic queries return junk. Use exact model names.
 - **deps.edn brace matching** — mulog dep addition caused `}}}` instead of `}}` via fuzzy patch. Always verify `clojure -Spath` after deps.edn edits.
