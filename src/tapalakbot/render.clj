@@ -53,25 +53,14 @@
       (str/replace ">" "&gt;")
       (str/replace "\"" "&quot;")))
 
-(defn- convert-tables-to-lists
-  "DEPRECATED: Telegram now renders tables natively via Rich Messages API."
-  [text]
-  text)
-
 (defn strip-markdown
-  "Convert common Markdown to Telegram HTML.
-   Handles: **bold**, ### headings, --- separators, *italic*, [text](url) links.
-   Tables pass through — Telegram renders them natively via Rich Messages API."
+  "Convert agent Markdown to Telegram-safe HTML through the shared harness
+   formatter. Unsupported tables and ==highlights== are normalized before send."
   [text]
   (when text
     (-> text
-        (clojure.string/replace #"(?m)^---$" "")
-        (clojure.string/replace #"(?m)^#{1,4}\s+(.+)$" "<b>$1</b>")
-        (clojure.string/replace #"(?<!\*)\*\*([^*]+)\*\*(?!\*)" "<b>$1</b>")
-        (clojure.string/replace #"\[([^\]]+)\]\(([^)]+)\)" "<a href=\"$2\">$1</a>")
-        (clojure.string/replace #"(?m)^\s*[-•]\s+" "• ")
-        (clojure.string/replace #"(?:\n\s*){3,}" "\n\n")
-        clojure.string/trim)))
+        hfmt/md->html
+        str/trim)))
 
 
 ;; ════════════════════ SINGLE CARD RENDERING ════════════════════

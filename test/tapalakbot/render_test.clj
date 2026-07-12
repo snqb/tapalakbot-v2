@@ -81,3 +81,15 @@
   (let [html (r/render-reply {:mode :shortlist :intro "Hi"
                               :assumptions ["a" "b" "c"]})]
     (is (str/includes? html "a · b · c"))))
+
+(deftest agent-markdown-is-normalized-for-telegram-html
+  (let [markdown (str "| Показатель | Значение |\n"
+                      "| --- | --- |\n"
+                      "| Диапазон цен | 100 500 — 118 000 сом |\n\n"
+                      "🏆 [MacBook Pro](https://lalafo.kg/ad/1) — ==100 500 сом==")
+        html (r/strip-markdown markdown)]
+    (is (str/includes? html "<pre>"))
+    (is (str/includes? html "<a href='https://lalafo.kg/ad/1'>MacBook Pro</a>"))
+    (is (str/includes? html "<b>100 500 сом</b>"))
+    (is (not (str/includes? html "| ---")))
+    (is (not (str/includes? html "==")))))
