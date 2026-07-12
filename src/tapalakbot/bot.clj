@@ -536,8 +536,8 @@
     (hc/reset-session! @t/tapalakbot current-id)
     (store-pending! current-id nil)
     (set-thread-id! user-uid nil)
-    (let [topic-name (str "🔄 " (java.time.format.DateTimeFormatter/ofPattern "HH:mm")
-                          (.format (java.time.LocalDateTime/now)))
+    (let [topic-name (str "🔄 " (.format (java.time.LocalDateTime/now)
+                                           (java.time.format.DateTimeFormatter/ofPattern "HH:mm")))
           thread-id (when-not (pos? chat-id)
                       (ensure-topic! chat-id user-uid topic-name))
           session-id (conversation-id (assoc msg :thread-id thread-id))]

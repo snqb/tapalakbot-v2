@@ -137,3 +137,17 @@
         (deliver release-first true)
         (is (= true (deref finished 2000 :timeout)))))
     (is (= ["first" "third"] @processed))))
+
+(deftest reset-command-clears-session-and-responds
+  (let [handle-reset @#'bot/handle-reset
+        replies (atom [])]
+    (with-redefs-fn {#'clj-harness.core/reset-session! (fn [& _])
+                     #'bot/store-pending! (fn [& _])
+                     #'bot/set-thread-id! (fn [& _])
+                     #'bot/send-menu! (fn [chat-id text & options]
+                                        (swap! replies conj {:chat-id chat-id
+                                                             :text text
+                                                             :options options}))}
+      #(handle-reset {:chat-id 42 :user-id 42}))
+    (is (= 42 (:chat-id (first @replies))))
+    (is (str/includes? (:text (first @replies)) "Контекст очищен"))))
