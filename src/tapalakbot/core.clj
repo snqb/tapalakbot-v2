@@ -533,6 +533,33 @@ Rules:
                     " 🔗 " url)))
            (take 8 listings))))))
 
+(defn- mashina-listing->card
+  [item]
+  {:title (:title item)
+   :price (when-let [price (get-in item [:price :amount])]
+            (long price))
+   :currency (get-in item [:price :currency] "KGS")
+   :url (:url item)
+   :platform :mashina
+   :image (first (:images item))
+   :year (:year item)
+   :mileage (when-let [mileage (:mileage item)]
+              (when (number? mileage) (long mileage)))
+   :engine (:engine item)
+   :gearbox (:gearbox item)
+   :city (:city item)})
+
+(defn- capture-mashina-cards!
+  [listings]
+  (when *captured-cards*
+    (let [remaining (- 20 (count @*captured-cards*))
+          cards (if (pos? remaining)
+                  (mapv mashina-listing->card (take remaining listings))
+                  [])]
+      (when (seq cards)
+        (swap! *captured-cards* into cards))
+      cards)))
+
 (defn- search-execute
   "Smart search pipeline: QueryBuilder → platform routing → multi-platform search."
   [args]
@@ -620,27 +647,11 @@ Rules:
               mashina-results (when (search? :mashina)
                                 (try
                                   (let [q (or (:mashina-query qb-result) (first enhanced-queries))
-                                        mr (mashina/search-cars :query q :size 6)]
+                                        mr (mashina/search-cars :query q :size 20)]
                                     (log/info :smart-search-mashina :query q :found (:total mr))
                                     (when (seq (:listings mr))
-                                    ;; Capture Mashina cards (respect 20-card total cap)
-                                      (when *captured-cards*
-                                        (let [remaining (- 20 (count @*captured-cards*))
-                                              cards (when (pos? remaining)
-                                                      (mapv (fn [item]
-                                                              {:title (:title item)
-                                                               :price (when-let [p (get-in item [:price :amount])]
-                                                                        (long p))
-                                                               :currency (get-in item [:price :currency] "KGS")
-                                                               :url (:url item)
-                                                               :platform :mashina
-                                                               :year (:year item)
-                                                               :mileage (when-let [m (:mileage item)]
-                                                                          (when (number? m) (long m)))
-                                                               :city (:city item)})
-                                                            (take remaining (:listings mr))))]
-                                          (when (seq cards)
-                                            (swap! *captured-cards* into cards))))
+                                      ;; Capture rich cards up to the shared 20-result cap.
+                                      (capture-mashina-cards! (:listings mr))
                                       (format-mashina-results mr)))
                                   (catch Exception e
                                     (log/warn :mashina-search-failed (.getMessage e))

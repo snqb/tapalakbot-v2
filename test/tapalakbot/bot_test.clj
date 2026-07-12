@@ -103,7 +103,7 @@
       (is (not (str/includes? html "<table")))
       (is (str/includes? html "35 000"))
       (is (str/includes? html
-                         "<a href=\"https://lalafo.kg/iphone-13\">Открыть объявление →</a>")))))
+                         "<a href=\"https://lalafo.kg/iphone-13\">Открыть на Lalafo.kg →</a>")))))
 
 (deftest tracking-buttons-keep-their-own-query
   (let [make-button @#'bot/track-context-button

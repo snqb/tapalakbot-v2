@@ -74,3 +74,27 @@
                   (fn [& _]
                     {"choices" [{"message" {"content" "not json"}}]})]
       (is (= items (vec (filter-items items "iphone 13")))))))
+
+(deftest mashina-capture-keeps-twenty-rich-cards-with-images
+  (let [capture (ns-resolve 'tapalakbot.core 'capture-mashina-cards!)
+        listings (mapv (fn [n]
+                         {:id n
+                          :title (str "Toyota Camry " n)
+                          :url (str "https://mashina.kg/details/" n)
+                          :price {:amount (+ 1000000 n) :currency "KGS"}
+                          :year 2020
+                          :mileage 50000
+                          :engine 2.5
+                          :gearbox "автомат"
+                          :city "Бишкек"
+                          :images [(str "https://storage.mashina.kg/" n ".webp")]})
+                       (range 25))]
+    (is (some? capture))
+    (when capture
+      (binding [core/*captured-cards* (atom [])]
+        (capture listings)
+        (is (= 20 (count @core/*captured-cards*)))
+        (is (= "https://storage.mashina.kg/0.webp"
+               (:image (first @core/*captured-cards*))))
+        (is (= {:engine 2.5 :gearbox "автомат"}
+               (select-keys (first @core/*captured-cards*) [:engine :gearbox])))))))

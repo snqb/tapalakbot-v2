@@ -106,27 +106,58 @@
         html (r/render-results-rich cards)]
     (is (str/includes? html "<h2>Варианты (9)</h2>"))
     (is (not (str/includes? html "<table")))
-    (is (= 3 (count (re-seq #"<h3>" html))))
-    (is (str/includes? html "<details><summary>Ещё 6 вариантов</summary>"))
+    (is (= 6 (count (re-seq #"<h3>" html))))
+    (is (str/includes? html "<details><summary>Ещё 3 варианта</summary>"))
     (is (str/includes? html
                        "<a href=\"https://lalafo.kg/ad/9\">Открыть объявление →</a>"))
     (is (not (str/includes? html "━━━━━━━━━━━━━━━")))))
 
-(deftest native-results-embed-top-images-in-rich-slideshow
-  (let [cards [{:title "MacBook 1"
-                :url "https://lalafo.kg/ad/1"
-                :image "https://img.example/1.jpg"}
-               {:title "MacBook 2"
-                :url "https://lalafo.kg/ad/2"
-                :image "https://img.example/2.jpg"}
-               {:title "MacBook 3"
-                :url "https://lalafo.kg/ad/3"
-                :image "https://img.example/3.jpg"}
-               {:title "MacBook 4"
-                :url "https://lalafo.kg/ad/4"
-                :image "https://img.example/4.jpg"}]
+(deftest native-results-embed-six-top-images-in-rich-slideshow
+  (let [cards (mapv (fn [n]
+                      {:title (str "MacBook " n)
+                       :url (str "https://lalafo.kg/ad/" n)
+                       :image (str "https://img.example/" n ".jpg")})
+                    (range 1 9))
         html (r/render-results-rich cards)]
     (is (str/includes? html "<tg-slideshow>"))
-    (is (= 3 (count (re-seq #"<img src=" html))))
+    (is (= 6 (count (re-seq #"<img src=" html))))
     (is (str/includes? html "<img src=\"https://img.example/1.jpg\"/>"))
-    (is (not (str/includes? html "https://img.example/4.jpg")))))
+    (is (not (str/includes? html "https://img.example/7.jpg")))))
+
+(deftest native-auto-results-show-decision-details-and-source
+  (let [html (r/render-results-rich
+              [{:title "Toyota Camry 70"
+                :price 1850000
+                :currency "KGS"
+                :url "https://mashina.kg/details/camry"
+                :platform :mashina
+                :year 2019
+                :mileage 75000
+                :engine 2.5
+                :gearbox "автомат"
+                :city "Бишкек"}])]
+    (is (str/includes? html "2019 г. · 75 000 км · 2.5 л · автомат · 📍 Бишкек"))
+    (is (str/includes? html
+                       "<a href=\"https://mashina.kg/details/camry\">Открыть на Mashina.kg →</a>"))
+    (is (str/includes? html "<footer>Источник: Mashina.kg</footer>"))))
+
+(deftest twenty-rich-results-fit-the-telegram-message-budget
+  (let [cards (mapv (fn [n]
+                      {:title (str "Toyota Camry 70 — надёжный автомобиль " n)
+                       :price (+ 1500000 (* n 1000))
+                       :currency "KGS"
+                       :url (str "https://mashina.kg/details/camry-" n)
+                       :image (str "https://storage.mashina.kg/camry-" n ".webp")
+                       :platform :mashina
+                       :year 2020
+                       :mileage (+ 50000 n)
+                       :engine 2.5
+                       :gearbox "автомат"
+                       :city "Бишкек"})
+                    (range 20))
+        html (r/render-results-rich cards)]
+    (is (< (count html) 32768))
+    (is (= 20 (count (re-seq #"<a href=" html))))
+    (is (= 6 (count (re-seq #"<h3>" html))))
+    (is (= 6 (count (re-seq #"<img src=" html))))
+    (is (str/includes? html "<details><summary>Ещё 14 вариантов</summary>"))))

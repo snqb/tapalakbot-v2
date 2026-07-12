@@ -122,8 +122,8 @@
                      (str/join "\n\n━━━━━━━━━━━━━━━\n\n"
                                (map render-card group)))))))
 
-(def ^:private visible-result-limit 3)
-(def ^:private inline-image-limit 3)
+(def ^:private visible-result-limit 6)
+(def ^:private inline-image-limit 6)
 
 (defn- truncate-text
   [value limit]
@@ -136,10 +136,20 @@
   [{:keys [title]}]
   (escape-html (truncate-text title 72)))
 
+(defn- platform-label
+  [platform]
+  (case platform
+    :lalafo "Lalafo.kg"
+    :mashina "Mashina.kg"
+    nil))
+
 (defn- result-link
-  [{:keys [url]}]
+  [{:keys [url platform]}]
   (when-not (str/blank? url)
-    (str "<a href=\"" (escape-html url) "\">Открыть объявление →</a>")))
+    (let [label (platform-label platform)]
+      (str "<a href=\"" (escape-html url) "\">"
+           (if label (str "Открыть на " label) "Открыть объявление")
+           " →</a>"))))
 
 (defn- result-price
   [{:keys [price currency]}]
@@ -148,18 +158,26 @@
     "Цена не указана"))
 
 (defn- result-detail
-  [{:keys [city condition year]}]
-  (->> [(when city (str "📍 " (escape-html city)))
-        (when year (str year " г."))
+  [{:keys [year mileage engine gearbox city condition]}]
+  (->> [(when year (str year " г."))
+        (when mileage (str (format-price mileage) " км"))
+        (when engine (str (escape-html engine) " л"))
+        (when gearbox (escape-html (truncate-text gearbox 24)))
+        (when city (str "📍 " (escape-html city)))
         (when condition (escape-html (truncate-text condition 36)))]
        (remove nil?)
        (str/join " · ")))
+
+(defn- result-tier-prefix
+  [card]
+  (when (:tier card)
+    (str (tier-emoji (:tier card)) " ")))
 
 (defn- render-featured-result
   [index card]
   (let [detail (result-detail card)
         link (result-link card)]
-    (str "<h3>" index ". " (tier-emoji (:tier card)) " "
+    (str "<h3>" index ". " (result-tier-prefix card)
          (result-title card) "</h3>"
          "<p><mark>" (result-price card) "</mark>"
          (when-not (str/blank? detail) (str "<br/>" detail))
@@ -168,9 +186,11 @@
 
 (defn- render-hidden-result
   [card]
-  (let [link (result-link card)]
-    (str "<li>" (tier-emoji (:tier card)) " <b>" (result-title card) "</b>"
+  (let [detail (result-detail card)
+        link (result-link card)]
+    (str "<li>" (result-tier-prefix card) "<b>" (result-title card) "</b>"
          " — <mark>" (result-price card) "</mark>"
+         (when-not (str/blank? detail) (str "<br/>" detail))
          (when link (str "<br/>" link))
          "</li>")))
 
@@ -191,14 +211,30 @@
       (str "<tg-slideshow>"
            (apply str
                   (map #(str "<img src=\"" (escape-html %) "\"/>") images))
-           "<figcaption>Фото первых вариантов</figcaption>"
+           "<figcaption>Фото вариантов 1–" (count images) "</figcaption>"
            "</tg-slideshow>"))))
 
+(defn- russian-variant-word
+  [n]
+  (let [mod-100 (mod n 100)
+        mod-10 (mod n 10)]
+    (cond
+      (<= 11 mod-100 14) "вариантов"
+      (= mod-10 1) "вариант"
+      (<= 2 mod-10 4) "варианта"
+      :else "вариантов")))
+
+(defn- render-source-footer
+  [cards]
+  (let [sources (->> cards (keep (comp platform-label :platform)) distinct vec)]
+    (when (seq sources)
+      (str "<footer>" (if (= 1 (count sources)) "Источник: " "Источники: ")
+           (str/join " · " sources) "</footer>"))))
+
 (defn render-results-rich
-  "Render Android-safe native Telegram Rich HTML.
-   Photos are embedded in the result message. The first three listings use
-   standalone links because links inside Rich tables aren't clickable in some
-   Telegram Android clients. Remaining listings stay collapsed in details."
+  "Render dense, Android-safe Telegram Rich HTML.
+   Up to six photos share one slideshow, six linked cards stay visible, and
+   all remaining cards stay actionable inside collapsed details."
   [cards]
   (let [cards (vec cards)
         visible (take visible-result-limit cards)
@@ -212,9 +248,12 @@
                         (render-featured-result (inc index) card))
                       visible))
            (when (seq hidden)
-             (str "<details><summary>Ещё " (count hidden) " вариантов</summary>"
-                  "<ul>" (apply str (map render-hidden-result hidden)) "</ul>"
-                  "</details>"))))))
+             (let [hidden-count (count hidden)]
+               (str "<details><summary>Ещё " hidden-count " "
+                    (russian-variant-word hidden-count) "</summary>"
+                    "<ul>" (apply str (map render-hidden-result hidden)) "</ul>"
+                    "</details>")))
+           (render-source-footer cards)))))
 
 ;; ════════════════════ FULL REPLY RENDERING ════════════════════
 

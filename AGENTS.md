@@ -8,7 +8,7 @@
 - **Observability** — mulog structured events + observe ring buffer. Every LLM call emits `:llm-call` with model/latency/tokens. Every turn emits `::agent.turn.start/end`. Trace IDs correlate full request trajectories. See Observability section.
 - **Simulation** — `clojure -M:simulation` runs 20 realistic queries through the real pipeline, capturing every event (LLM calls, tool calls, draft chunks, status phases) to JSONL. See Simulation section.
 - **Monitor in same JVM** — `server.clj` starts the monitor on its own thread and immediately continues to Telegram polling; never wait for the initial market scan on the bot startup path. Notifications use the same `render/render-reply`.
-- **Telegram rendering split** — agent analysis is one native Rich Markdown message; deterministic listings are a second Rich HTML document with a three-image `<tg-slideshow>`, three visible card blocks with standalone Android-safe links, and overflow inside collapsed `<details>`. Do not put listing links inside Rich tables: Telegram Android may not make them clickable. Never send duplicate media groups after the Rich result.
+- **Telegram rendering split** — agent analysis is one native Rich Markdown message; deterministic listings are a second Rich HTML document with up to 20 cards, a six-image `<tg-slideshow>`, six visible decision-rich card blocks, and overflow inside collapsed `<details>`. Links are standalone and platform-labelled because Telegram Android may not activate links inside Rich tables. Mashina cards preserve image/year/mileage/engine/gearbox/city. Never send duplicate media groups.
 - **Conversation isolation** — Telegram updates are keyed by chat/user/thread. A bounded executor processes one update per conversation and coalesces a busy conversation to its newest pending update.
 
 ## Architecture
@@ -121,7 +121,7 @@ The container exposes plain HTTP on `PORT` (default 8080); Dokploy terminates TL
 ## Testing
 
 ```bash
-# Full deterministic suite (49 tests / 182 assertions as of 2026-07-13)
+# Full deterministic suite (52 tests / 194 assertions as of 2026-07-13)
 clojure -M:test
 ```
 

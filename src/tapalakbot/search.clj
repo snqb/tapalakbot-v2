@@ -21,17 +21,19 @@
      :desc     (get item "desc")}))
 
 (defn mashina-item->card
-  "Convert a Mashina listing to a card map.
-   Normalizes price to a flat number (not nested map)."
+  "Convert a Mashina listing to a rich result card."
   [listing]
   (let [p (:price listing)]
     {:title    (:title listing)
      :price    (when (and p (:amount p)) (long (:amount p)))
      :currency (or (:currency p) "KGS")
      :url      (:url listing)
+     :image    (first (:images listing))
      :year     (:year listing)
      :mileage  (when-let [m (:mileage listing)]
                  (when (number? m) (long m)))
+     :engine   (:engine listing)
+     :gearbox  (:gearbox listing)
      :city     (:city listing)
      :platform :mashina}))
 
@@ -98,7 +100,7 @@
   [query]
   (log/info :search-mashina :query query)
   (let [result (try
-                 (mashina/search-cars :query query :size 10)
+                 (mashina/search-cars :query query :size 20)
                  (catch Exception e
                    (log/warn :mashina-search-error (.getMessage e))
                    nil))]
