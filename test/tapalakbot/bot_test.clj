@@ -151,3 +151,9 @@
       #(handle-reset {:chat-id 42 :user-id 42}))
     (is (= 42 (:chat-id (first @replies))))
     (is (str/includes? (:text (first @replies)) "Контекст очищен"))))
+
+(deftest fallback-search-only-runs-for-an-empty-agent-result
+  (let [needs-fallback? @#'bot/needs-fallback-search?]
+    (is (true? (needs-fallback? {:text "" :cards []} "пылесос")))
+    (is (false? (needs-fallback? {:text "Ничего не найдено" :cards []} "пылесос")))
+    (is (false? (needs-fallback? {:text "" :cards [{:title "Пылесос"}]} "пылесос")))))

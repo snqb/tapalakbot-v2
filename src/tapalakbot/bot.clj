@@ -605,6 +605,15 @@
   (when (and user-text (not (str/blank? user-text)))
     (str/trim user-text)))
 
+(defn- needs-fallback-search?
+  "Retry only when the agent produced neither cards nor text.
+   A textual no-results answer is complete and must not run the same search twice."
+  [result text]
+  (and (not (seq (:cards result)))
+       (str/blank? (:text result))
+       (> (count text) 3)
+       (not (re-find #"(?i)^\s*(привет|здрав|спасибо|ок|да|нет|/reset|/start)" text))))
+
 (defn- suggest-alternatives
   "Generate smart suggestions when search returns nothing.
    Analyzes the query and suggests broader or alternative terms."
@@ -799,9 +808,7 @@
                                  {:stream-cb stream-cb
                                   :city-id city-id
                                   :search-status-cb status-cb})
-            result* (if (and (not (seq (:cards result)))
-                             (> (count text) 3)
-                             (not (re-find #"(?i)^\s*(привет|здрав|спасибо|ок|да|нет|/reset|/start)" text)))
+            result* (if (needs-fallback-search? result text)
                       (do
                         (log/info :fallback-auto-search :query text)
                         (.setLength buf 0)
