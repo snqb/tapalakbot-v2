@@ -94,7 +94,7 @@
     (is (not (str/includes? html "| ---")))
     (is (not (str/includes? html "==")))))
 
-(deftest native-results-use-table-and-collapsed-overflow
+(deftest native-results-keep-links-outside-tables-for-android
   (let [cards (mapv (fn [n]
                       {:title (str "MacBook " n)
                        :price (+ 30000 (* n 1000))
@@ -105,8 +105,28 @@
                     (range 1 10))
         html (r/render-results-rich cards)]
     (is (str/includes? html "<h2>Варианты (9)</h2>"))
-    (is (str/includes? html "<table bordered striped>"))
-    (is (= 6 (count (re-seq #"<tr><td>" html))))
-    (is (str/includes? html "<details><summary>Ещё 3 вариантов</summary>"))
-    (is (str/includes? html "<a href=\"https://lalafo.kg/ad/9\">MacBook 9</a>"))
+    (is (not (str/includes? html "<table")))
+    (is (= 3 (count (re-seq #"<h3>" html))))
+    (is (str/includes? html "<details><summary>Ещё 6 вариантов</summary>"))
+    (is (str/includes? html
+                       "<a href=\"https://lalafo.kg/ad/9\">Открыть объявление →</a>"))
     (is (not (str/includes? html "━━━━━━━━━━━━━━━")))))
+
+(deftest native-results-embed-top-images-in-rich-slideshow
+  (let [cards [{:title "MacBook 1"
+                :url "https://lalafo.kg/ad/1"
+                :image "https://img.example/1.jpg"}
+               {:title "MacBook 2"
+                :url "https://lalafo.kg/ad/2"
+                :image "https://img.example/2.jpg"}
+               {:title "MacBook 3"
+                :url "https://lalafo.kg/ad/3"
+                :image "https://img.example/3.jpg"}
+               {:title "MacBook 4"
+                :url "https://lalafo.kg/ad/4"
+                :image "https://img.example/4.jpg"}]
+        html (r/render-results-rich cards)]
+    (is (str/includes? html "<tg-slideshow>"))
+    (is (= 3 (count (re-seq #"<img src=" html))))
+    (is (str/includes? html "<img src=\"https://img.example/1.jpg\"/>"))
+    (is (not (str/includes? html "https://img.example/4.jpg")))))

@@ -82,6 +82,7 @@
                         :price 35000
                         :currency "KGS"
                         :url "https://lalafo.kg/iphone-13"
+                        :image "https://img.example/iphone-13.jpg"
                         :platform :lalafo}]
                :assumptions []}]
     (with-redefs [tg/send-rich-message
@@ -97,10 +98,12 @@
     (is (nil? (get-in @sent [0 :options :html])))
     (is (= -100123 (get-in @sent [1 :chat-id])))
     (is (= 17 (get-in @sent [1 :options :thread-id])))
-    (is (str/includes? (get-in @sent [1 :options :html]) "<table bordered striped>"))
-    (is (str/includes? (get-in @sent [1 :options :html]) "35 000"))
-    (is (str/includes? (get-in @sent [1 :options :html])
-                       "https://lalafo.kg/iphone-13"))))
+    (let [html (get-in @sent [1 :options :html])]
+      (is (str/includes? html "<tg-slideshow>"))
+      (is (not (str/includes? html "<table")))
+      (is (str/includes? html "35 000"))
+      (is (str/includes? html
+                         "<a href=\"https://lalafo.kg/iphone-13\">Открыть объявление →</a>")))))
 
 (deftest tracking-buttons-keep-their-own-query
   (let [make-button @#'bot/track-context-button

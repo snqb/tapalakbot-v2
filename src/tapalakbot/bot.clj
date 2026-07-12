@@ -708,9 +708,9 @@
 
 (defn- render-and-send
   "Send analysis and marketplace results as separate native Rich Messages.
-   Analysis stays Rich Markdown. Deterministic cards use a striped Rich HTML
-   table with overflow collapsed into <details>, preventing result walls."
-  [chat-id user-id text reply & {:keys [keyboard photos-already-sent? thread-id]}]
+   Analysis stays Rich Markdown. Deterministic cards use Android-safe standalone
+   links, inline media, and collapsed overflow."
+  [chat-id user-id text reply & {:keys [keyboard thread-id]}]
   (let [default-kb (when (seq (:cards reply))
                      (track-context-button user-id text))
         kb (or keyboard default-kb)
@@ -872,23 +872,10 @@
         ;; Delete status message now — we have the real result
         (when-let [mid (some-> status-msg deref (get "message_id"))]
           (try (tg/delete-message chat-id mid) (catch Exception _)))
-        ;; Send final Rich Message (text analysis with links)
-        (render-and-send chat-id user-id text reply :keyboard more-btn
-                         :photos-already-sent? true
+        ;; Send analysis, inline media, and linked result cards as Rich Messages.
+        (render-and-send chat-id user-id text reply
+                         :keyboard more-btn
                          :thread-id thread-id)
-        ;; Photos AFTER text
-        (when (seq all-cards)
-          (let [photo-items (mapv (fn [c]
-                                    {:url (:image c)
-                                     :caption (str "<b>" (render/escape-html (:title c "")) "</b>"
-                                                   (when-let [p (:price c)]
-                                                     (str " — " (render/format-price p) " " (or (:currency c) "сом"))))})
-                                  (take 3 (filter #(not (str/blank? (:image %)))
-                                                  (filter :image all-cards))))]
-            (when (seq photo-items)
-              (log/info :send-photos :count (count photo-items))
-              (try (tg/send-media-group chat-id photo-items :thread-id thread-id)
-                   (catch Exception _)))))
         ;; Keep numeric drill-down callbacks user-scoped while the LLM session
         ;; remains topic-scoped.
         (when (seq all-cards)
