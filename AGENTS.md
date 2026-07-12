@@ -3,11 +3,11 @@
 
 - **Agent-first architecture** — clj-harness LLM is the brain: sees conversation, decides intent, calls tools, generates text. Tools return structured data. Cards rendered deterministically. LLM never touches prices or URLs.
 - **Streaming is the agent path** — non-fast-path Telegram messages use `handle-message-stream!` (core.clj), which calls `stream/stream-agent` directly and bypasses the middleware pipeline. Observability hooks must live in `observe/record!` + mulog, not middleware alone.
-- **Configured model contract** — production agent and helper calls use `:gemini-3.5-flash` through `:openrouter`; keep provider/model choices explicit and sourced from `resources/config.edn`.
+- **Configured model contract** — production agent and helper calls use `:gemini-3.5-flash` through `:openrouter`; keep provider/model choices explicit and sourced from `resources/config.edn`. Production sets `OPENROUTER_BASE_URL` to the authenticated Railway proxy because OpenRouter and `workers.dev` reject the Russian VPS egress.
 - **clj-harness** — middleware stack: core-agent → wrap-tools → wrap-retry → wrap-trace-id → wrap-observability → wrap-logging. `:nudges` requires tools before final answers. `:effects? true` uses effect-driven agent loop.
 - **Observability** — mulog structured events + observe ring buffer. Every LLM call emits `:llm-call` with model/latency/tokens. Every turn emits `::agent.turn.start/end`. Trace IDs correlate full request trajectories. See Observability section.
 - **Simulation** — `clojure -M:simulation` runs 20 realistic queries through the real pipeline, capturing every event (LLM calls, tool calls, draft chunks, status phases) to JSONL. See Simulation section.
-- **Monitor in same JVM** — `server.clj` auto-starts monitor thread. Notifications use same `render/render-reply`.
+- **Monitor in same JVM** — `server.clj` starts the monitor on its own thread and immediately continues to Telegram polling; never wait for the initial market scan on the bot startup path. Notifications use the same `render/render-reply`.
 - **Conversation isolation** — Telegram updates are keyed by chat/user/thread. A bounded executor processes one update per conversation and coalesces a busy conversation to its newest pending update.
 
 ## Architecture
@@ -120,7 +120,7 @@ The container exposes plain HTTP on `PORT` (default 8080); Dokploy terminates TL
 ## Testing
 
 ```bash
-# Full deterministic suite (40 tests / 153 assertions as of 2026-07-12)
+# Full deterministic suite (45 tests / 161 assertions as of 2026-07-12)
 clojure -M:test
 ```
 
@@ -133,6 +133,7 @@ clojure -M:test
 - **Container build must fail closed** — the Dockerfile compilation step must not use `|| true`; build failures must stop deployment.
 - **Full SHA required** — tools.deps git dependencies require a full SHA.
 - **clj-harness pinned** — update its full git SHA in `deps.edn` after parent fixes; do not assume local parent changes are deployed.
+- **OpenRouter egress** — Dokploy must set `OPENROUTER_BASE_URL=https://tapalak-openrouter-proxy-production.up.railway.app/api/v1/chat/completions`. The Railway project `tapalak-openrouter-proxy` validates the same `OPENROUTER_API_KEY`; a public `workers.dev` proxy returns 403 from this VPS.
 
 ### General
 
@@ -141,4 +142,5 @@ clojure -M:test
 - **Forum topics are distinct conversations** — preserve `message_thread_id` through parsing, sending, and session IDs.
 - **Busy conversations coalesce** — only the newest pending update is retained while a conversation is running; never add raw `future` dispatch around this path.
 - **Lalafo search noise** — Generic queries return junk. Use exact model names.
+- **Empty relevance is valid** — `relevance-filter` must preserve a parsed `[]`; only malformed/error model output may fall back to unfiltered listings. Treating an empty decision as parse failure leaks unrelated cards.
 - **deps.edn brace matching** — mulog dep addition caused `}}}` instead of `}}` via fuzzy patch. Always verify `clojure -Spath` after deps.edn edits.
