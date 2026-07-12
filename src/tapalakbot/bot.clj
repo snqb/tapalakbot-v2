@@ -732,9 +732,10 @@
                                            :reply-markup kb
                                            :thread-id thread-id)]
             (if sent
-              (log/info :rich-results-sent
-                        :message-id (get sent "message_id")
-                        :rich? (boolean (get sent "rich_message")))
+              (let [message (or (get sent "result") sent)]
+                (log/info :rich-results-sent
+                          :message-id (get message "message_id")
+                          :rich? (boolean (get message "rich_message"))))
               (let [fallback (render/render-cards (take 6 cards))]
                 (doseq [chunk (tg/split-message fallback)]
                   (tg/send-message chat-id chunk :parse-mode "HTML"

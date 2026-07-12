@@ -88,7 +88,9 @@
                   (fn [chat-id & options]
                     (swap! sent conj {:chat-id chat-id
                                       :options (apply hash-map options)})
-                    {"message_id" (count @sent)})]
+                    {"ok" true
+                     "result" {"message_id" (count @sent)
+                               "rich_message" {}}})]
       (render-and-send -100123 42 "iphone" reply :thread-id 17))
     (is (= 2 (count @sent)) "analysis and cards are separate rich messages")
     (is (= "Короткий анализ" (get-in @sent [0 :options :markdown])))
