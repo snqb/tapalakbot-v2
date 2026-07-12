@@ -89,7 +89,7 @@
                                          (get-in % [:value_json :name]))
                                       (:attributes item))
                           :images (mapv #(or (:big %) (:medium %) (:thumb %)) (:images item))
-                          :url (str "https://www.mashina.kg/ru/" (:slug item))})
+                          :url (str "https://mashina.kg/details/" (:slug item))})
                        (:items result))
        :total (:total result)
        :page (:page result)

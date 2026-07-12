@@ -121,7 +121,7 @@ The container exposes plain HTTP on `PORT` (default 8080); Dokploy terminates TL
 ## Testing
 
 ```bash
-# Full deterministic suite (48 tests / 181 assertions as of 2026-07-13)
+# Full deterministic suite (49 tests / 182 assertions as of 2026-07-13)
 clojure -M:test
 ```
 
@@ -143,5 +143,6 @@ clojure -M:test
 - **Forum topics are distinct conversations** — preserve `message_thread_id` through parsing, sending, and session IDs.
 - **Busy conversations coalesce** — only the newest pending update is retained while a conversation is running; never add raw `future` dispatch around this path.
 - **Lalafo search noise** — Generic queries return junk. Use exact model names.
+- **Mashina listing route** — API results provide a `slug`, not a page URL. Canonical public listings are `https://mashina.kg/details/{slug}`; `/ru/{slug}` returns 404.
 - **Empty relevance is valid** — `relevance-filter` must preserve a parsed `[]`; only malformed/error model output may fall back to unfiltered listings. Treating an empty decision as parse failure leaks unrelated cards.
 - **deps.edn brace matching** — mulog dep addition caused `}}}` instead of `}}` via fuzzy patch. Always verify `clojure -Spath` after deps.edn edits.
