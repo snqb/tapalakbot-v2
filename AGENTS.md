@@ -133,7 +133,7 @@ clojure -M:test
 - **Container build must fail closed** — the Dockerfile compilation step must not use `|| true`; build failures must stop deployment.
 - **Full SHA required** — tools.deps git dependencies require a full SHA.
 - **clj-harness pinned** — update its full git SHA in `deps.edn` after parent fixes; do not assume local parent changes are deployed.
-- **OpenRouter egress** — Dokploy must set `OPENROUTER_BASE_URL=https://tapalak-openrouter-proxy-production.up.railway.app/api/v1/chat/completions`. The Railway project `tapalak-openrouter-proxy` validates the same `OPENROUTER_API_KEY`; a public `workers.dev` proxy returns 403 from this VPS.
+- **OpenRouter egress** — Dokploy must set `OPENROUTER_BASE_URL=https://tapalak-openrouter-proxy-production.up.railway.app/api/v1/chat/completions`. The Railway project `tapalak-openrouter-proxy` runs `infra/openrouter-proxy/` and validates the same `OPENROUTER_API_KEY`; a public `workers.dev` proxy returns 403 from this VPS.
 
 ### General
 
