@@ -122,6 +122,67 @@
                      (str/join "\n\n━━━━━━━━━━━━━━━\n\n"
                                (map render-card group)))))))
 
+(def ^:private visible-result-limit 6)
+
+(defn- truncate-text
+  [value limit]
+  (let [s (str (or value ""))]
+    (if (<= (count s) limit)
+      s
+      (str (subs s 0 (max 0 (dec limit))) "…"))))
+
+(defn- result-link
+  [{:keys [title url]}]
+  (let [label (escape-html (truncate-text title 52))]
+    (if (str/blank? url)
+      label
+      (str "<a href=\"" (escape-html url) "\">" label "</a>"))))
+
+(defn- result-price
+  [{:keys [price currency]}]
+  (if price
+    (str (format-price price) " " (escape-html (or currency "сом")))
+    "—"))
+
+(defn- result-detail
+  [{:keys [city condition year]}]
+  (escape-html
+   (truncate-text
+    (or city condition (when year (str year " г.")) "—")
+    24)))
+
+(defn- render-result-row
+  [card]
+  (str "<tr>"
+       "<td>" (tier-emoji (:tier card)) " " (result-link card) "</td>"
+       "<td align=\"right\"><mark>" (result-price card) "</mark></td>"
+       "<td>" (result-detail card) "</td>"
+       "</tr>"))
+
+(defn- render-hidden-result
+  [card]
+  (str "<li>" (tier-emoji (:tier card)) " " (result-link card)
+       " — <mark>" (result-price card) "</mark></li>"))
+
+(defn render-results-rich
+  "Render deterministic cards using native Telegram Rich HTML blocks.
+   The first six rows stay visible in a striped table; remaining rows are
+   collapsed into a details block instead of becoming a chat-sized text wall."
+  [cards]
+  (let [cards (vec cards)
+        visible (take visible-result-limit cards)
+        hidden (drop visible-result-limit cards)]
+    (when (seq cards)
+      (str "<h2>Варианты (" (count cards) ")</h2>"
+           "<table bordered striped>"
+           "<tr><th>Модель</th><th>Цена</th><th>Город / состояние</th></tr>"
+           (apply str (map render-result-row visible))
+           "</table>"
+           (when (seq hidden)
+             (str "<details><summary>Ещё " (count hidden) " вариантов</summary>"
+                  "<ul>" (apply str (map render-hidden-result hidden)) "</ul>"
+                  "</details>"))))))
+
 ;; ════════════════════ FULL REPLY RENDERING ════════════════════
 
 (defn render-reply

@@ -707,9 +707,9 @@
     (catch Exception _)))
 
 (defn- render-and-send
-  "Send agent analysis plus trust-critical cards. Structured cards are rendered
-   deterministically to Rich HTML; pure conversational replies keep native
-   Rich Markdown."
+  "Send analysis and marketplace results as separate native Rich Messages.
+   Analysis stays Rich Markdown. Deterministic cards use a striped Rich HTML
+   table with overflow collapsed into <details>, preventing result walls."
   [chat-id user-id text reply & {:keys [keyboard photos-already-sent? thread-id]}]
   (let [default-kb (when (seq (:cards reply))
                      (track-context-button user-id text))
@@ -720,17 +720,26 @@
               :cards (count cards) :has-kb (boolean kb) :thread-id thread-id)
     (try
       (if (seq cards)
-        (let [html (render/render-reply reply)
-              sent (tg/send-rich-message chat-id
-                                         :html html
-                                         :preview false
-                                         :reply-markup kb
-                                         :thread-id thread-id)]
-          (when-not sent
-            (doseq [chunk (tg/split-message html)]
-              (tg/send-message chat-id chunk :parse-mode "HTML"
-                               :preview false :reply_markup kb
-                               :thread-id thread-id))))
+        (do
+          ;; Native Rich Markdown keeps headings/lists as real Telegram blocks.
+          (when (and intro (not (str/blank? intro)))
+            (tg/send-md chat-id intro :thread-id thread-id))
+          ;; Cards are a separate structured document, never concatenated prose.
+          (let [html (render/render-results-rich cards)
+                sent (tg/send-rich-message chat-id
+                                           :html html
+                                           :preview false
+                                           :reply-markup kb
+                                           :thread-id thread-id)]
+            (if sent
+              (log/info :rich-results-sent
+                        :message-id (get sent "message_id")
+                        :rich? (boolean (get sent "rich_message")))
+              (let [fallback (render/render-cards (take 6 cards))]
+                (doseq [chunk (tg/split-message fallback)]
+                  (tg/send-message chat-id chunk :parse-mode "HTML"
+                                   :preview false :reply_markup kb
+                                   :thread-id thread-id))))))
         (when (and intro (not (str/blank? intro)))
           (tg/send-md chat-id intro :reply_markup kb :thread-id thread-id)))
       (catch Exception e
@@ -873,7 +882,7 @@
                                      :caption (str "<b>" (render/escape-html (:title c "")) "</b>"
                                                    (when-let [p (:price c)]
                                                      (str " — " (render/format-price p) " " (or (:currency c) "сом"))))})
-                                  (take 5 (filter #(not (str/blank? (:image %)))
+                                  (take 3 (filter #(not (str/blank? (:image %)))
                                                   (filter :image all-cards))))]
             (when (seq photo-items)
               (log/info :send-photos :count (count photo-items))

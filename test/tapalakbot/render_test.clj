@@ -93,3 +93,20 @@
     (is (str/includes? html "<b>100 500 сом</b>"))
     (is (not (str/includes? html "| ---")))
     (is (not (str/includes? html "==")))))
+
+(deftest native-results-use-table-and-collapsed-overflow
+  (let [cards (mapv (fn [n]
+                      {:title (str "MacBook " n)
+                       :price (+ 30000 (* n 1000))
+                       :currency "KGS"
+                       :url (str "https://lalafo.kg/ad/" n)
+                       :city "Бишкек"
+                       :tier :good})
+                    (range 1 10))
+        html (r/render-results-rich cards)]
+    (is (str/includes? html "<h2>Варианты (9)</h2>"))
+    (is (str/includes? html "<table bordered striped>"))
+    (is (= 6 (count (re-seq #"<tr><td>" html))))
+    (is (str/includes? html "<details><summary>Ещё 3 вариантов</summary>"))
+    (is (str/includes? html "<a href=\"https://lalafo.kg/ad/9\">MacBook 9</a>"))
+    (is (not (str/includes? html "━━━━━━━━━━━━━━━")))))

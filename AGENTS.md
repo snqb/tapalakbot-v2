@@ -8,7 +8,7 @@
 - **Observability** — mulog structured events + observe ring buffer. Every LLM call emits `:llm-call` with model/latency/tokens. Every turn emits `::agent.turn.start/end`. Trace IDs correlate full request trajectories. See Observability section.
 - **Simulation** — `clojure -M:simulation` runs 20 realistic queries through the real pipeline, capturing every event (LLM calls, tool calls, draft chunks, status phases) to JSONL. See Simulation section.
 - **Monitor in same JVM** — `server.clj` starts the monitor on its own thread and immediately continues to Telegram polling; never wait for the initial market scan on the bot startup path. Notifications use the same `render/render-reply`.
-- **Telegram rendering split** — agent prose is converted through `clj-harness.telegram.format/md->html`, then deterministic cards are appended as HTML. The prompt forbids listing tables, prices, URLs, `==...==`, and `<details>` in prose; the shared formatter still normalizes them defensively.
+- **Telegram rendering split** — agent analysis is one native Rich Markdown message; deterministic listings are a second Rich HTML document with six visible rows in `<table bordered striped>` and overflow inside collapsed `<details>`. Never concatenate all cards into prose. The prompt forbids prices/URLs in analysis.
 - **Conversation isolation** — Telegram updates are keyed by chat/user/thread. A bounded executor processes one update per conversation and coalesces a busy conversation to its newest pending update.
 
 ## Architecture
@@ -121,7 +121,7 @@ The container exposes plain HTTP on `PORT` (default 8080); Dokploy terminates TL
 ## Testing
 
 ```bash
-# Full deterministic suite (46 tests / 166 assertions as of 2026-07-12)
+# Full deterministic suite (47 tests / 176 assertions as of 2026-07-12)
 clojure -M:test
 ```
 

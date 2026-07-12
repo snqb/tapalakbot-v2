@@ -74,7 +74,7 @@
                 (conversation-id {:chat-id -100123 :user-id 42 :thread-id 18}))))))
 
 (deftest result-cards-are-rendered-from-structured-data
-  (let [sent (atom nil)
+  (let [sent (atom [])
         render-and-send @#'bot/render-and-send
         reply {:mode :shortlist
                :intro "Короткий анализ"
@@ -86,14 +86,18 @@
                :assumptions []}]
     (with-redefs [tg/send-rich-message
                   (fn [chat-id & options]
-                    (reset! sent {:chat-id chat-id
-                                  :options (apply hash-map options)})
-                    {"message_id" 1})]
+                    (swap! sent conj {:chat-id chat-id
+                                      :options (apply hash-map options)})
+                    {"message_id" (count @sent)})]
       (render-and-send -100123 42 "iphone" reply :thread-id 17))
-    (is (= -100123 (:chat-id @sent)))
-    (is (= 17 (get-in @sent [:options :thread-id])))
-    (is (str/includes? (get-in @sent [:options :html]) "35 000"))
-    (is (str/includes? (get-in @sent [:options :html])
+    (is (= 2 (count @sent)) "analysis and cards are separate rich messages")
+    (is (= "Короткий анализ" (get-in @sent [0 :options :markdown])))
+    (is (nil? (get-in @sent [0 :options :html])))
+    (is (= -100123 (get-in @sent [1 :chat-id])))
+    (is (= 17 (get-in @sent [1 :options :thread-id])))
+    (is (str/includes? (get-in @sent [1 :options :html]) "<table bordered striped>"))
+    (is (str/includes? (get-in @sent [1 :options :html]) "35 000"))
+    (is (str/includes? (get-in @sent [1 :options :html])
                        "https://lalafo.kg/iphone-13"))))
 
 (deftest tracking-buttons-keep-their-own-query
