@@ -298,26 +298,25 @@ Example: [113171780, 112908144, 111226783]")
 
 (defn- parse-id-array
   "Parse a JSON ID array even if the model wraps it in text/fences.
-   Returns IDs as strings (Lalafo IDs are strings)."
+   Returns IDs as strings, or nil when no valid array can be parsed.
+   An empty vector is a valid decision that no listing is relevant."
   [content]
-  (let [clean (str/replace (or content "[]") #"\`\`\`json|```|\`" "")
-        array-text (or (second (re-find #"(?s)(\[[^\]]*\])" clean)) "[]")]
-    (try
-      (let [parsed (json/parse-string (str/trim array-text) false)
-            ids (mapv str parsed)]
-        (when (empty? ids)
-          (log/warn :parse-id-array-empty :raw (subs (or content "") 0 (min 200 (count (or content ""))))))
-        ids)
-      (catch Exception e
-        (log/warn :parse-id-array-error :msg (.getMessage e) :raw (subs (or content "") 0 (min 200 (count (or content "")))))
-        []))))
+  (let [clean (str/replace (or content "") #"\`\`\`json|```|\`" "")
+        array-text (second (re-find #"(?s)(\[[^\]]*\])" clean))]
+    (when array-text
+      (try
+        (mapv str (json/parse-string (str/trim array-text) false))
+        (catch Exception e
+          (log/warn :parse-id-array-error :msg (.getMessage e)
+                    :raw (subs (or content "") 0 (min 200 (count (or content "")))))
+          nil)))))
 
 (defn- relevance-filter
   "LLM pass 1: filter listings by relevance to user query.
-   Single LLM call with Gemini Flash. Returns vector of relevant items (max 100)."
+   A valid empty model decision stays empty; only malformed/error responses
+   fall back to the unfiltered listings."
   [items user-query]
-  (if (<= (count items) 12)
-    ;; Very few items — no need for relevance pass
+  (if (empty? items)
     items
     (let [format-item (fn [i item]
                         (let [desc (get item "desc" "")]
@@ -335,15 +334,16 @@ Example: [113171780, 112908144, 111226783]")
       (try
         (let [resp (llm/llm :gemini-3.5-flash messages [] :provider :openrouter :max-tokens 4000)
               content (get-in resp ["choices" 0 "message" "content"])
-              id-set (set (parse-id-array content))
-              relevant (filter #(contains? id-set (str (get % "id"))) items)]
-          (if (pos? (count relevant))
+              parsed-ids (parse-id-array content)]
+          (if (nil? parsed-ids)
             (do
+              (log/warn :relevance-filter :fallback :reason "no parseable ID array"
+                        :raw-response (subs (or content "") 0 (min 200 (count (or content "")))))
+              (take 100 items))
+            (let [id-set (set parsed-ids)
+                  relevant (filter #(contains? id-set (str (get % "id"))) items)]
               (log/info :relevance-filter :input (count items) :output (count relevant))
-              (take 100 relevant))
-            (do
-              (log/warn :relevance-filter :fallback :reason "no parseable IDs" :raw-response (subs content 0 (min 200 (count content))))
-              (take 100 items))))
+              (take 100 relevant))))
         (catch Exception e
           (log/warn :relevance-filter :error (.getMessage e))
           (take 100 items))))))

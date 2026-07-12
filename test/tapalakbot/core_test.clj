@@ -57,3 +57,20 @@
                   {:content "Готово"})]
     (is (= "ноутбук i5 дешевле"
            (:query (core/ask-stream "tg-42" "дешевле" nil))))))
+
+(deftest relevance-filter-honors-a-valid-empty-decision
+  (let [filter-items @#'core/relevance-filter
+        items [{"id" "1" "title" "Игрушка"}
+               {"id" "2" "title" "Музыкальный плакат"}]]
+    (with-redefs [llm/llm
+                  (fn [& _]
+                    {"choices" [{"message" {"content" "[]"}}]})]
+      (is (empty? (filter-items items "флюгегехаймен"))))))
+
+(deftest relevance-filter-falls-back-only-on-malformed-output
+  (let [filter-items @#'core/relevance-filter
+        items [{"id" "1" "title" "iPhone 13"}]]
+    (with-redefs [llm/llm
+                  (fn [& _]
+                    {"choices" [{"message" {"content" "not json"}}]})]
+      (is (= items (vec (filter-items items "iphone 13")))))))
