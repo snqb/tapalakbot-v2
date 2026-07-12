@@ -2,12 +2,13 @@
   "Unit tests for bot formatting, text processing, and message handling.
    Tests the private function: parse-update-extended. No LLM calls — pure function tests."
   (:require [clojure.test :refer [deftest is testing are]]
+            [clj-harness.telegram :as tg]
             [tapalakbot.bot :as bot]
             [tapalakbot.core :as t]
             [clojure.string :as str]))
 
-;; Access private var for testing
-(def parse-update-extended* @#'bot/parse-update-extended)
+;; Production polling and webhooks share the parent parser.
+(def parse-update-extended* tg/parse-update)
 
 ;; ════════════════════════════ PARSE-UPDATE-EXTENDED ════════════════════════════
 
@@ -60,3 +61,79 @@
       (is (some? (:location result)))
       (is (= 42.87 (:lat (:location result))))
       (is (= 74.59 (:lon (:location result)))))))
+
+(deftest conversation-id-isolates-forum-topics
+  (let [conversation-id (ns-resolve 'tapalakbot.bot 'conversation-id)]
+    (is (some? conversation-id))
+    (when conversation-id
+      (is (= "tg-42"
+             (conversation-id {:chat-id 42 :user-id 42})))
+      (is (= "tg-42:-100123:17"
+             (conversation-id {:chat-id -100123 :user-id 42 :thread-id 17})))
+      (is (not= (conversation-id {:chat-id -100123 :user-id 42 :thread-id 17})
+                (conversation-id {:chat-id -100123 :user-id 42 :thread-id 18}))))))
+
+(deftest result-cards-are-rendered-from-structured-data
+  (let [sent (atom nil)
+        render-and-send @#'bot/render-and-send
+        reply {:mode :shortlist
+               :intro "Короткий анализ"
+               :cards [{:title "iPhone 13"
+                        :price 35000
+                        :currency "KGS"
+                        :url "https://lalafo.kg/iphone-13"
+                        :platform :lalafo}]
+               :assumptions []}]
+    (with-redefs [tg/send-rich-message
+                  (fn [chat-id & options]
+                    (reset! sent {:chat-id chat-id
+                                  :options (apply hash-map options)})
+                    {"message_id" 1})]
+      (render-and-send -100123 42 "iphone" reply :thread-id 17))
+    (is (= -100123 (:chat-id @sent)))
+    (is (= 17 (get-in @sent [:options :thread-id])))
+    (is (str/includes? (get-in @sent [:options :html]) "35 000"))
+    (is (str/includes? (get-in @sent [:options :html])
+                       "https://lalafo.kg/iphone-13"))))
+
+(deftest tracking-buttons-keep-their-own-query
+  (let [make-button @#'bot/track-context-button
+        take-query (ns-resolve 'tapalakbot.bot 'take-track-query!)
+        first-kb (make-button 42 "iphone 13")
+        second-kb (make-button 42 "macbook air")
+        callback-id (fn [kb]
+                      (-> kb
+                          (get "inline_keyboard")
+                          first first
+                          (get "callback_data")
+                          (str/split #":" 2)
+                          second))]
+    (is (some? take-query))
+    (when take-query
+      (is (= "iphone 13" (take-query 42 (callback-id first-kb))))
+      (is (= "macbook air" (take-query 42 (callback-id second-kb))))
+      (is (nil? (take-query 99 (callback-id second-kb)))))))
+
+(deftest busy-conversation-coalesces-to-latest-update
+  (let [dispatch @#'bot/dispatch-conversation!
+        started (promise)
+        release-first (promise)
+        finished (promise)
+        processed (atom [])
+        base {:chat-id 424242 :user-id 424242}
+        fake-handler (fn [{:keys [text]}]
+                       (swap! processed conj text)
+                       (when (= text "first")
+                         (deliver started true)
+                         @release-first)
+                       (when (= text "third")
+                         (deliver finished true)))]
+    (with-redefs-fn {#'bot/handle-update-now fake-handler}
+      (fn []
+        (dispatch (assoc base :text "first"))
+        (is (= true (deref started 2000 :timeout)))
+        (dispatch (assoc base :text "second"))
+        (dispatch (assoc base :text "third"))
+        (deliver release-first true)
+        (is (= true (deref finished 2000 :timeout)))))
+    (is (= ["first" "third"] @processed))))
