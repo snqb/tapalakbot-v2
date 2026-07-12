@@ -14,7 +14,7 @@
 ;; ════════════════════════════ DB ════════════════════════════
 
 (def ^:private db-path (or (System/getenv "MONITOR_DB_PATH")
-                           "/tmp/tapalakbot-monitor.db"))
+                           "data/tapalakbot-monitor.db"))
 
 (defonce ^:private ds (atom nil))
 
@@ -39,7 +39,9 @@
 (defn init-db!
   "Initialize SQLite database and create tables."
   []
-  (let [d (jdbc/get-datasource (str "jdbc:sqlite:" db-path))]
+  (let [parent (.getParentFile (java.io.File. db-path))
+        _ (when parent (.mkdirs parent))
+        d (jdbc/get-datasource (str "jdbc:sqlite:" db-path))]
     (reset! ds d)
     (jdbc/execute! d ["CREATE TABLE IF NOT EXISTS monitor_categories (
         id INTEGER PRIMARY KEY AUTOINCREMENT,

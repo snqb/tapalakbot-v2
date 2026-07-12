@@ -15,7 +15,9 @@
             [cheshire.core :as json]
             [clojure.edn :as edn]
             [clojure.string :as str]
-            [clojure.tools.logging :as log]))
+            [clojure.tools.logging :as log])
+  (:import [java.time LocalDateTime]
+           [java.time.format DateTimeFormatter]))
 
 ;; ══════════════════════ CONFIG ══════════════════════
 
@@ -30,6 +32,24 @@
 (def ^:private max-pages-per-query 1)
 
 (def ^:private per-page 40)
+
+(def ^:private sqlite-time
+  (DateTimeFormatter/ofPattern "yyyy-MM-dd HH:mm:ss"))
+
+(defn track-due?
+  "True when a subscription has never run or its own notification interval
+   has elapsed."
+  ([track] (track-due? track (LocalDateTime/now)))
+  ([{:keys [last_checked_at notify_interval]} now]
+   (if-not last_checked_at
+     true
+     (try
+       (let [last-checked (LocalDateTime/parse last_checked_at sqlite-time)
+             next-check (.plusHours last-checked (long (or notify_interval 24)))]
+         (not (.isAfter next-check now)))
+       (catch Exception e
+         (log/warn :track-invalid-last-checked :value last_checked_at)
+         true)))))
 
 ;; ══════════════════════ CATEGORY MATCHING (called once at track creation) ══════════════════════
 
@@ -63,7 +83,7 @@ Rules:
                       "4. If no good match, return {\"category_id\": null}\n\n"
                       "Return JSON: {\"category_id\": number|null, \"category_name\": \"string\"}")
           messages [{:role "user" :content prompt}]
-          resp (llm/llm :deepseek-v4-pro messages [] :provider :deepseek :max-tokens 100)
+          resp (llm/llm :gemini-3.5-flash messages [] :provider :openrouter :max-tokens 100)
           content (get-in resp ["choices" 0 "message" "content"])
           json-str (or (re-find #"(?s)\{.*\}" content) "{}")
           parsed (try (json/parse-string json-str true)
@@ -109,7 +129,7 @@ Rules:
                       "- Return JSON array of indices of relevant items")
           messages [{:role "user" :content prompt}]]
       (try
-        (let [resp (llm/llm :deepseek-v4-pro messages [] :provider :deepseek :max-tokens 200)
+        (let [resp (llm/llm :gemini-3.5-flash messages [] :provider :openrouter :max-tokens 200)
               content (get-in resp ["choices" 0 "message" "content"])
               json-str (or (re-find #"(?s)\[.*\]" content) "[]")
               indices (try (json/parse-string json-str)
@@ -120,7 +140,7 @@ Rules:
           relevant)
         (catch Exception e
           (log/warn :track-relevance-failed :error (.getMessage e))
-          [])))))
+          nil)))))
 
 ;; ══════════════════════ SEARCH (lalafo-client-first) ══════════════════════
 
@@ -189,55 +209,64 @@ Rules:
 ;; ══════════════════════ CHECK LOGIC ══════════════════════
 
 (defn check-track
-  "Check one track: search → filter seen → LLM relevance → notify.
-   Uses category_id + text_query (lalafo-client-first).
-   Price constraints from QueryBuilder are now stored per-track.
-   Returns {:new-items N :notified? boolean}."
-  [{:keys [id user_id title category_id price_min price_max] :as track}]
+  "Check one subscription. Relevant items become seen only after Telegram
+   confirms delivery; failed notifications remain retryable."
+  [{:keys [id user_id title price_min price_max] :as track}]
   (try
-    ;; Step 1: Search with category_id + title + price constraints (no LLM)
-    (let [items (search-track track title)]
-      (log/info :track-check-detail :track-id id :total-items (count items)
-                :price [price_min price_max])
-      ;; Step 2: Filter out already-seen items
-      (let [new-items (filterv #(not (store/seen-item? id (get % "id"))) items)
-            ;; Filter by price if user specified budget
-            in-budget (if (or price_min price_max)
-                       (filterv (fn [item]
+    (let [items (search-track track title)
+          new-items (filterv #(not (store/seen-item? id (get % "id"))) items)
+          in-budget (if (or price_min price_max)
+                      (filterv (fn [item]
                                  (let [p (get item "price")]
                                    (and p
                                         (or (nil? price_min) (>= p price_min))
                                         (or (nil? price_max) (<= p price_max)))))
-                                new-items)
-                       new-items)
-        ;; Step 2.5: Deterministic accessory pre-filter
-        clean-items (qb/filter-accessories in-budget title)]
-        (log/info :track-check-budget :track-id id :new-items (count new-items) :in-budget (count in-budget))
-        ;; Step 3: Mark all found items as seen
-        (doseq [item clean-items]
-          (store/mark-item-seen! id (get item "id")))
-        ;; Step 4: Update check timestamp
-        (store/mark-track-checked! id)
-        ;; Step 5: LLM relevance filter + send notification
-        (when (pos? (count clean-items))
-          (let [candidates (take (* 3 max-notifications-per-check) clean-items)
-                relevant (filter-relevant title candidates)
-                to-send (take max-notifications-per-check relevant)]
-            (log/info :track-relevance-result :track-id id :candidates (count candidates) :relevant (count relevant) :sending (count to-send))
-            (when (pos? (count to-send))
-              (if-let [tg-user-id (extract-user-id-from-track user_id)]
-                (let [msg (format-notification title to-send)]
-                  (log/info :track-notify-preview :msg msg)
-                  (try
-                    (tg/send-message tg-user-id msg :parse-mode "HTML")
-                    (store/increment-notify-count! id)
-                    (log/info :track-notified :track-id id :user user_id :items (count to-send))
-                    (catch Exception e
-                      (log/warn :track-notify-fail :track-id id :error (.getMessage e)))))
-                (log/warn :track-invalid-user-id :track-id id :user-id user_id)))))
-        {:new-items (count clean-items) :notified? false}))
+                               new-items)
+                      new-items)
+          clean-items (qb/filter-accessories in-budget title)
+          candidates (vec (take (* 3 max-notifications-per-check) clean-items))]
+      (log/info :track-check-detail :track-id id :total-items (count items)
+                :new-items (count new-items) :in-budget (count in-budget))
+      (if (empty? candidates)
+        (do
+          (store/mark-track-checked! id)
+          {:new-items 0 :notified? false})
+        (let [relevant (filter-relevant title candidates)]
+          (if (nil? relevant)
+            (do
+              (log/warn :track-classification-deferred :track-id id)
+              {:new-items (count clean-items) :notified? false})
+            (let [relevant-ids (set (map #(get % "id") relevant))
+                  irrelevant (remove #(contains? relevant-ids (get % "id")) candidates)
+                  to-send (vec (take max-notifications-per-check relevant))]
+              ;; A successful relevance decision lets us retire known noise.
+              (doseq [item irrelevant]
+                (store/mark-item-seen! id (get item "id")))
+              (if (empty? to-send)
+                (do
+                  (store/mark-track-checked! id)
+                  {:new-items (count clean-items) :notified? false})
+                (if-let [tg-user-id (extract-user-id-from-track user_id)]
+                  (let [msg (format-notification title to-send)
+                        sent (tg/send-message tg-user-id msg :parse-mode "HTML")]
+                    (if sent
+                      (do
+                        (doseq [item to-send]
+                          (store/mark-item-seen! id (get item "id")))
+                        (store/increment-notify-count! id)
+                        (store/mark-track-checked! id)
+                        (log/info :track-notified :track-id id :user user_id
+                                  :items (count to-send))
+                        {:new-items (count clean-items) :notified? true})
+                      (do
+                        (log/warn :track-notify-deferred :track-id id :user user_id)
+                        {:new-items (count clean-items) :notified? false})))
+                  (do
+                    (log/warn :track-invalid-user-id :track-id id :user-id user_id)
+                    (store/mark-track-checked! id)
+                    {:new-items (count clean-items) :notified? false}))))))))
     (catch Exception e
-      (log/error :track-check-error :track-id (:id track) :error (.getMessage e))
+      (log/error e :track-check-error :track-id (:id track))
       {:new-items 0 :notified? false})))
 
 ;; ══════════════════════ BACKGROUND LOOP ══════════════════════
@@ -247,15 +276,16 @@ Rules:
 (defn run-check-cycle!
   "Check all active tracks. Returns summary."
   []
-  (let [all-tracks (store/get-all-active-tracks)]
-    (if (empty? all-tracks)
-      (do (log/info :track-check :no-active-tracks)
+  (let [all-tracks (store/get-all-active-tracks)
+        due-tracks (filterv track-due? all-tracks)]
+    (if (empty? due-tracks)
+      (do (log/info :track-check :no-due-tracks)
           {:tracks 0 :new-items 0 :notified 0})
-      (let [results (mapv check-track all-tracks)
+      (let [results (mapv check-track due-tracks)
             total-new (reduce + (map :new-items results))
             total-notified (count (filter :notified? results))]
-        (log/info :track-check-complete :tracks (count all-tracks) :new-items total-new :notified total-notified)
-        {:tracks (count all-tracks) :new-items total-new :notified total-notified}))))
+        (log/info :track-check-complete :tracks (count due-tracks) :new-items total-new :notified total-notified)
+        {:tracks (count due-tracks) :new-items total-new :notified total-notified}))))
 
 (defn start-tracker!
   "Start background tracking thread."
