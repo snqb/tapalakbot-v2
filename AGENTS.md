@@ -1,4 +1,4 @@
-<!-- Updated: 2026-07-12 -->
+<!-- Updated: 2026-07-13 -->
 # tapalakbot-v2
 
 - **Agent-first architecture** — clj-harness LLM is the brain: sees conversation, decides intent, calls tools, generates text. Tools return structured data. Cards rendered deterministically. LLM never touches prices or URLs.
@@ -129,6 +129,7 @@ clojure -M:test
 
 ### Deployment (Dokploy)
 
+- **Telegram route is mandatory** — the Swarm service must include `--host-add api.telegram.org:149.154.167.220`; the VPS otherwise resolves Telegram to an unreachable IPv6 endpoint and polling fails with `HttpConnectTimeoutException`. Verify with `docker service inspect tapalakbot-production-densux --format '{{json .Spec.TaskTemplate.ContainerSpec.Hosts}}'`.
 - **Persistent data** — mount `/data`; `SESSION_DB_PATH` defaults to `/data/tapalakbot-sessions.db` and `MONITOR_DB_PATH` to `/data/tapalakbot-monitor.db`.
 - **Webhook trust boundary** — set `TELEGRAM_WEBHOOK_SECRET`; unauthenticated POSTs to `/webhook` are rejected.
 - **Container build must fail closed** — the Dockerfile compilation step must not use `|| true`; build failures must stop deployment.
