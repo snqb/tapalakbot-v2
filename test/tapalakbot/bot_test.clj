@@ -166,3 +166,69 @@
     (is (true? (needs-fallback? {:text "" :cards []} "пылесос")))
     (is (false? (needs-fallback? {:text "Ничего не найдено" :cards []} "пылесос")))
     (is (false? (needs-fallback? {:text "" :cards [{:title "Пылесос"}]} "пылесос")))))
+
+(deftest result-keyboard-prefers-a-cursor-over-a-new-search
+  (let [results-keyboard @#'bot/results-keyboard]
+    (is (some? results-keyboard))
+    (when results-keyboard
+      (let [keyboard (results-keyboard "toyota camry 70" "cursor123" true)
+            buttons (get keyboard "inline_keyboard")]
+        (is (= "page:cursor123" (get-in buttons [0 0 "callback_data"])))
+        (is (= "🔄 Ещё 20 вариантов" (get-in buttons [0 0 "text"])))
+        (is (= "cheaper:toyota camry 70" (get-in buttons [1 0 "callback_data"])))
+        (is (= "dearer:toyota camry 70" (get-in buttons [1 1 "callback_data"])))))
+    (when results-keyboard
+      (let [keyboard (results-keyboard "toyota camry 70" nil false)]
+        (is (= 1 (count (get keyboard "inline_keyboard"))))))))
+
+(deftest page-callback-delivers-each-cached-result-once
+  (let [handle-callback @#'bot/handle-callback
+        pools (atom {})
+        rich-sends (atom [])
+        md-sends (atom [])
+        callback-answers (atom [])
+        cards (mapv (fn [i]
+                      {:id i
+                       :title (str "Item " i)
+                       :price (* i 1000)
+                       :currency "KGS"
+                       :url (str "https://lalafo.kg/ad/" i)})
+                    (range 1 46))]
+    (with-redefs [tapalakbot.core/result-pools pools
+                  tg/answer-callback-query
+                  (fn [& args] (swap! callback-answers conj args) {"ok" true})
+                  tg/send-md
+                  (fn [chat-id text & args]
+                    (swap! md-sends conj [chat-id text (apply hash-map args)])
+                    {"ok" true})
+                  tg/send-rich-message
+                  (fn [chat-id & args]
+                    (swap! rich-sends conj [chat-id (apply hash-map args)])
+                    {"ok" true "result" {"message_id" (count @rich-sends)}})]
+      (let [cursor (tapalakbot.core/cache-result-pool!
+                    "tg-42" "query" cards tapalakbot.core/result-page-size)
+            callback-base {:data (str "page:" cursor)
+                           :user-id 42 :chat-id -100 :msg-id 7 :thread-id 17}]
+        (handle-callback (assoc callback-base :callback-id "cb-1"))
+        (handle-callback (assoc callback-base :callback-id "cb-2"))
+        (handle-callback (assoc callback-base :callback-id "cb-3"))
+        (is (= 2 (count @rich-sends)))
+        (is (= 2 (count @md-sends)))
+        (let [[_ first-rich] (first @rich-sends)
+              [_ second-rich] (second @rich-sends)
+              [_ _ first-intro] (first @md-sends)
+              [_ _ second-intro] (second @md-sends)]
+          (is (str/includes? (:html first-rich) "Item 21"))
+          (is (str/includes? (:html first-rich) "Item 40"))
+          (is (not (str/includes? (:html first-rich) "Item 41")))
+          (is (str/includes? (:html second-rich) "Item 41"))
+          (is (str/includes? (:html second-rich) "Item 45"))
+          (is (nil? (:reply-markup first-rich)))
+          (is (nil? (:reply-markup second-rich)))
+          (is (= (str "page:" cursor)
+                 (get-in first-intro [:reply_markup "inline_keyboard" 0 0 "callback_data"])))
+          (is (= "cheaper:query"
+                 (get-in second-intro [:reply_markup "inline_keyboard" 0 0 "callback_data"]))))
+        (is (= "Больше сохранённых вариантов нет."
+               (:text (apply hash-map (rest (last @callback-answers)))))))))
+  )

@@ -357,7 +357,7 @@
 
 ;; ══════════════════════ CALLBACK ROUTER ══════════════════════
 
-(declare handle-orchestrated)  ;; Forward declaration — defined below
+(declare handle-orchestrated render-and-send results-keyboard)
 
 (defn- set-city! [uid city-id]
   (let [st (get-user-state uid)]
@@ -440,6 +440,28 @@
                              (str "🗑 *Удалено:* «" (:title track) "»")
                              (tg/inline-keyboard
                               [["📋 К списку" {:callback_data "track_list"}]]))))
+
+    ;; === NEXT CACHED RESULT PAGE ===
+      (re-matches #"page:([A-Za-z0-9]+)" data)
+      (let [[_ cursor-id] (re-matches #"page:([A-Za-z0-9]+)" data)
+            owner-id (str "tg-" user-id)]
+        (if-let [{:keys [cards query start end total has-more]}
+                 (t/next-result-page! owner-id cursor-id t/result-page-size)]
+          (do
+            (tg/answer-callback-query callback-id
+                                      :text (str "Показываю " start "–" end " из " total))
+            (render-and-send
+             chat-id user-id query
+             {:mode :shortlist
+              :intro (str "## Ещё варианты\nПозиции " start "–" end " из " total ".")
+              :cards cards
+              :assumptions []}
+             :keyboard (results-keyboard query cursor-id has-more)
+             :thread-id thread-id)
+            (log/info :result-page-sent :user owner-id :start start :end end
+                      :total total :has-more has-more))
+          (tg/answer-callback-query callback-id
+                                    :text "Больше сохранённых вариантов нет.")))
 
     ;; === MORE RESULTS ===
       (re-matches #"more:(.+)" data)
@@ -693,6 +715,22 @@
                   n))]
         (String. bs 0 n "UTF-8")))))
 
+(defn- results-keyboard
+  "Build deterministic result controls. A cursor advances through cached,
+   already-ranked candidates; price refinements intentionally start new searches."
+  [query cursor-id has-more]
+  (let [max-q (- 64 8)
+        rows (cond-> []
+               (and has-more cursor-id)
+               (conj [{"text" (str "🔄 Ещё " t/result-page-size " вариантов")
+                       "callback_data" (str "page:" cursor-id)}])
+               true
+               (conj [{"text" "⬇️ Дешевле"
+                       "callback_data" (str "cheaper:" (truncate-cb query max-q))}
+                      {"text" "⬆️ Дороже"
+                       "callback_data" (str "dearer:" (truncate-cb query (- 64 7)))}]))]
+    {"inline_keyboard" rows}))
+
 (defn- log-transcript!
   "Log a transcript entry for later review."
   [user-id user-text reply]
@@ -709,27 +747,33 @@
 (defn- render-and-send
   "Send analysis and marketplace results as separate native Rich Messages.
    Analysis stays Rich Markdown. Deterministic cards use Android-safe standalone
-   links, inline media, and collapsed overflow."
+   links, inline media, and collapsed overflow.
+
+   When cards exist, attach inline controls to the intro message so pagination
+   callbacks stay reachable even if the Rich Message render itself is degraded."
   [chat-id user-id text reply & {:keys [keyboard thread-id]}]
   (let [default-kb (when (seq (:cards reply))
                      (track-context-button user-id text))
         kb (or keyboard default-kb)
         intro (:intro reply)
-        cards (:cards reply)]
+        cards (:cards reply)
+        intro-kb (when (and kb (seq cards)) kb)]
     (log/info :render-and-send :text-len (count (or intro ""))
               :cards (count cards) :has-kb (boolean kb) :thread-id thread-id)
     (try
       (if (seq cards)
         (do
-          ;; Native Rich Markdown keeps headings/lists as real Telegram blocks.
+          ;; Put the primary controls on the intro message so buttons survive
+          ;; even when the card-only rich message renders as unsupported media.
           (when (and intro (not (str/blank? intro)))
-            (tg/send-md chat-id intro :thread-id thread-id))
+            (tg/send-md chat-id intro
+                        :reply_markup intro-kb
+                        :thread-id thread-id))
           ;; Cards are a separate structured document, never concatenated prose.
           (let [html (render/render-results-rich cards)
                 sent (tg/send-rich-message chat-id
                                            :html html
                                            :preview false
-                                           :reply-markup kb
                                            :thread-id thread-id)]
             (if sent
               (let [message (or (get sent "result") sent)]
@@ -739,7 +783,7 @@
               (let [fallback (render/render-cards (take 6 cards))]
                 (doseq [chunk (tg/split-message fallback)]
                   (tg/send-message chat-id chunk :parse-mode "HTML"
-                                   :preview false :reply_markup kb
+                                   :preview false
                                    :thread-id thread-id))))))
         (when (and intro (not (str/blank? intro)))
           (tg/send-md chat-id intro :reply_markup kb :thread-id thread-id)))
@@ -747,7 +791,8 @@
         (log/error e :tg-send-failed :msg (.getMessage e))
         (try
           (tg/send-message chat-id (or intro "Ошибка — попробуйте ещё раз.")
-                           :parse-mode nil :thread-id thread-id)
+                           :parse-mode nil :reply_markup kb
+                           :thread-id thread-id)
           (catch Exception _))))))
 
 (defn- handle-orchestrated
@@ -829,12 +874,15 @@
                                        :search-status-cb status-cb}))
                       result)
             effective-query (or (:query result*) text)
-            all-cards (:cards result*)
-            ;; URL verification: replace any hallucinated link with warning
-            agent-text (if (seq all-cards)
-                         (let [valid-urls (set (keep :url all-cards))]
+            all-cards (vec (:cards result*))
+            candidate-pool (vec (or (seq (:pool result*)) all-cards))
+            cursor-id (t/cache-result-pool! user-uid effective-query
+                                            candidate-pool (count all-cards))
+            ;; URL verification: replace any hallucinated link with warning.
+            ;; The answer model may have seen candidates outside the visible page.
+            agent-text (if (seq candidate-pool)
+                         (let [valid-urls (set (keep :url candidate-pool))]
                            (clojure.string/replace (or (:text result*) "")
-                             ;; Match [text](url) and replace if URL not in valid set
                              #"\[([^\]]*)\]\(([^)]+)\)"
                              (fn [[_ label url]]
                                (if (valid-urls url)
@@ -858,17 +906,17 @@
                    :assumptions []}
             more-btn (cond
                        (seq all-cards)
-                       (let [max-q (- 64 8)]
-                         {"inline_keyboard"
-                          [[{"text" "🔄 Ещё результаты" "callback_data" (str "more:" (truncate-cb effective-query (- 64 5)))}]
-                           [{"text" "⬇️ Дешевле" "callback_data" (str "cheaper:" (truncate-cb effective-query max-q))}
-                            {"text" "⬆️ Дороже" "callback_data" (str "dearer:" (truncate-cb effective-query (- 64 7)))}]]})
+                       (results-keyboard effective-query cursor-id (some? cursor-id))
                        (seq suggestions)
                        {"inline_keyboard"
                         (mapv (fn [s]
-                                [{"text" (str "🔍 " s) "callback_data" (str "more:" (truncate-cb s 58))}])
+                                [{"text" (str "🔍 " s)
+                                  "callback_data" (str "more:" (truncate-cb s 58))}])
                               (take 3 suggestions))})]
-        (log/info :stream-summary :final-len (count agent-text) :cards (count all-cards) :thread-id thread-id)
+        (log/info :stream-summary :final-len (count agent-text)
+                  :cards (count all-cards) :candidates (count candidate-pool)
+                  :has-more (some? cursor-id) :cursor-id cursor-id
+                  :thread-id thread-id)
         ;; Delete status message now — we have the real result
         (when-let [mid (some-> status-msg deref (get "message_id"))]
           (try (tg/delete-message chat-id mid) (catch Exception _)))
@@ -876,10 +924,9 @@
         (render-and-send chat-id user-id text reply
                          :keyboard more-btn
                          :thread-id thread-id)
-        ;; Keep numeric drill-down callbacks user-scoped while the LLM session
-        ;; remains topic-scoped.
-        (when (seq all-cards)
-          (t/cache-ads! user-uid all-cards))
+        ;; Keep the full ranked pool available for numeric drill-down callbacks.
+        (when (seq candidate-pool)
+          (t/cache-ads! user-uid candidate-pool))
         ;; Rename topic
         (let [topic-name (topic-name-for-query effective-query)]
           (rename-topic! chat-id user-uid topic-name))
