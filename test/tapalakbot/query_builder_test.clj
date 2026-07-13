@@ -9,7 +9,8 @@
    
    Run: clojure -M test/tapalakbot/query_builder_test.clj"
   (:require [tapalakbot.query-builder :as qb]
-            [clojure.string :as str]))
+            [clojure.string :as str]
+            [clojure.test :refer [deftest is]]))
 
 ;; ════════════════════════════ TEST UTILITIES ════════════════════════════
 
@@ -303,3 +304,15 @@
     
     {:passed passed :failed failed :total total :errors errors}))
 
+
+
+(deftest million-price-and-prefixes-are-normalized-in-kgs
+  (is (= {:price-min nil :price-max 2000000}
+         (qb/extract-price "Toyota Camry 70 до 2 млн")))
+  (is (= {:price-min nil :price-max 2500000}
+         (qb/extract-price "Lexus GX до 2.5 млн")))
+  (is (= {:price-min nil :price-max 2000000}
+         (qb/extract-price "макс 2000000")))
+  (let [parsed (qb/parse "Toyota Camry 70 до 2 млн")]
+    (is (= "Toyota Camry 70" (:query parsed)))
+    (is (= 2000000 (:price-max parsed)))))

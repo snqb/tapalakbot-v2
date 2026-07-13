@@ -21,7 +21,16 @@
 (def ^:private price-patterns
   "Regex patterns for extracting price from Russian/Kyrgyz text.
    Matches: до 20к, до 20000, от 5000, 5-10 тыс, бюджет 15000, etc."
-  [{:regex #"(?:до|макс|не более|budget)\s*(\d[\d\s]*)\s*(?:к|кгс|сом|тенге)?"
+  [{:regex #"(?:до|макс|не более|budget)\s*(\d[\d\s]*(?:[.,]\d+)?)\s*(?:млн|миллион(?:а|ов)?)"
+    :type :max
+    :multiplier 1000000}
+   {:regex #"(?:от|мин|минимум|не менее)\s*(\d[\d\s]*(?:[.,]\d+)?)\s*(?:млн|миллион(?:а|ов)?)"
+    :type :min
+    :multiplier 1000000}
+   {:regex #"(\d+(?:[.,]\d+)?)\s*[-–—]\s*(\d+(?:[.,]\d+)?)\s*(?:млн|миллион(?:а|ов)?)"
+    :type :range
+    :multiplier 1000000}
+   {:regex #"(?:до|макс|не более|budget)\s*(\d[\d\s]*)\s*(?:к|кгс|сом|тенге)?"
     :type :max}
    {:regex #"(?:от|мин|минимум|не менее)\s*(\d[\d\s]*)\s*(?:к|кгс|сом|тенге)?"
     :type :min}
@@ -42,39 +51,45 @@
    {:regex #"(?:до|макс)\s*(\d[\d\s]*)\s*(?:кгс|сом|тенге)"
     :type :max}])
 
+(defn- price-suffix-multiplier
+  [full-match]
+  (cond
+    (re-find #"(?:млн|миллион(?:а|ов)?)\s*$" full-match) 1000000
+    (re-find #"\d\s*(?:к|тыс)\s*$" full-match) 1000
+    :else 1))
+
 (defn- parse-price-value
-  "Parse price string, handling 'к' suffix and space separators.
-   '20к' → 20000, '20000' → 20000, '500' → 500 (no auto-multiply)."
-  [s & {:keys [has-k-suffix?] :or {has-k-suffix? false}}]
-  (let [clean (str/replace s #"\s+" "")
-        num (try (Long/parseLong clean) (catch Exception _ nil))]
-    (when num
-      (if has-k-suffix?
-        (* num 1000)
-        num))))
+  "Parse a numeric price and normalize its explicit suffix to KGS units."
+  [s multiplier]
+  (try
+    (-> (str/replace s #"\s+" "")
+        (str/replace "," ".")
+        bigdec
+        (* multiplier)
+        long)
+    (catch Exception _ nil)))
 (defn extract-price
   "Extract price constraints from natural language text.
    Returns {:price-min N :price-max N} or nil."
   [text]
   (let [text-lower (str/lower-case text)
         results (atom [])]
-    (doseq [{:keys [regex type]} price-patterns]
+    (doseq [{:keys [regex type multiplier]} price-patterns]
       (when-let [match (re-find regex text-lower)]
-        ;; Check full match for "к"/"тыс" suffix
         (let [full-match (first match)
-              has-k? (or (str/includes? full-match "к")
-                         (str/includes? full-match "тыс"))]
+              multiplier (or multiplier (price-suffix-multiplier full-match))]
           (case type
             :max
-            (let [val (parse-price-value (second match) :has-k-suffix? has-k?)]
-              (when val (swap! results conj {:price-max val})))
+            (when-let [val (parse-price-value (second match) multiplier)]
+              (swap! results conj {:price-max val}))
             :min
-            (let [val (parse-price-value (second match) :has-k-suffix? has-k?)]
-              (when val (swap! results conj {:price-min val})))
+            (when-let [val (parse-price-value (second match) multiplier)]
+              (swap! results conj {:price-min val}))
             :range
-            (let [lo (parse-price-value (second match) :has-k-suffix? has-k?)
-                  hi (parse-price-value (nth match 2) :has-k-suffix? has-k?)]
-              (when (and lo hi) (swap! results conj {:price-min lo :price-max hi})))))))
+            (let [lo (parse-price-value (second match) multiplier)
+                  hi (parse-price-value (nth match 2) multiplier)]
+              (when (and lo hi)
+                (swap! results conj {:price-min lo :price-max hi})))))))
     (when (seq @results)
       ;; Merge all extracted ranges — take widest bounds
       (let [res @results
@@ -270,7 +285,7 @@ Rules:
         llm-params (when use-llm? (enrich-with-llm text))
         ;; Step 4: Build clean query (strip price/condition words)
         clean-query (-> text
-                        (str/replace #"(?:до|от|макс|мин|бюджет|цена|стоимость)\s*\d[\d\s]*(?:к|кгс|сом|тыс)?" "")
+                        (str/replace #"(?:до|от|макс|мин|бюджет|цена|стоимость)\s*\d[\d\s]*(?:[.,]\d+)?\s*(?:млн|миллион(?:а|ов)?|к|кгс|сом|тыс)?" "")
                         (str/replace #"\d[\d\s]*\s*(?:[-–—])\s*\d[\d\s]*(?:к|тыс|кгс|сом)?" "")
                         str/trim)
         ;; Step 5: Merge all params (LLM overrides deterministic where better)
