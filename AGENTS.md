@@ -3,12 +3,12 @@
 
 - **Agent-first architecture** — clj-harness LLM is the brain: sees conversation, decides intent, calls tools, generates text. Tools return structured data. Cards rendered deterministically. LLM never touches prices or URLs.
 - **Streaming is the agent path** — non-fast-path Telegram messages use `handle-message-stream!` (core.clj), which calls `stream/stream-agent` directly and bypasses the middleware pipeline. Observability hooks must live in `observe/record!` + mulog, not middleware alone.
-- **Configured model contract** — production agent and helper calls use `:gemini-3.5-flash` through `:openrouter`; keep provider/model choices explicit and sourced from `resources/config.edn`. Production sets `OPENROUTER_BASE_URL` to the authenticated Railway proxy because OpenRouter and `workers.dev` reject the Russian VPS egress.
-- **clj-harness** — middleware stack: core-agent → wrap-tools → wrap-retry → wrap-trace-id → wrap-observability → wrap-logging. `:nudges` requires tools before final answers. `:effects? true` uses effect-driven agent loop.
+- **Configured model contract** — production agent and helper calls use `:gemini-3.5-flash` through OpenRouter; keep provider/model choices explicit and sourced from `resources/config.edn`. Production sets `OPENROUTER_BASE_URL` to the authenticated Railway proxy because OpenRouter and `workers.dev` reject the Russian VPS egress.
+- **clj-harness** — middleware stack for synchronous handler: `handle-message` goes through core-agent and clj-harness wrappers; streaming uses `stream/stream-agent` directly. `:nudges` requires tools before final answers. `:effects? true` uses effect-driven agent loop.
 - **Observability** — mulog structured events + observe ring buffer. Every LLM call emits `:llm-call` with model/latency/tokens. Every turn emits `::agent.turn.start/end`. Trace IDs correlate full request trajectories. See Observability section.
 - **Simulation** — `clojure -M:simulation` runs 20 realistic queries through the real pipeline, capturing every event (LLM calls, tool calls, draft chunks, status phases) to JSONL. See Simulation section.
 - **Monitor in same JVM** — `server.clj` starts the monitor on its own thread and immediately continues to Telegram polling; never wait for the initial market scan on the bot startup path. Notifications use the same `render/render-reply`.
-- **Telegram rendering split** — agent analysis is one native Rich Markdown message; deterministic listings are a second Rich HTML document with up to 20 cards, a six-image `<tg-slideshow>`, six visible decision-rich card blocks, and overflow inside collapsed `<details>`. Links are standalone and platform-labelled because Telegram Android may not activate links inside Rich tables. Mashina cards preserve image/year/mileage/engine/gearbox/city. Never send duplicate media groups.
+- **Telegram rendering split** — agent analysis is one native Rich Markdown message; deterministic listings are a second Rich HTML document. First visible page contains up to 20 ranked cards with decision metadata, and the response keyboard now exposes deterministic result pagination plus curated price refinements. Links are standalone and platform-labelled because Telegram Android may not activate links inside Rich tables. Mashina cards preserve image/year/mileage/engine/gearbox/city. Never send duplicate media groups.
 - **Conversation isolation** — Telegram updates are keyed by chat/user/thread. A bounded executor processes one update per conversation and coalesces a busy conversation to its newest pending update.
 
 ## Architecture
@@ -28,7 +28,7 @@ Telegram: agent text (Rich Messages) + rendered cards (HTML)
 
 **Three layers:**
 1. **Agent** (clj-harness): LLM decides intent, calls tools, generates text. `wrap-tools` middleware for tool calling loop.
-2. **Deterministic** (search + render): search.clj, render.clj, query_builder.clj, lalafo.clj, mashina.clj — own all trust-critical facts.
+2. **Deterministic** (search + render): search.clj, render.clj, query_builder.clj, lalafo.clj, mashina.clj — own all trust-critical facts and deterministic pagination/ranking.
 3. **Transport** (Telegram): bot.clj — fast paths, streaming drafts, card rendering, tracking UI.
 
 ## File Map
@@ -121,7 +121,7 @@ The container exposes plain HTTP on `PORT` (default 8080); Dokploy terminates TL
 ## Testing
 
 ```bash
-# Full deterministic suite (52 tests / 194 assertions as of 2026-07-13)
+# Full deterministic suite (64 tests / 244 assertions as of 2026-07-13)
 clojure -M:test
 ```
 
