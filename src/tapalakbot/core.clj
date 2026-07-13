@@ -8,6 +8,7 @@
    [clj-harness.session.sqlite :as sess]
    [tapalakbot.lalafo :as lalafo]
    [tapalakbot.mashina :as mashina]
+   [tapalakbot.search :as search]
    [tapalakbot.query-builder :as qb]
    [tapalakbot.monitor.store :as monitor-store]
    [tapalakbot.policy :as policy]
@@ -91,6 +92,60 @@ the cheapest item. Do not mention items outside the requested range.
       (swap! ad-cache assoc user-id indexed)
       (log/info :ad-cache-update :user user-id :count (count indexed))
       {:start 1 :count (count indexed)})))
+
+(def ^:private candidate-pool-limit 200)
+(def result-page-size 20)
+(def ^:private result-pool-ttl-ms (* 30 60 1000))
+
+(def result-pools
+  "Short cursor ID to an immutable ranked candidate pool and current offset."
+  (atom {}))
+
+(defn cache-result-pool!
+  "Cache a ranked pool for deterministic, user-scoped pagination.
+   Returns a short cursor ID only when unseen cards remain."
+  [user-id query cards shown-count]
+  (let [cards (vec cards)]
+    (when (< shown-count (count cards))
+      (let [now (System/currentTimeMillis)
+            cursor-id (subs (str/replace (str (java.util.UUID/randomUUID)) "-" "") 0 10)]
+        (swap! result-pools
+               (fn [pools]
+                 (let [active (into {}
+                                    (remove (fn [[_ state]]
+                                              (> (- now (:created-at state))
+                                                 result-pool-ttl-ms)))
+                                    pools)]
+                   (assoc active cursor-id {:user-id user-id
+                                            :query query
+                                            :cards cards
+                                            :offset shown-count
+                                            :created-at now}))))
+        cursor-id))))
+
+(defn next-result-page!
+  "Atomically advance a cursor and return the next unseen page for its owner."
+  [user-id cursor-id page-size]
+  (loop []
+    (let [pools @result-pools
+          state (get pools cursor-id)
+          now (System/currentTimeMillis)]
+      (when (and state
+                 (= user-id (:user-id state))
+                 (<= (- now (:created-at state)) result-pool-ttl-ms)
+                 (< (:offset state) (count (:cards state))))
+        (let [start (:offset state)
+              end (min (count (:cards state)) (+ start page-size))
+              page {:cards (subvec (:cards state) start end)
+                    :query (:query state)
+                    :start (inc start)
+                    :end end
+                    :total (count (:cards state))
+                    :has-more (< end (count (:cards state)))}
+              updated (assoc state :offset end)]
+          (if (compare-and-set! result-pools pools (assoc pools cursor-id updated))
+            page
+            (recur)))))))
 
 (defn get-ad
   "Get a cached ad by user-id and index."
@@ -519,9 +574,13 @@ Rules:
            (fn [item]
              (let [idx (count (get @url-store *current-user-id* {}))
                    letter (col-letter idx)
-                   price (get-in item [:price :amount])
+                   raw-price (:price item)
+                   price (if (map? raw-price) (:amount raw-price) raw-price)
+                   currency (if (map? raw-price)
+                              (or (:currency raw-price) "KGS")
+                              (or (:currency item) "KGS"))
                    price-str (if price
-                               (str (format "%,.0f" (double price)) " сом")
+                               (str (format "%,.0f" (double price)) " " currency)
                                "цена не указана")
                    url (:url item)]
                (when (and *current-user-id* url (not (str/blank? url)))
@@ -535,30 +594,36 @@ Rules:
 
 (defn- mashina-listing->card
   [item]
-  {:title (:title item)
-   :price (when-let [price (get-in item [:price :amount])]
-            (long price))
-   :currency (get-in item [:price :currency] "KGS")
-   :url (:url item)
-   :platform :mashina
-   :image (first (:images item))
-   :year (:year item)
-   :mileage (when-let [mileage (:mileage item)]
-              (when (number? mileage) (long mileage)))
-   :engine (:engine item)
-   :gearbox (:gearbox item)
-   :city (:city item)})
+  (search/mashina-item->card item))
 
 (defn- capture-mashina-cards!
   [listings]
   (when *captured-cards*
-    (let [remaining (- 20 (count @*captured-cards*))
+    (let [remaining (- candidate-pool-limit (count @*captured-cards*))
           cards (if (pos? remaining)
                   (mapv mashina-listing->card (take remaining listings))
                   [])]
       (when (seq cards)
         (swap! *captured-cards* into cards))
       cards)))
+
+(def ^:private generic-auto-query-tokens
+  #{"авто" "машина" "автомобиль" "car" "cars" "auto"
+    "кроссовер" "внедорожник" "седан" "универсал" "минивэн"
+    "семейный" "семейная" "новый" "новая" "бу"})
+
+(defn- specific-auto-query?
+  "True when deterministic parsing identified a concrete automotive model query.
+   Generic car-advice requests still use LLM enrichment and research."
+  [_user-want parsed]
+  (let [tokens (->> (re-seq #"[\p{L}\p{N}]+" (str/lower-case (or (:query parsed) "")))
+                    (remove generic-auto-query-tokens)
+                    (remove (fn [token]
+                              (when-let [n (try (Long/parseLong token)
+                                                (catch Exception _ nil))]
+                                (> n 9999))))
+                    vec)]
+    (and (:is-auto? parsed) (>= (count tokens) 2))))
 
 (defn- search-execute
   "Smart search pipeline: QueryBuilder → platform routing → multi-platform search."
@@ -573,20 +638,25 @@ Rules:
         (when *captured-query*
           (reset! *captured-query* user-want))
         (let [_ (swap! url-store dissoc user-id)
-            ;; Step 0: LLM-based category resolution
-              category-id (resolve-category user-want)
+              deterministic-qb (qb/parse user-want)
+              fast-auto? (specific-auto-query? user-want deterministic-qb)
+              qb-result (if fast-auto?
+                          (assoc deterministic-qb :mashina-query (:query deterministic-qb))
+                          (qb/build user-want :use-llm? true))
+              ;; Exact model searches do not need category/query-generation LLM calls.
+              category-id (when-not fast-auto? (resolve-category user-want))
               _ (when *search-status-cb*
                   (if category-id
                     (*search-status-cb* (str "📂 Категория найдена"))
                     (*search-status-cb* (str "🔍 Без категории — ищем по всем"))))
-            ;; Step 1: Parse user intent with QueryBuilder (price, platform)
-              qb-result (qb/build user-want :use-llm? true)
-        ;; Helper: check if platform should be searched (handles :all)
               platforms (:platforms qb-result)
               search? (fn [p] (or (some #{p} platforms) (some #{:all} platforms)))
-        ;; Step 2: Generate optimal queries (LLM-based)
               {:keys [queries needs-research research-query]}
-              (generate-search-queries user-want)
+              (if fast-auto?
+                {:queries [(:query qb-result)]
+                 :needs-research false
+                 :research-query nil}
+                (generate-search-queries user-want))
         ;; Merge QueryBuilder price with generated price
               final-price-min (or (get args "price_min") (:price-min qb-result))
               final-price-max (or (get args "price_max") (:price-max qb-result))
@@ -607,7 +677,7 @@ Rules:
                                                   "price_min" final-price-min
                                                   "price_max" final-price-max
                                                   :city_id (or (get args :city_id) *user-city-id*)
-                                                  "candidate_limit" 100}
+                                                  "candidate_limit" 250}
                                      result (lalafo/search search-args)]
                                  (log/info :search-lalafo :queries enhanced-queries :price [final-price-min final-price-max])
                                  (try
@@ -619,25 +689,22 @@ Rules:
                                        (*search-status-cb* (str "📊 Найдено " item-count " объявлений")))
                                    ;; Capture structured cards for deterministic rendering
                                      (when (and *captured-cards* (seq (:items fmt)))
-                                       (let [remaining (- 20 (count @*captured-cards*))
-                                             cards (when (pos? remaining)
-                                                     (mapv (fn [item]
-                                                             {:title (get item "title")
-                                                              :price (when (get item "price") (long (get item "price")))
-                                                              :currency (get item "currency" "KGS")
-                                                              :url (get item "url")
-                                                              :platform :lalafo
-                                                              :image (preferred-lalafo-image item)
-                                                              :desc (get item "desc")})
-                                                           (take remaining (:items fmt))))]
+                                       (let [remaining (- candidate-pool-limit
+                                                          (count @*captured-cards*))
+                                             cards (if (pos? remaining)
+                                                     (mapv
+                                                      (fn [item]
+                                                        (assoc (search/lalafo-item->card item)
+                                                               :image
+                                                               (preferred-lalafo-image item)))
+                                                      (take remaining (:items fmt)))
+                                                     [])]
                                          (when (seq cards)
                                            (swap! *captured-cards* into cards)
                                            (when *search-status-cb*
-                                             (*search-status-cb* (str "✨ Отобрано " (count @*captured-cards*) " объявлений")))
-                                         ;; Early photo preview — send immediately, before LLM text gen
-                                           (when *early-photos-cb*
-                                             (try (*early-photos-cb* @*captured-cards*)
-                                                  (catch Exception _))))))
+                                             (*search-status-cb*
+                                              (str "✨ Кандидатов для анализа "
+                                                   (count @*captured-cards*)))))))
                                      txt)
                                    (catch Exception e
                                      (log/error :search-format-failed (.getMessage e)
@@ -647,21 +714,43 @@ Rules:
               mashina-results (when (search? :mashina)
                                 (try
                                   (let [q (or (:mashina-query qb-result) (first enhanced-queries))
-                                        mr (mashina/search-cars :query q :size 20)]
-                                    (log/info :smart-search-mashina :query q :found (:total mr))
+                                        mr (mashina/search-cars :query q :size 100)]
+                                    (log/info :smart-search-mashina :query q
+                                              :fetched (count (:listings mr))
+                                              :reported-total (:total mr))
                                     (when (seq (:listings mr))
-                                      ;; Capture rich cards up to the shared 20-result cap.
                                       (capture-mashina-cards! (:listings mr))
-                                      (format-mashina-results mr)))
+                                      (let [ranked (search/rank-marketplace-cards
+                                                    (mapv mashina-listing->card (:listings mr))
+                                                    {:query q
+                                                     :price-min final-price-min
+                                                     :price-max final-price-max})]
+                                        (format-mashina-results
+                                         (assoc mr :listings ranked)))))
                                   (catch Exception e
                                     (log/warn :mashina-search-failed (.getMessage e))
                                     nil)))]
-        ;; Combine results + capture stats
-          (let [combined (str (when lalafo-results lalafo-results)
+        ;; Combine results, then filter/rank the complete candidate pool.
+          (let [ranking-query (or (:mashina-query qb-result)
+                                  (:query qb-result)
+                                  user-want)
+                ranked-cards (when *captured-cards*
+                               (search/rank-marketplace-cards
+                                @*captured-cards*
+                                {:query ranking-query
+                                 :price-min final-price-min
+                                 :price-max final-price-max}))
+                _ (when *captured-cards*
+                    (reset! *captured-cards* ranked-cards))
+                combined (str (when lalafo-results lalafo-results)
                               (when mashina-results (str "\n\n" mashina-results)))]
-          ;; Compute and capture stats from captured cards
-            (when (and *captured-stats* *captured-cards*)
-              (let [prices (keep :price @*captured-cards*)]
+            (log/info :candidate-ranking
+                      :query ranking-query
+                      :ranked (count ranked-cards)
+                      :price [final-price-min final-price-max])
+          ;; Compute stats from the normalized ranked pool.
+            (when (and *captured-stats* (seq ranked-cards))
+              (let [prices (keep search/card-price-kgs ranked-cards)]
                 (when (seq prices)
                   (reset! *captured-stats*
                           {:avg (long (/ (reduce + prices) (count prices)))
@@ -752,13 +841,8 @@ Rules:
    (h/handle-message @tapalakbot user-id text)))
 
 (defn ask-stream
-  "Run agent with streaming + card capture. Returns {:text :cards :stats}.
-   Captures structured search results for deterministic card rendering.
-   status-cb called with progress updates during tool execution.
-   stream-cb (optional) called with each text delta for live preview.
-   search-status-cb (optional) called with rich search progress (found N items, etc).
-   early-photos-cb (optional) called with captured cards for immediate photo preview.
-   Also caches ads for /N drill-down."
+  "Run the agent, rank the full candidate pool, and return the first result page.
+   The full pool is retained in :pool for deterministic pagination."
   ([user-id text status-cb]
    (ask-stream user-id text status-cb {}))
   ([user-id text status-cb {:keys [stream-cb city-id search-status-cb early-photos-cb]}]
@@ -778,16 +862,23 @@ Rules:
                    effective-stream-cb
                    :status-cb status-cb))
          agent-text (if (map? result) (:content result) (str result))
-         cards @cards-atom
+         pool (vec @cards-atom)
+         cards (vec (take result-page-size pool))
          stats @stats-atom
          query @query-atom]
-     ;; Cache ads for /N drill-down
-     (when (seq cards)
-       (cache-ads! user-id cards))
-     (log/info :ask-stream-done :text-len (count agent-text) :cards (count cards)
+     ;; Cache the complete ranked pool for numeric drill-down.
+     (when (seq pool)
+       (cache-ads! user-id pool))
+     (log/info :ask-stream-done
+               :text-len (count agent-text)
+               :candidates (count pool)
+               :cards (count cards)
+               :has-more (> (count pool) (count cards))
                :has-stats (some? stats))
      {:text (or agent-text "")
       :cards cards
+      :pool pool
+      :has-more (> (count pool) (count cards))
       :stats stats
       :query query})))
 

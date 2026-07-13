@@ -75,7 +75,7 @@
                     {"choices" [{"message" {"content" "not json"}}]})]
       (is (= items (vec (filter-items items "iphone 13")))))))
 
-(deftest mashina-capture-keeps-twenty-rich-cards-with-images
+(deftest mashina-capture-keeps-the-full-candidate-pool-with-images
   (let [capture (ns-resolve 'tapalakbot.core 'capture-mashina-cards!)
         listings (mapv (fn [n]
                          {:id n
@@ -93,8 +93,46 @@
     (when capture
       (binding [core/*captured-cards* (atom [])]
         (capture listings)
-        (is (= 20 (count @core/*captured-cards*)))
+        (is (= 25 (count @core/*captured-cards*)))
         (is (= "https://storage.mashina.kg/0.webp"
                (:image (first @core/*captured-cards*))))
         (is (= {:engine 2.5 :gearbox "автомат"}
                (select-keys (first @core/*captured-cards*) [:engine :gearbox])))))))
+
+(deftest result-cursor-pages-through-ranked-pool-without-duplicates
+  (let [cache-pool (ns-resolve 'tapalakbot.core 'cache-result-pool!)
+        next-page (ns-resolve 'tapalakbot.core 'next-result-page!)
+        cards (mapv (fn [n] {:id n :title (str "Card " n)}) (range 45))]
+    (is (some? cache-pool))
+    (is (some? next-page))
+    (when (and cache-pool next-page)
+      (let [cursor-id (cache-pool "tg-42" "camry" cards 20)
+            second-page (next-page "tg-42" cursor-id 20)
+            third-page (next-page "tg-42" cursor-id 20)]
+        (is (= (vec (range 20 40)) (mapv :id (:cards second-page))))
+        (is (true? (:has-more second-page)))
+        (is (= (vec (range 40 45)) (mapv :id (:cards third-page))))
+        (is (false? (:has-more third-page)))
+        (is (nil? (next-page "tg-42" cursor-id 20)))
+        (is (= 45 (count (set (concat (range 20)
+                                      (map :id (:cards second-page))
+                                      (map :id (:cards third-page)))))))))))
+
+(deftest result-cursor-rejects-another-user
+  (let [cache-pool (ns-resolve 'tapalakbot.core 'cache-result-pool!)
+        next-page (ns-resolve 'tapalakbot.core 'next-result-page!)]
+    (is (some? cache-pool))
+    (is (some? next-page))
+    (when (and cache-pool next-page)
+      (let [cursor-id (cache-pool "tg-owner" "camry" [{:id 1} {:id 2}] 1)]
+        (is (nil? (next-page "tg-other" cursor-id 1)))))))
+
+(deftest deterministic-auto-search-fast-path-is-specific
+  (let [fast? (ns-resolve 'tapalakbot.core 'specific-auto-query?)]
+    (is (true? (fast? "Toyota Camry 70 до 2000000"
+                      {:is-auto? true :query "Toyota Camry 70"})))
+    (is (true? (fast? "BMW X5 2018" {:is-auto? true :query "BMW X5 2018"})))
+    (is (false? (fast? "машина до 2 млн" {:is-auto? true :query "машина"})))
+    (is (false? (fast? "семейный кроссовер"
+                       {:is-auto? true :query "семейный кроссовер"})))
+    (is (false? (fast? "iphone 13" {:is-auto? false :query "iphone 13"})))))
