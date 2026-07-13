@@ -13,19 +13,24 @@
   "Convert a Lalafo API item (JSON map with string keys) to a card map."
   [item]
   (let [p (get item "price")]
-    {:title    (get item "title")
+    {:id       (get item "id")
+     :title    (get item "title")
      :price    (when p (long p))
      :currency (get item "currency" "KGS")
      :url      (get item "url")
      :platform :lalafo
+     :image    (or (get item "image") (get item "image_url"))
      :desc     (get item "desc")}))
 
 (defn mashina-item->card
   "Convert a Mashina listing to a rich result card."
   [listing]
   (let [p (:price listing)]
-    {:title    (:title listing)
+    {:id       (:id listing)
+     :title    (:title listing)
      :price    (when (and p (:amount p)) (long (:amount p)))
+     :price-kgs (:price-kgs listing)
+     :price-usd (:price-usd listing)
      :currency (or (:currency p) "KGS")
      :url      (:url listing)
      :image    (first (:images listing))
@@ -57,17 +62,121 @@
     (count (filter #(str/includes? t %) accessory-bad-words))))
 
 (defn dedup-cards
-  "Remove duplicates by first-20-chars of lowercased title."
+  "Remove duplicate source listings without collapsing distinct ads of one model."
   [cards]
   (let [seen (volatile! #{})]
     (filterv
      (fn [card]
-       (let [key (subs (str/lower-case (str (:title card))) 0
-                       (min 20 (count (or (:title card) ""))))]
+       (let [key (or (:url card)
+                     (when (:id card) [(:platform card) (:id card)])
+                     [(:platform card) (:title card) (:price card)])]
          (if (@seen key)
            false
            (do (vswap! seen conj key) true))))
      cards)))
+
+(def ^:private token-aliases
+  {"тойота" "toyota" "камри" "camry" "лексус" "lexus"
+   "хонда" "honda" "хендай" "hyundai" "хундай" "hyundai"
+   "мерседес" "mercedes" "бмв" "bmw"})
+
+(def ^:private query-stopwords
+  #{"до" "от" "макс" "мин" "бюджет" "цена" "сом" "кгс" "kgs" "тыс"})
+
+(defn- normalize-search-text
+  [value]
+  (reduce-kv str/replace
+             (-> (str (or value "")) str/lower-case (str/replace "ё" "е"))
+             token-aliases))
+
+(defn- query-tokens
+  [query]
+  (->> (re-seq #"[\p{L}\p{N}.]+" (normalize-search-text query))
+       (remove query-stopwords)
+       (remove (fn [token]
+                 (when-let [n (try (Long/parseLong token) (catch Exception _ nil))]
+                   (> n 9999))))
+       distinct
+       vec))
+
+(defn- token-match-count
+  [title tokens]
+  (let [title (normalize-search-text title)]
+    (count (filter #(str/includes? title %) tokens))))
+
+(defn- kgs-currency?
+  [currency]
+  (#{"KGS" "СОМ"} (some-> (or currency "KGS") str str/upper-case)))
+
+(defn card-price-kgs
+  "Return a card's comparable KGS price, or nil when only another currency is known."
+  [card]
+  (let [p (:price card)]
+    (cond
+      (number? (:price-kgs card)) (long (:price-kgs card))
+      (and (number? p) (kgs-currency? (:currency card))) (long p)
+      (and (map? p)
+           (number? (:amount p))
+           (kgs-currency? (:currency p))) (long (:amount p))
+      :else nil)))
+
+(defn- within-price-range?
+  [card price-min price-max]
+  (if (or price-min price-max)
+    (when-let [price (card-price-kgs card)]
+      (and (or (nil? price-min) (<= price-min price))
+           (or (nil? price-max) (<= price price-max))))
+    true))
+
+(defn- card-completeness
+  [card]
+  (count (keep card [:price :url :image :year :mileage :engine :gearbox :city])))
+
+(defn rank-marketplace-cards
+  "Filter a fuzzy marketplace pool locally, then rank exact, in-budget matches.
+
+   Mashina's public endpoint performs broad fuzzy search and has no usable
+   structured filters, so title and price constraints are enforced here."
+  [cards {:keys [query price-min price-max]}]
+  (let [tokens (query-tokens query)
+        deduped (dedup-cards cards)
+        in-budget (filterv #(within-price-range? % price-min price-max) deduped)
+        matched (mapv #(assoc % ::matches (token-match-count (:title %) tokens))
+                      in-budget)
+        required (count tokens)
+        exact (if (pos? required)
+                (filterv #(= required (::matches %)) matched)
+                matched)
+        relevant (cond
+                   (seq exact) exact
+                   ;; A multi-token model query is a hard contract. Returning a
+                   ;; nearby generation/model is worse than returning no cards.
+                   (> required 1) []
+                   :else
+                   (let [best (apply max 0 (map ::matches matched))]
+                     (if (pos? best)
+                       (filterv #(= best (::matches %)) matched)
+                       [])))
+        budget-target price-max
+        ranked (sort-by
+                (fn [card]
+                  [(- (::matches card))
+                   (if-let [price (and budget-target (card-price-kgs card))]
+                     (Math/abs (long (- budget-target price)))
+                     Long/MAX_VALUE)
+                   (- (long (or (:year card) 0)))
+                   (long (or (:mileage card) Long/MAX_VALUE))
+                   (- (card-completeness card))])
+                relevant)]
+    (mapv (fn [index card]
+            (-> card
+                (dissoc ::matches)
+                (assoc :tier (cond
+                               (zero? index) :great
+                               (< index 5) :good
+                               :else nil))))
+          (range)
+          ranked)))
 
 ;; ════════════════════ LALAFO SEARCH ════════════════════
 
@@ -100,7 +209,7 @@
   [query]
   (log/info :search-mashina :query query)
   (let [result (try
-                 (mashina/search-cars :query query :size 20)
+                 (mashina/search-cars :query query :size 100)
                  (catch Exception e
                    (log/warn :mashina-search-error (.getMessage e))
                    nil))]
@@ -120,21 +229,10 @@
 
 ;; ════════════════════ STATS ════════════════════
 
-(defn- card-price
-  "Extract a numeric price from a card. Handles both raw and nested formats."
-  [card]
-  (let [p (:price card)]
-    (cond
-      (nil? p) nil
-      (number? p) (long p)
-      (map? p) (long (:amount p))
-      :else nil)))
-
 (defn- compute-stats
-  "Compute avg/min/max/count from a collection of cards."
+  "Compute KGS-only avg/min/max/count from marketplace cards."
   [cards]
-  (let [prices (keep card-price cards)
-        ps (vec prices)]
+  (let [ps (vec (keep card-price-kgs cards))]
     (if (empty? ps)
       {:avg 0 :min 0 :max 0 :count 0}
       (let [sum (reduce + ps)]
@@ -142,6 +240,7 @@
          :min   (apply min ps)
          :max   (apply max ps)
          :count (count ps)}))))
+
 
 ;; ════════════════════ MAIN ════════════════════
 
@@ -164,7 +263,7 @@
   ([user-query {:keys [use-llm?] :or {use-llm? true}}]
    (log/info :search-start :query user-query :use-llm? use-llm?)
    (let [qb-result (qb/build user-query :use-llm? use-llm?)
-         {:keys [query price-min price-max
+         {:keys [query price-min price-max mashina-query
                  is-auto? is-electronics? is-real-estate?]} qb-result
 
          ;; 2. Determine platforms
@@ -185,26 +284,28 @@
          ;; 4. Search Mashina (cars)
          mashina-cards (when (some #{:mashina} platforms)
                          (try
-                           (search-mashina query)
+                           (search-mashina (or mashina-query query))
                            (catch Exception e
                              (log/warn :mashina-search-failed :error (.getMessage e))
                              [])))
 
-         ;; 5. Combine, filter accessories (score > 1), dedup, sort by relevance
+         ;; 5. Filter obvious junk, enforce exact/local constraints, then rank.
          all-cards (concat lalafo-cards mashina-cards)
-         filtered  (filterv #(<= (accessory-score (:title %)) 1) all-cards)
-         deduped   (dedup-cards filtered)
-         sorted    (sort-by #(- (relevance-score (:title %) query)) deduped)
-
-         ;; 6. Stats
-         stats (compute-stats sorted)]
+         filtered (filterv #(<= (accessory-score (:title %)) 1) all-cards)
+         ranked (rank-marketplace-cards
+                 filtered
+                 {:query (or mashina-query query)
+                  :price-min price-min
+                  :price-max price-max})
+         stats (compute-stats ranked)]
 
      (log/info :search-done
                :platforms platforms
-               :final-count (count sorted))
+               :candidates (count filtered)
+               :final-count (count ranked))
 
-     {:cards    (vec sorted)
-      :stats    stats
+     {:cards ranked
+      :stats stats
       :platforms platforms
-      :query    query
+      :query query
       :qb-result qb-result})))
