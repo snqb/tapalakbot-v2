@@ -53,44 +53,62 @@
 ;; Public API
 ;; ---------------------------------------------------------------------------
 
+(def ^:private max-page-size 100)
+
+(defn- normalized-prices
+  [prices]
+  (let [by-currency (into {} (map (juxt :currency identity) prices))
+        kgs (get by-currency "KGS")
+        usd (get by-currency "USD")
+        preferred (or kgs (some #(when (:is_original %) %) prices) (first prices))]
+    {:price (when preferred (select-keys preferred [:amount :currency]))
+     :price-kgs (:amount kgs)
+     :price-usd (:amount usd)}))
+
 (defn search-cars
-  "Search mashina.kg for cars.
-   
+  "Search Mashina's fuzzy public listing endpoint.
+
+   The endpoint supports only q/page/size and caps size at 100. Callers must
+   filter and rank the returned pool locally.
+
    Options:
    - :page - page number (default 1)
-   - :size - results per page (default 20)
-   - :query - search query (brand, model, etc.)"
+   - :size - candidates per page (default/max 100)
+   - :query - fuzzy brand/model query"
   [& {:keys [page size query]
-      :or {page 1 size 20}}]
-  (let [params (cond-> {"page" page "size" size}
+      :or {page 1 size max-page-size}}]
+  (let [size (-> size (max 1) (min max-page-size))
+        params (cond-> {"page" page "size" size}
                  query (assoc "q" query))
         result (mashina-request "/ads/listings" :query-params params)]
     (when result
-      {:listings (mapv (fn [item]
-                         {:id (:id item)
-                          :title (:title item)
-                          :slug (:slug item)
-                          :price (when-let [p (first (:prices item))]
-                                   {:amount (:amount p)
-                                    :currency (:currency p)})
-                          :description (:description item)
-                          :year (some #(when (= (:slug %) "year") (:value_number %))
-                                      (:attributes item))
-                          :mileage (some #(when (= (:slug %) "mileage")
-                                            (get-in % [:value_json :value]))
-                                         (:attributes item))
-                          :engine (some #(when (= (:slug %) "engine_volume")
-                                           (:value_number %))
-                                        (:attributes item))
-                          :gearbox (some #(when (= (:slug %) "gearbox")
-                                            (get-in % [:value_json :name]))
-                                         (:attributes item))
-                          :city (some #(when (= (:slug %) "city")
-                                         (get-in % [:value_json :name]))
-                                      (:attributes item))
-                          :images (mapv #(or (:big %) (:medium %) (:thumb %)) (:images item))
-                          :url (str "https://mashina.kg/details/" (:slug item))})
-                       (:items result))
+      {:listings
+       (mapv
+        (fn [item]
+          (let [{:keys [price price-kgs price-usd]} (normalized-prices (:prices item))]
+            {:id (:id item)
+             :title (:title item)
+             :slug (:slug item)
+             :price price
+             :price-kgs price-kgs
+             :price-usd price-usd
+             :description (:description item)
+             :year (some #(when (= (:slug %) "year") (:value_number %))
+                         (:attributes item))
+             :mileage (some #(when (= (:slug %) "mileage")
+                               (get-in % [:value_json :value]))
+                            (:attributes item))
+             :engine (some #(when (= (:slug %) "engine_volume") (:value_number %))
+                           (:attributes item))
+             :gearbox (some #(when (= (:slug %) "gearbox")
+                               (get-in % [:value_json :name]))
+                            (:attributes item))
+             :city (some #(when (= (:slug %) "city")
+                            (get-in % [:value_json :name]))
+                         (:attributes item))
+             :images (mapv #(or (:big %) (:medium %) (:thumb %)) (:images item))
+             :url (str "https://mashina.kg/details/" (:slug item))}))
+        (:items result))
        :total (:total result)
        :page (:page result)
        :pages (:pages result)})))
