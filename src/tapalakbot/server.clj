@@ -126,6 +126,7 @@
   (try
     (let [resp (tg/set-webhook webhook-url
                                :secret-token secret
+                               :max-connections 1
                                :allowed-updates ["message" "callback_query"])
           ok? (get resp "ok")]
       (if ok?

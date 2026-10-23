@@ -116,7 +116,7 @@ clojure -M:test
 
 - **Telegram/gateway networking** — production uses `https://tapalak-gateway-edge.vercel.app`: exact model rewrites forward to the authenticated Railway gateway; `TELEGRAM_PROXY_URL` ends in `/telegram` and authenticates this bot in a bearer header, never the relay URL. Direct Railway and Telegram cold connections intermittently time out; Railway packet headers show unacknowledged ClientHello segments. HTTP/2 and TLS 1.2 did not fix full turns. Keep normal verified TLS and `JAVA_TOOL_OPTIONS=-Djava.net.preferIPv4Stack=true`. Preserve the Telegram IPv4 host entry for direct diagnostics; Dokploy removes manual Swarm host entries.
 - **Persistent data** — mount `/data`; `SESSION_DB_PATH` defaults to `/data/tapalakbot-sessions.db` and `MONITOR_DB_PATH` to `/data/tapalakbot-monitor.db`.
-- **Webhook ingress** — production sets `WEBHOOK_URL=https://tapalak.esen.works/webhook` and the existing `pass telegram/tapalakbot/webhook-secret` value as `TELEGRAM_WEBHOOK_SECRET`. Unauthenticated POSTs are rejected. Expect one bot JVM and no polling thread in webhook mode; retain polling only as the existing fallback. Do not keep a continuous serverless `getUpdates` call: provisioned memory is billed while waiting for I/O.
+- **Webhook ingress** — production sets `WEBHOOK_URL=https://tapalak-gateway-edge.vercel.app/webhook`; the edge accepts only the existing `pass telegram/tapalakbot/webhook-secret` value, then forwards to the fixed VPS `/webhook`, which validates it independently. Set the same `TELEGRAM_WEBHOOK_SECRET` in VPS and edge production environments. Register `max_connections=1` to preserve arrival-order coalescing. Expect one bot JVM and no polling thread. Direct Telegram → VPS delivery timed out despite the correct IP; do not restore continuous serverless `getUpdates` polling.
 - **Container build must fail closed** — the Dockerfile compilation step must not use `|| true`; build failures must stop deployment.
 - **Full SHA required** — tools.deps git dependencies require a full SHA.
 - **clj-harness pinned** — update its full git SHA in `deps.edn` after parent fixes; do not assume local parent changes are deployed.
@@ -128,7 +128,7 @@ clojure -M:test
 
 - **Java (?i) doesn't work for Cyrillic** — `policy.clj` lowercases input before regex matching. Never use `(?i)` with Russian text.
 - **Only ONE process per bot token** — Two pollers = 409 Conflict.
-- **Persist stop-first ordering** — save `updateConfigSwarm` and `rollbackConfigSwarm` objects through Dokploy `application.update`, both with `Parallelism:1` and `Order:"stop-first"`. A manual service update alone is overwritten on redeploy. Verify the resulting Swarm spec and keep exactly one poller.
+- **Persist stop-first ordering** — save `updateConfigSwarm` and `rollbackConfigSwarm` objects through Dokploy `application.update`, both with `Parallelism:1` and `Order:"stop-first"`. A manual service update alone is overwritten on redeploy. Verify the resulting Swarm spec and keep exactly one bot process.
 - **Forum topics are distinct conversations** — `message_thread_id` from the current update is immutable request context: preserve it through every send/edit and in the session ID. Never store a mutable "active thread" per user; one user can run multiple topics concurrently.
 - **Busy conversations coalesce** — only the newest pending update is retained while a conversation is running; never add raw `future` dispatch around this path.
 - **Lalafo search noise** — Generic queries return junk. Use exact model names.

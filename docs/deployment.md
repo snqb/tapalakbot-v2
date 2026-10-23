@@ -10,7 +10,7 @@ Verified on 2026-10-24:
 - Source: `https://github.com/snqb/tapalakbot-v2.git`; Dokploy uses the root Dockerfile and root build context.
 - Persistent volume: `tapalakbot-production-data` mounted at `/data`.
 - Retained direct-diagnostic host mapping: `149.154.167.220 api.telegram.org`; runtime `JAVA_TOOL_OPTIONS=-Djava.net.preferIPv4Stack=true`. Production Telegram requests use the authenticated edge relay.
-- Production ingress uses the authenticated webhook at `https://tapalak.esen.works/webhook`. The bot is `@tapalakin_bot`; expect one bot JVM and no polling thread after successful registration.
+- Production ingress uses `https://tapalak-gateway-edge.vercel.app/webhook`, which authenticates and forwards to the fixed VPS webhook. The bot is `@tapalakin_bot`; expect one bot JVM and no polling thread after successful registration.
 
 Updates and rollbacks must both use stop-first ordering. Process health alone does not establish that model credentials or the external gateway work.
 
@@ -40,9 +40,14 @@ allowlisted Telegram function authorizes only the existing bot; its inbound URLs
 contain method names, not bot tokens. It never starts a poller. Both hops retain
 certificate and hostname verification, and no new retry policy is added.
 
-Incoming updates go directly to the VPS webhook with a secret header; the edge
-is only used for outbound Telegram calls. This avoids a continuous serverless
-long poll: [provisioned memory is billed even while waiting for I/O](https://vercel.com/docs/functions/usage-and-pricing).
+Incoming updates first reach the edge `/webhook`, which verifies Telegram's
+secret header and forwards only to `https://tapalak.esen.works/webhook`; the VPS
+independently checks the same secret. Direct Telegram delivery to the correct VPS
+IP timed out, while the authenticated relay preserves queued updates. Registration
+uses `max_connections=1` so the arrival-order coalescer retains its ordered input.
+
+Webhook delivery avoids a continuous serverless long poll:
+[provisioned memory is billed even while waiting for I/O](https://vercel.com/docs/functions/usage-and-pricing).
 
 From the real container, independent normal-TLS connection gates passed for both
 edge health and relayed Telegram `getMe`. A complete real phone → one-som →
@@ -76,8 +81,8 @@ Collection, selector or pre-search conversation-provider failure is unavailable,
 | `MONITOR_DB_PATH` | `/data/tapalakbot-monitor.db` |
 | `PORT` | Plain HTTP container port; default 8080 |
 | `JAVA_TOOL_OPTIONS` | `-Djava.net.preferIPv4Stack=true`; do not restore the ineffective TLS 1.2 cap |
-| `WEBHOOK_URL` | `https://tapalak.esen.works/webhook` |
-| `TELEGRAM_WEBHOOK_SECRET` | Existing `pass telegram/tapalakbot/webhook-secret`; required to authenticate incoming updates |
+| `WEBHOOK_URL` | `https://tapalak-gateway-edge.vercel.app/webhook` |
+| `TELEGRAM_WEBHOOK_SECRET` | Existing `pass telegram/tapalakbot/webhook-secret`; same hosted secret on edge and VPS |
 | `MONITOR_ADMIN_TOKEN` | Required before exposing the monitor administration API |
 
 Model names and JEV bounds are in `resources/config.edn`: `google/gemini-3.5-flash`, `typesafe/jev-1.13`, batches at most 20, concurrency at most three, and 30-second request timeouts. Source descriptions are not truncated to fit a request; oversized individual listings fail explicitly.
@@ -89,7 +94,7 @@ Save runtime variables with Dokploy `application.saveEnvironment` without deploy
 ```bash
 clojure -M -e "(require 'tapalakbot.bot 'tapalakbot.server) (println :compile-ok)"
 clojure -M:test
-node --test infra/gateway-edge/test/telegram.test.mjs
+node --test infra/gateway-edge/test/*.test.mjs
 clojure -M:run "дорожка для ходьбы до 15000"
 ```
 
@@ -101,11 +106,11 @@ With working credentials, exercise the real agent, Lalafo and JEV together: walk
 
 1. Verify the OpenRouter credential against both the configured conversation model and the typed System One endpoint without printing the key.
 2. If gateway code changed, deploy `infra/openrouter-proxy/` to its authorized Railway service; otherwise reuse the verified running service. It must require the same bearer credential and allow only `/api/v1/chat/completions` and `/api/v1/systemone`.
-3. If edge code changed, deploy only `infra/gateway-edge/` with a supported CLI: `pnpm dlx vercel@latest deploy --prod --yes --cwd infra/gateway-edge`. Its hosted production `BOT_TOKEN` must be the existing bot credential, provided through stdin as exact bytes without a trailing newline, never argv or a plaintext env file.
+3. If edge code changed, deploy only `infra/gateway-edge/` with a supported CLI: `pnpm dlx vercel@latest deploy --prod --yes --cwd infra/gateway-edge`. Its hosted production `BOT_TOKEN` and `TELEGRAM_WEBHOOK_SECRET` must reuse the existing credentials, provided through stdin as exact bytes without a trailing newline, never argv or a plaintext env file.
 4. Check edge health, both authenticated model routes, Telegram `getMe`, wrong-bearer 401 and forbidden-method 404. Run the full multi-call agent from the VPS without starting polling; a healthy edge alone is not sufficient.
-5. Set the matching endpoints and credential in Dokploy. Preserve the Telegram host entry, persisted volume, one replica and persisted stop-first update and rollback order.
+5. Set matching endpoints and secrets in Dokploy. Keep the webhook at the edge URL and `max_connections=1`; the VPS target is fixed inside the ingress function. Preserve the Telegram host entry, persisted volume, one replica and persisted stop-first update and rollback order.
 6. Release the verified source through the existing Dokploy application. Do not use obsolete standalone `docker run` or NixOS/systemd instructions.
-7. Check `/health` and `/ready`, Swarm task state, transport logs, and an actual Telegram conversation. `/ready` covers transport startup and marketplace probing, not model-credential validity.
+7. Check `/health`, `/ready`, Swarm task state and `getWebhookInfo` (edge URL, one connection, no growing queue). Expect no polling thread in webhook mode. Exercise an actual Telegram conversation and callback; `/ready` does not establish model validity or external delivery.
 
 Do not publish code or restart production merely because deterministic tests pass while model verification is blocked.
 

@@ -2,7 +2,8 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": null,
   "functions": {
-    "api/telegram.mjs": { "maxDuration": 60 }
+    "api/telegram.mjs": { "maxDuration": 60 },
+    "api/webhook.mjs": { "maxDuration": 15 }
   },
   "rewrites": [
     {
@@ -16,6 +17,10 @@
     {
       "source": "/api/v1/systemone",
       "destination": "https://openrouter-proxy-production-1ad8.up.railway.app/api/v1/systemone"
+    },
+    {
+      "source": "/webhook",
+      "destination": "/api/webhook"
     },
     {
       "source": "/telegram/:method",
