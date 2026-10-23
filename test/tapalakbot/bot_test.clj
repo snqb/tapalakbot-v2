@@ -215,6 +215,7 @@
         (is (= [:high :mid :low] (mapv :id (:cards (first @sent)))))
         (is (= :price-desc (:sort-mode (first @sent))))))))
 
+
 (deftest concurrent-forum-topics-rename-their-own-thread
   (let [handle-orchestrated @#'bot/handle-orchestrated
         first-started (promise)

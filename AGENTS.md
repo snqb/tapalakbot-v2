@@ -107,7 +107,7 @@ The container exposes plain HTTP on `PORT` (default 8080); Dokploy terminates TL
 ## Testing
 
 ```bash
-# Full deterministic suite: 119 tests / 463 assertions on 2026-10-24
+# Full deterministic suite: 120 tests / 467 assertions on 2026-10-24
 clojure -M:test
 ```
 

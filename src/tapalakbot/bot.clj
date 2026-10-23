@@ -786,6 +786,8 @@
         ;; Keep the full current ordered pool available for numeric drill-down callbacks.
         (when (seq ordered-pool)
           (result-store/cache-ads! session-id ordered-pool))
+        (delivery/send-reply! chat-id reply
+                              {:keyboard more-btn :thread-id thread-id})
         ;; Rename topic
         (let [topic-name (topic-name-for-query effective-query)]
           (rename-topic! chat-id thread-id topic-name))
