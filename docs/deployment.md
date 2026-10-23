@@ -2,14 +2,14 @@
 
 ## Actual production topology
 
-Verified on 2026-10-23:
+Verified on 2026-10-24:
 
 - SSH host: `krugosvet` (`147.45.158.152`). The old NixOS host is not the release target.
 - Dokploy application: `zXRWauuXqMP-7XIYSWLR5`, project `tapalakbot`, environment `production`.
 - Docker Swarm service: `tapalakbot-production-densux`, one replica. Do not launch a standalone replacement container or a second Telegram poller.
 - Source: `https://github.com/snqb/tapalakbot-v2.git`; Dokploy uses the root Dockerfile and root build context.
 - Persistent volume: `tapalakbot-production-data` mounted at `/data`.
-- Required effective host mapping: `149.154.167.220 api.telegram.org`, plus `JAVA_TOOL_OPTIONS=-Djava.net.preferIPv4Stack=true -Djdk.tls.client.protocols=TLSv1.2`.
+- Retained direct-diagnostic host mapping: `149.154.167.220 api.telegram.org`; runtime `JAVA_TOOL_OPTIONS=-Djava.net.preferIPv4Stack=true`. Production Telegram requests use the authenticated edge relay.
 - Current Telegram transport is polling: `getWebhookInfo` returned an empty URL. The bot is `@tapalakin_bot`.
 
 Updates and rollbacks must both use stop-first ordering. Process health alone does not establish that model credentials or the external gateway work.
@@ -27,11 +27,23 @@ poll-error loop and preserves unacknowledged updates. The old unguarded
 on a connect timeout. Readiness now requires the marketplace probe and is revoked
 if the polling worker terminates; process liveness remains separate.
 
-Production-container transport diagnostics found gateway HTTP/1.1 connections
-timing out with default TLS, while HTTP/2 and HTTP/1.1 with TLS 1.2 returned 200.
-The runtime TLS 1.2 setting was then verified through the pinned harness's actual
-SSE client, which received `OK`. This changes negotiation, not certificate or
-hostname verification; no insecure TLS option or extra proxy is used.
+Cold connection handshakes from this VPS to both Railway aliases and Telegram
+intermittently timed out. For Railway, packet headers showed selected
+ClientHello segments receiving no ACK after TCP establishment. HTTP/2, pooling
+and a TLS 1.2 cap did not
+repair complete turns; the earlier tiny SSE success was insufficient evidence.
+
+`infra/gateway-edge/` is deployed as `tapalak-gateway-edge` in the existing Vercel
+account. Three exact rewrites forward health and the two model paths to the same
+Railway gateway, preserving its authentication and allowlist. A separate
+allowlisted Telegram function authorizes only the existing bot; its inbound URLs
+contain method names, not bot tokens. It never starts a poller. Both hops retain
+certificate and hostname verification, and no new retry policy is added.
+
+From the real container, independent normal-TLS connection gates passed for both
+edge health and relayed Telegram `getMe`. A complete real phone → one-som →
+router pipeline then passed with streaming deltas and unchanged source facts.
+The unused custom hostname was not adopted after a non-retryable CA rate limit.
 
 ## Search and rendering contract
 
@@ -53,12 +65,13 @@ Collection, selector or pre-search conversation-provider failure is unavailable,
 | --- | --- |
 | `BOT_TOKEN` | Existing Telegram bot identity; keep exactly one poller |
 | `OPENROUTER_API_KEY` | Dedicated credential from `pass openrouter/lalabot-token`; do not overwrite or reuse the old global entry |
-| `OPENROUTER_BASE_URL` | `https://openrouter-proxy-production-1ad8.up.railway.app/api/v1/chat/completions` |
-| `JEV_BASE_URL` | `https://openrouter-proxy-production-1ad8.up.railway.app/api/v1/systemone` |
+| `OPENROUTER_BASE_URL` | `https://tapalak-gateway-edge.vercel.app/api/v1/chat/completions` |
+| `JEV_BASE_URL` | `https://tapalak-gateway-edge.vercel.app/api/v1/systemone` |
+| `TELEGRAM_PROXY_URL` | `https://tapalak-gateway-edge.vercel.app/telegram`; current bot token authenticates in a bearer header |
 | `SESSION_DB_PATH` | `/data/tapalakbot-sessions.db` |
 | `MONITOR_DB_PATH` | `/data/tapalakbot-monitor.db` |
 | `PORT` | Plain HTTP container port; default 8080 |
-| `JAVA_TOOL_OPTIONS` | `-Djava.net.preferIPv4Stack=true -Djdk.tls.client.protocols=TLSv1.2` for the production network |
+| `JAVA_TOOL_OPTIONS` | `-Djava.net.preferIPv4Stack=true`; do not restore the ineffective TLS 1.2 cap |
 | `WEBHOOK_URL`, `TELEGRAM_WEBHOOK_SECRET` | Both required to switch to an authenticated webhook |
 | `MONITOR_ADMIN_TOKEN` | Required before exposing the monitor administration API |
 
@@ -71,6 +84,7 @@ Save runtime variables with Dokploy `application.saveEnvironment` without deploy
 ```bash
 clojure -M -e "(require 'tapalakbot.bot 'tapalakbot.server) (println :compile-ok)"
 clojure -M:test
+node --test infra/gateway-edge/test/telegram.test.mjs
 clojure -M:run "дорожка для ходьбы до 15000"
 ```
 
@@ -82,22 +96,23 @@ With working credentials, exercise the real agent, Lalafo and JEV together: walk
 
 1. Verify the OpenRouter credential against both the configured conversation model and the typed System One endpoint without printing the key.
 2. If gateway code changed, deploy `infra/openrouter-proxy/` to its authorized Railway service; otherwise reuse the verified running service. It must require the same bearer credential and allow only `/api/v1/chat/completions` and `/api/v1/systemone`.
-3. Observe the exact Railway deployment reach `SUCCESS`; check `/health`, both authenticated routes, and rejection of unauthorized requests. Obtain its actual public domain rather than reusing a stale hostname.
-4. Set the matching gateway endpoints and credential in Dokploy. Preserve the Telegram host entry, persisted volume, one replica and stop-first update order. Ensure rollback also cannot overlap two pollers.
-5. Release the verified source through the existing Dokploy application. Do not use the obsolete standalone `docker run` or NixOS/systemd instructions.
-6. Check `/health` and `/ready`, Swarm task state, transport logs, and an actual Telegram conversation. `/ready` covers transport startup and marketplace probing, not model-credential validity.
+3. If edge code changed, deploy only `infra/gateway-edge/` with a supported CLI: `pnpm dlx vercel@latest deploy --prod --yes --cwd infra/gateway-edge`. Its hosted production `BOT_TOKEN` must be the existing bot credential, provided through stdin as exact bytes without a trailing newline, never argv or a plaintext env file.
+4. Check edge health, both authenticated model routes, Telegram `getMe`, wrong-bearer 401 and forbidden-method 404. Run the full multi-call agent from the VPS without starting polling; a healthy edge alone is not sufficient.
+5. Set the matching endpoints and credential in Dokploy. Preserve the Telegram host entry, persisted volume, one replica and persisted stop-first update and rollback order.
+6. Release the verified source through the existing Dokploy application. Do not use obsolete standalone `docker run` or NixOS/systemd instructions.
+7. Check `/health` and `/ready`, Swarm task state, transport logs, and an actual Telegram conversation. `/ready` covers transport startup and marketplace probing, not model-credential validity.
 
 Do not publish code or restart production merely because deterministic tests pass while model verification is blocked.
 
 ## Observed verification
 
-- Bot/server namespaces compiled; 105 deterministic tests / 433 assertions passed after the readiness correction. The shared-harness startup regression also passed within its 17-test / 55-assertion suite.
+- Bot/server namespaces compiled; 105 deterministic tests / 433 assertions passed with the published egress harness. The shared-harness startup regression also passed within its 17-test / 55-assertion suite.
 - Real one-shot CLI: compact electric walking treadmill under 15,000 KGS, 61 JEV candidates, 15 confirmed plus 38 uncertain matches, 8 rejected; first 20 cards stayed within budget and the process exited normally.
 - Real same-session phone → one-som follow-up → different-router search succeeded through the hosted gateway with actual content deltas. The follow-up retained iPhone context, returned a valid empty pool and a bounded two-sentence reply; the new product did not leak phone cards. Accepted source fields remained unchanged.
 - Focused real JEV checks excluded an unidentified “Брали за 18000” offer and a current ruble/KGS conflict, retained explicitly under-desk controls, kept unsupported form factors uncertain, recognized an explicit device defect and rejected an exchange-only offer.
 - Real two-turn treadmill evaluation enforced 20,000 then 15,000 KGS while retaining conversation context and unchanged cross-turn source facts.
 - The hosted gateway deployment reached `SUCCESS`; health, Gemini, JEV and SSE forwarding passed. Wrong bearer returned 401 and forbidden routes 404. Both model routes also returned 200 from the production VPS.
 - The production network's Java HTTP client fetched Lalafo directly with status 200 and complete descriptions up to 2,354 characters.
-- Telegram accepted native Rich HTML with six source photos and standalone links; native desktop rendering was observed in the isolated QA topic. Production release must additionally exercise its actual pagination/refinement callbacks and topic ownership.
+- Historical native desktop captures show raw source cards, not production JEV selections. Record actual production Rich cards, pagination, refinements and topic isolation in the consumer receipts; do not reuse that baseline as selector proof.
 
 Gateway release identity, exact Dokploy rollout identity and post-release consumer evidence are kept in the sanitized deployment/verification receipts. Historical invalid-key and missing-gateway failures are retained as outage baselines, not current blockers.

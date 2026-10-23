@@ -1,0 +1,25 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "functions": {
+    "api/telegram.mjs": { "maxDuration": 60 }
+  },
+  "rewrites": [
+    {
+      "source": "/health",
+      "destination": "https://openrouter-proxy-production-1ad8.up.railway.app/health"
+    },
+    {
+      "source": "/api/v1/chat/completions",
+      "destination": "https://openrouter-proxy-production-1ad8.up.railway.app/api/v1/chat/completions"
+    },
+    {
+      "source": "/api/v1/systemone",
+      "destination": "https://openrouter-proxy-production-1ad8.up.railway.app/api/v1/systemone"
+    },
+    {
+      "source": "/telegram/:method",
+      "destination": "/api/telegram?method=:method"
+    }
+  ]
+}

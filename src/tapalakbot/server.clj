@@ -10,7 +10,6 @@
             [clj-harness.telegram :as tg]
             [com.brunobonacci.mulog :as u]
             [cheshire.core :as json]
-            [clj-http.client :as http]
             [ring.adapter.jetty :refer [run-jetty]]
             [clojure.string :as str]
             [clojure.tools.logging :as log]))
@@ -123,32 +122,27 @@
 
 (defn- set-webhook!
   "Register a reverse-proxied HTTPS webhook with Telegram authentication."
-  [webhook-url token secret]
+  [webhook-url secret]
   (try
-    (let [url (str "https://api.telegram.org/bot" token "/setWebhook")
-          resp (http/post url
-                          {:form-params {"url" webhook-url
-                                         "allowed_updates"
-                                         (json/generate-string ["message" "callback_query"])
-                                         "secret_token" secret}
-                           :as :json})
-          ok? (get-in resp [:body :ok])]
+    (let [resp (tg/set-webhook webhook-url
+                               :secret-token secret
+                               :allowed-updates ["message" "callback_query"])
+          ok? (get resp "ok")]
       (if ok?
         (log/info :webhook-set :url webhook-url)
-        (log/warn :webhook-set-failed :response (:body resp)))
+        (log/warn :webhook-set-failed :response resp))
       ok?)
     (catch Exception e
       (log/warn :webhook-set-error (.getMessage e))
       false)))
 
 (defn- delete-webhook!
-  "Remove webhook from Telegram (so polling can work)."
-  [token]
+  "Remove webhook from Telegram without discarding pending updates."
+  []
   (try
-    (let [url  (str "https://api.telegram.org/bot" token "/deleteWebhook")
-          resp (http/post url {:as :json})]
-      (log/info :webhook-deleted :ok (get-in resp [:body :ok]))
-      (get-in resp [:body :ok]))
+    (let [resp (tg/delete-webhook)]
+      (log/info :webhook-deleted :ok (get resp "ok"))
+      (get resp "ok"))
     (catch Exception e
       (log/warn :webhook-delete-error (.getMessage e))
       false)))
@@ -211,8 +205,8 @@
           (and webhook-url (not (str/blank? webhook-url))
                webhook-secret (not (str/blank? webhook-secret)))
           (do
-            (delete-webhook! token)
-            (if (set-webhook! webhook-url token webhook-secret)
+            (delete-webhook!)
+            (if (set-webhook! webhook-url webhook-secret)
               (do
                 (swap! readiness assoc :transport true)
                 (log/info :webhook-mode :url webhook-url :port port))
@@ -226,13 +220,13 @@
           (do
             (log/error :webhook-secret-missing
                        "Set TELEGRAM_WEBHOOK_SECRET; falling back to polling.")
-            (delete-webhook! token)
+            (delete-webhook!)
             (start-poller!)
             (log/info :polling-mode :reason :missing-webhook-secret))
 
           :else
           (do
-            (delete-webhook! token)
+            (delete-webhook!)
             (start-poller!)
             (log/info :polling-mode)))))
 
