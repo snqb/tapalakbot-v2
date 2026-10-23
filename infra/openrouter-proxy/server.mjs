@@ -2,6 +2,10 @@ import http from "node:http";
 
 const port = Number(process.env.PORT || 8080);
 const apiKey = process.env.OPENROUTER_API_KEY;
+const allowedPaths = new Set([
+  "/api/v1/chat/completions",
+  "/api/v1/systemone"
+]);
 
 if (!apiKey) {
   throw new Error("OPENROUTER_API_KEY is required");
@@ -14,7 +18,7 @@ const server = http.createServer(async (request, response) => {
     return;
   }
 
-  if (request.method !== "POST" || request.url !== "/api/v1/chat/completions") {
+  if (request.method !== "POST" || !allowedPaths.has(request.url)) {
     response.writeHead(404, { "content-type": "application/json" });
     response.end('{"error":"not found"}');
     return;
@@ -30,7 +34,7 @@ const server = http.createServer(async (request, response) => {
     const chunks = [];
     for await (const chunk of request) chunks.push(chunk);
 
-    const upstream = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    const upstream = await fetch(`https://openrouter.ai${request.url}`, {
       method: "POST",
       headers: {
         authorization: `Bearer ${apiKey}`,

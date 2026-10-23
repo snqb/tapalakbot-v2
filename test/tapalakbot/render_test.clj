@@ -9,6 +9,7 @@
   (is (= "25 000" (r/format-price 25000)))
   (is (= "1 234 567" (r/format-price 1234567)))
   (is (= "500" (r/format-price 500)))
+  (is (= "1 000.50" (r/format-price 1000.50M)))
   (is (nil? (r/format-price nil))))
 
 ;; ════════════════════ TIER ASSIGNMENT ════════════════════
@@ -124,13 +125,13 @@
     (is (str/includes? html "<img src=\"https://img.example/1.jpg\"/>"))
     (is (not (str/includes? html "https://img.example/7.jpg")))))
 
-(deftest native-auto-results-show-decision-details-and-source
+(deftest native-vehicle-results-show-decision-details-and-source
   (let [html (r/render-results-rich
               [{:title "Toyota Camry 70"
                 :price 1850000
                 :currency "KGS"
-                :url "https://mashina.kg/details/camry"
-                :platform :mashina
+                :url "https://lalafo.kg/ads/toyota-camry-70"
+                :platform :lalafo
                 :year 2019
                 :mileage 75000
                 :engine 2.5
@@ -138,17 +139,17 @@
                 :city "Бишкек"}])]
     (is (str/includes? html "2019 г. · 75 000 км · 2.5 л · автомат · 📍 Бишкек"))
     (is (str/includes? html
-                       "<a href=\"https://mashina.kg/details/camry\">Открыть на Mashina.kg →</a>"))
-    (is (str/includes? html "<footer>Источник: Mashina.kg</footer>"))))
+                       "<a href=\"https://lalafo.kg/ads/toyota-camry-70\">Открыть на Lalafo.kg →</a>"))
+    (is (str/includes? html "<footer>Источник: Lalafo.kg</footer>"))))
 
 (deftest twenty-rich-results-fit-the-telegram-message-budget
   (let [cards (mapv (fn [n]
                       {:title (str "Toyota Camry 70 — надёжный автомобиль " n)
                        :price (+ 1500000 (* n 1000))
                        :currency "KGS"
-                       :url (str "https://mashina.kg/details/camry-" n)
-                       :image (str "https://storage.mashina.kg/camry-" n ".webp")
-                       :platform :mashina
+                       :url (str "https://lalafo.kg/ads/toyota-camry-70-" n)
+                       :image (str "https://images.lalafo.kg/camry-" n ".webp")
+                       :platform :lalafo
                        :year 2020
                        :mileage (+ 50000 n)
                        :engine 2.5
@@ -161,3 +162,7 @@
     (is (= 6 (count (re-seq #"<h3>" html))))
     (is (= 6 (count (re-seq #"<img src=" html))))
     (is (str/includes? html "<details><summary>Ещё 14 вариантов</summary>"))))
+
+(deftest missing-currency-is-not-labelled-as-kgs
+  (let [html (r/render-results-rich [{:title "Товар" :price 1000 :currency nil}])]
+    (is (not (re-find #"KGS|сом" html)))))

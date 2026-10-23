@@ -1,9 +1,9 @@
 (ns tapalakbot.query-builder
-  "Unified query builder for all marketplace platforms.
+  "Unified query builder for all marketplace searches.
    
    Extracts structured search params from natural language:
    - Price constraints (min/max in KGS)
-   - Platform routing (Lalafo, Mashina)
+   - Lalafo routing
    - Category matching
    - Optimal search queries
    
@@ -139,8 +139,8 @@
     "monjaro" "монжаро" "coolray" "кулрей" "azkarra" "азкарра"})
 
 (defn detect-platform
-  "Detect which platform(s) to search based on user query.
-   Returns {:platforms [:lalafo :mashina] :is-auto? bool :is-electronics? bool}."
+  "Detect whether a query is for a car while routing every query to Lalafo.
+   Returns {:platforms [:lalafo] :is-auto? bool :is-electronics? bool}."
   [text]
   (let [text-lower (str/lower-case text)
         words (set (str/split text-lower #"\s+"))
@@ -174,10 +174,7 @@
                             "аренда" "rent" "продажа" "sale" "купить" "buy"
                             "снять" "нежилое" "commercial" "коммерческая"}
         is-real-estate? (boolean (some real-estate-words words))]
-    {:platforms (cond
-                  is-auto? [:mashina]              ;; Cars: Mashina only
-                  (or is-electronics? is-real-estate?) [:lalafo]  ;; Everything else: Lalafo only
-                  :else [:lalafo])                 ;; Default: Lalafo
+    {:platforms [:lalafo]
      :is-auto? is-auto?
      :is-electronics? is-electronics?
      :is-real-estate? is-real-estate?}))
@@ -195,18 +192,15 @@ Return ONLY a JSON object:
   \"query\": \"clean search term (Russian/English)\",
   \"price_min\": number|null,
   \"price_max\": number|null,
-  \"platform\": \"lalafo\"|\"mashina\"|\"all\",
   \"category_hint\": \"suggested Lalafo category name or null\",
-  \"is_auto\": bool,
-  \"mashina_query\": \"car-specific query for mashina.kg or null\"
+  \"is_auto\": bool
 }
 
 Rules:
 1. 'query' should be the core search term without price/condition words
-2. 'platform': cars → 'mashina', general goods → 'lalafo', electronics → 'all'
-3. 'category_hint': most specific Lalafo category name (e.g., 'Air Conditioners', 'iPads')
-4. 'mashina_query': for cars, include brand + model + year if mentioned
-5. Preserve original language (Russian stays Russian, English stays English)")
+2. 'category_hint': most specific Lalafo category name (e.g., 'Air Conditioners', 'iPads')
+3. 'is_auto': true only when the user is looking for a vehicle
+4. Preserve original language (Russian stays Russian, English stays English)")
 
 (defn enrich-with-llm
   "Use LLM to extract structured params from complex queries.
@@ -220,18 +214,11 @@ Rules:
           json-str (or (re-find #"(?s)\{.*\}" content) "{}")
           parsed (try (json/parse-string json-str true) (catch Exception _ {}))]
       (when (seq parsed)
-        (let [llm-platform (some-> (:platform parsed) (str/lower-case))
-              platform-kw (when (and llm-platform
-                                     (not= llm-platform "all")
-                                     (#{"lalafo" "mashina"} llm-platform))
-                            (keyword llm-platform))]
-          {:query (:query parsed)
-           :price-min (:price_min parsed)
-           :price-max (:price_max parsed)
-           :platform platform-kw
-           :category-hint (:category_hint parsed)
-           :is-auto? (:is_auto parsed false)
-           :mashina-query (:mashina_query parsed)})))
+        {:query (:query parsed)
+         :price-min (:price_min parsed)
+         :price-max (:price_max parsed)
+         :category-hint (:category_hint parsed)
+         :is-auto? (:is_auto parsed false)}))
     (catch Exception e
       (log/warn :query-enrich-failed :error (.getMessage e))
       nil)))
@@ -268,11 +255,10 @@ Rules:
    - :query — clean search term
    - :price-min — minimum price in KGS (or nil)
    - :price-max — maximum price in KGS (or nil)
-   - :platforms — vector of platform keywords [:lalafo :mashina]
+   - :platforms — always [:lalafo]
    - :is-auto? — true if searching for cars
    - :lalafo-category-id — matched Lalafo category ID (or nil)
    - :lalafo-category-name — matched category name (or nil)
-   - :mashina-query — car-specific query for Mashina (or nil)
    
    - :raw-text — original input text"
   [text & {:keys [use-llm?] :or {use-llm? true}}]
@@ -292,55 +278,27 @@ Rules:
         final-query (or (:query llm-params) clean-query text)
         final-price-min (or (:price-min llm-params) (:price-min price-params))
         final-price-max (or (:price-max llm-params) (:price-max price-params))
-        final-platforms (let [det (:platforms platform-params)
-                              llm-plat (:platform llm-params)]
-                          (cond
-                            ;; LLM overrides with specific platform
-                            llm-plat [llm-plat]
-                            ;; Deterministic detection
-                            det det
-                            ;; Fallback: Lalafo only (not Mashina — it's cars-only)
-                            :else [:lalafo]))
-        ;; Step 7: Mashina query (for cars)
-        mashina-query (or (:mashina-query llm-params)
-                          (when (:is-auto? platform-params) text))]
-    (let [result {:query final-query
-                  :price-min final-price-min
-                  :price-max final-price-max
-                  :platforms final-platforms
-                  :is-auto? (or (:is-auto? llm-params) (:is-auto? platform-params))
-                  :is-electronics? (:is-electronics? platform-params)
-                  :is-real-estate? (:is-real-estate? platform-params)
-                  :lalafo-category-id nil  ;; Will be filled by tracker at creation time
-                  :lalafo-category-name (:category-hint llm-params)
-                  :mashina-query mashina-query
-                  :some-cat :none
-                  :condition (extract-condition text)
-                  :raw-text text}]
-      (log/info :query-builder-result
-                :query final-query
-                :price [final-price-min final-price-max]
+        final-platforms [:lalafo]
+        result {:query final-query
+                :price-min final-price-min
+                :price-max final-price-max
                 :platforms final-platforms
-                :is-auto? (:is-auto? result))
-      result)))
+                :is-auto? (or (:is-auto? llm-params) (:is-auto? platform-params))
+                :is-electronics? (:is-electronics? platform-params)
+                :is-real-estate? (:is-real-estate? platform-params)
+                :lalafo-category-id nil  ;; Will be filled by tracker at creation time
+                :lalafo-category-name (:category-hint llm-params)
+                :some-cat :none
+                :condition (extract-condition text)
+                :raw-text text}]
+    (log/info :query-builder-result
+              :query final-query
+              :price [final-price-min final-price-max]
+              :platforms final-platforms
+              :is-auto? (:is-auto? result))
+    result))
 
 ;; ════════════════════════════ API PARAM MAPPING ════════════════════════════
-
-(defn to-lalafo-params
-  "Convert QueryBuilder result to Lalafo API params."
-  [{:keys [query price-min price-max lalafo-category-id]}]
-  (cond-> {"queries" [query]
-           "city_id" 103184}
-    price-min (assoc "price_min" price-min)
-    price-max (assoc "price_max" price-max)
-    lalafo-category-id (assoc "category_id" lalafo-category-id)))
-
-(defn to-mashina-params
-  "Convert QueryBuilder result to Mashina API params."
-  [{:keys [mashina-query query]}]
-  {"query" (or mashina-query query)
-   "size" 20})
-
 
 ;; ════════════════════════════ CONVENIENCE ════════════════════════════
 
@@ -350,119 +308,5 @@ Rules:
   [text]
   (build text :use-llm? false))
 
-(defn parse-with-llm
-  "Parse with LLM enrichment (full extraction).
-   Used for agent and track creation."
-  [text]
-  (build text :use-llm? true))
-
-;; ════════════════════════════ ACCESSORY FILTER ════════════════════════════
-
-(def ^:private accessory-keywords
-  "Keywords in title that indicate this item is an accessory, case, charger,
-   repair service, or part — NOT the actual product the user wants.
-   Higher score = more likely to be junk. Used as deterministic pre-filter
-   before LLM relevance filtering."
-  ;; Score 5: strong accessory signal (almost certainly not the product)
-  {:strong #{"зарядк" "зарядное" "зарядный" "charger" "кабел" "кабель"
-             "адаптер" "adapter" "стекло защитное" "стекло" "плeнк"
-             "чехол" "чехоль" "case" "обложк" "ремонт" "починк"
-             "установка" "установк" "монтаж" "настройк" "прошивк"
-             "гравировк" "замена" "восстановлен"
-             "коробка" "упаковка" "box" "packaging"
-             "гарантия" "страховка" "insurance" "warranty"
-             "подарочный сертификат" "gift card"
-             "схема" "инструкция" "manual"}
-   ;; Score 3: medium signal (could be accessory but need context)
-   :medium #{"держател" "холдер" "holder" "подставк" "stand"
-             "кронштейн" "mount" "креплен" "bracket"
-             "наклейк" "стикер" "sticker" "скин" "skin"
-             "заглушк" "plug" "колпачек" "cap"
-             "аксессуар" "accessory" "дополнительн"
-             "запчаст" "spare part" "комплектующ"
-             "батарейк" "battery" "аккумулятор"
-             "переходник" "коннектор" "connector"
-             "кнопк" "button" "клавиш"}
-   ;; Score 2: weak signal (frequently co-occurs with real products)
-   :weak #{"услуг" "сервис" "service" "аренда" "прокат" "rent"
-           "обмен" "trade" "бартер"
-           "совместим" "compatible" "аналог" "analog"
-           "набор" "комплект" "set" "kit"
-           "bluetooth" "блютуз"
-           "ручк" "стилус" "stylus" "pencil" "перо"}})
-
-(defn- accessory-score
-  "Score 0-5 for how likely an item title is an accessory/service.
-   0 = seems like the real product, 5 = definitely junk.
-   Returns integer score."
-  [title]
-  (let [t (str/lower-case (or title ""))
-        strong-hits (count (filter #(str/includes? t %) (:strong accessory-keywords)))
-        medium-hits (count (filter #(str/includes? t %) (:medium accessory-keywords)))
-        weak-hits (count (filter #(str/includes? t %) (:weak accessory-keywords)))]
-    (-> 0
-        (+ (* strong-hits 5))
-        (+ (* medium-hits 3))
-        (+ (* weak-hits 2))
-        (min 15))))
-
-(defn filter-accessories
-  "Pre-filter items to remove obvious accessories/services.
-   Returns vector of items with accessory-score < threshold.
-   Default threshold: filter items scoring >=5 (strong accessory signals).
-   
-   Keeps items even with high scores if user WAS looking for accessories.
-   Example: 'чехол iphone 13' → user wants an accessory, don't filter cases."
-  ([items user-query]
-   (filter-accessories items user-query 5))
-  ([items user-query threshold]
-   (let [;; Check if user is looking FOR an accessory (not a product)
-         user-wants-accessory? (and user-query
-                                    (some #(str/includes? (str/lower-case user-query) %)
-                                          ["чехол" "зарядк" "кабел" "наушник"
-                                           "кейс" "стекло" "пленк" "адаптер"
-                                           "батарейк" "аккумулятор"]))
-         scored (mapv (fn [item]
-                        (let [title (or (get item "title") (get item :title ""))]
-                          (assoc item :_accessory-score (accessory-score title))))
-                      items)
-         filtered (if user-wants-accessory?
-                    scored  ;; User wants an accessory — show everything
-                    (filterv #(< (:_accessory-score % 0) threshold) scored))]
-     (log/info :accessory-filter :total (count items) :kept (count filtered)
-               :user-wants-accessory? user-wants-accessory?)
-     filtered)))
-
 ;; ════════════════════════════ TESTS ════════════════════════════
 
-(comment
-  ;; Price extraction tests
-  (extract-price "кондиционер до 20к")
-  ;; => {:price-max 20000}
-
-  (extract-price "iphone от 15000 до 30000")
-  ;; => {:price-min 15000 :price-max 30000}
-
-  (extract-price "ноутбук бюджет 25000")
-  ;; => {:price-max 25000}
-
-  (extract-price "macbook 5-10 тыс")
-  ;; => {:price-min 5000 :price-max 10000}
-
-  ;; Platform detection
-  (detect-platform "hyundai solaris 2020")
-  ;; => {:platforms [:mashina :mashina], :is-auto? true, ...}
-
-  (detect-platform "iphone 13")
-  ;; => {:platforms [:lalafo :mashina], :is-electronics? true, ...}
-
-  (detect-platform "квартира в бишкеке")
-  ;; => {:platforms [:lalafo], :is-real-estate? true, ...}
-
-  ;; Full build
-  (build "кондиционер до 20к")
-  (build "hyundai solaris 2020 до 800000")
-  (build "iphone 13 pro max")
-
-  ;; Without LLM
-  (parse "roутер до 4000"))

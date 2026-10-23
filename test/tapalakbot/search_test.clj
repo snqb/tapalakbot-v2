@@ -1,51 +1,94 @@
 (ns tapalakbot.search-test
   (:require [clojure.test :refer [deftest is]]
+            [tapalakbot.lalafo :as lalafo]
+            [tapalakbot.jev :as jev]
             [tapalakbot.search :as search]))
 
-(deftest exact-model-and-budget-filter-before-ranking
-  (let [rank (ns-resolve 'tapalakbot.search 'rank-marketplace-cards)
-        cards [{:id 1 :title "Toyota Camry VIII (XV70) 2.5 AT"
-                :price 1900000 :currency "KGS" :year 2019 :mileage 100000
-                :url "https://mashina.kg/details/camry-1"}
-               {:id 2 :title "Toyota Camry VIII (XV70) 2.5 AT"
-                :price 1500000 :currency "KGS" :year 2021 :mileage 50000
-                :url "https://mashina.kg/details/camry-2"}
-               {:id 3 :title "Toyota Camry IX (XV80) 2.5 AT"
-                :price 1800000 :currency "KGS" :year 2025
-                :url "https://mashina.kg/details/camry-80"}
-               {:id 4 :title "Toyota Highlander IV (U70)"
-                :price 1700000 :currency "KGS"
-                :url "https://mashina.kg/details/highlander"}
-               {:id 5 :title "Toyota Camry VIII (XV70) 2.5 AT"
-                :price 2100000 :currency "KGS"
-                :url "https://mashina.kg/details/over-budget"}]]
-    (is (some? rank))
-    (when rank
-      (let [ranked (rank cards {:query "Toyota Camry 70" :price-max 2000000})]
-        (is (= [1 2] (mapv :id ranked)))
-        (is (= [:great :good] (mapv :tier ranked)))))))
+(deftest selection-sees-full-description-without-title-token-loss
+  (let [description (str (apply str (repeat 120 "Описание. "))
+                         "Компактная дорожка для ходьбы под столом.")]
+    (with-redefs [lalafo/search
+                  (fn [_]
+                    {"items" [{"id" "a" "title" "Bodyline"
+                               "price" 10000 "currency" "KGS"
+                               "desc" description
+                               "url" "https://lalafo.kg/bishkek/ads/id-a"}]})
+                  jev/select-cards
+                  (fn [query cards _]
+                    (is (= "дорожка для ходьбы до 15000" query))
+                    (is (= description (:desc (first cards))))
+                    {:cards cards :selection {:input-count 1 :accepted-count 1}})]
+      (let [result (search/search "дорожка для ходьбы до 15000"
+                                  {:queries ["беговая дорожка"]})]
+        (is (= ["a"] (mapv :id (:cards result))))
+        (is (= 10000 (get-in result [:stats :avg])))))))
 
-(deftest ranking-deduplicates-by-canonical-url
-  (let [rank (ns-resolve 'tapalakbot.search 'rank-marketplace-cards)
-        card {:title "Toyota Camry VIII (XV70)"
-              :price 1800000
-              :url "https://mashina.kg/details/same"}]
-    (is (some? rank))
-    (when rank
-      (is (= 1 (count (rank [card card] {:query "Toyota Camry 70"})))))))
+(deftest budget-checks-source-currency-before-semantic-selection
+  (with-redefs [lalafo/search
+                (fn [_]
+                  {"items" [{"id" "kgs" "title" "Телефон" "price" 15000 "currency" "KGS"}
+                             {"id" "usd" "title" "Телефон" "price" 200 "currency" "USD"}
+                             {"id" "high" "title" "Телефон" "price" 25000 "currency" "KGS"}
+                             {"id" "unknown" "title" "Телефон" "price" nil "currency" "KGS"}
+                             {"id" "unknown-currency" "title" "Телефон" "price" 15000 "currency" nil}
+                             {"id" "missing-currency" "title" "Телефон" "price" 15000}]})
+                jev/select-cards
+                (fn [_ cards _]
+                  (is (= ["kgs"] (mapv :id cards)))
+                  {:cards cards :selection {:input-count 1 :accepted-count 1}})]
+    (is (= ["kgs"] (mapv :id (:cards (search/search "телефон до 20000")))))))
 
-(deftest specific-model-query-never-falls-back-to-wrong-models
-  (let [cards [{:id 1 :title "Toyota Land Cruiser 200" :price 1900000
-                :currency "KGS" :platform :mashina}
-               {:id 2 :title "Toyota Camry 50" :price 1500000
-                :currency "KGS" :platform :mashina}]]
-    (is (empty?
-         (search/rank-marketplace-cards
-          cards {:query "Toyota Camry 70" :price-max 2000000})))))
+(deftest missing-price-and-image-are-not-semantic-exclusions
+  (with-redefs [lalafo/search
+                (fn [_] {"items" [{"id" "a" "title" "Пианино" "price" nil
+                                   "currency" "KGS" "desc" "Отдам пианино"}]})
+                jev/select-cards
+                (fn [_ cards _] {:cards cards :selection {:accepted-count 1}})]
+    (let [card (first (:cards (search/search "пианино")))]
+      (is (= "a" (:id card)))
+      (is (nil? (:price card)))
+      (is (nil? (:image card))))))
+
+(deftest unavailable-selector-is-not-an-empty-market
+  (with-redefs [lalafo/search
+                (fn [_] {"items" [{"id" "a" "title" "Товар"}]})
+                jev/select-cards
+                (fn [& _] (throw (ex-info "Unavailable" {:type :selection-unavailable})))]
+    (let [result (search/search "товар")]
+      (is (= :unavailable (:search-status result)))
+      (is (empty? (:cards result))))))
+
+(deftest empty-valid-selection-stays-empty
+  (with-redefs [lalafo/search
+                (fn [_] {"items" [{"id" "a" "title" "Чехол" "price" 500}]})
+                jev/select-cards
+                (fn [& _] {:cards [] :selection {:input-count 1 :accepted-count 0
+                                                 :rejected-count 1}})]
+    (let [result (search/search "телефон")]
+      (is (= :ok (:search-status result)))
+      (is (empty? (:cards result)))
+      (is (= 1 (get-in result [:selection :rejected-count]))))))
 
 (deftest marketplace-stats-never-mix-usd-and-kgs
-  (let [compute-stats (ns-resolve 'tapalakbot.search 'compute-stats)]
+  (let [stats @#'search/compute-stats]
     (is (= {:avg 1500000 :min 1000000 :max 2000000 :count 2}
-           (compute-stats [{:price 1000000 :currency "KGS"}
-                           {:price 2000000 :currency "сом"}
-                           {:price 22000 :currency "USD"}])))))
+           (stats [{:price 1000000 :currency "KGS"}
+                   {:price 2000000 :currency "сом"}
+                   {:price 22000 :currency "USD"}])))))
+
+(deftest explicit-replacement-budget-removes-old-minimum-and-maximum
+  (let [seen-query (atom nil)]
+    (with-redefs [lalafo/search
+                  (fn [_]
+                    {"items" [{"id" "low" "title" "Телефон" "price" 5000 "currency" "KGS"}
+                               {"id" "high" "title" "Телефон" "price" 40000 "currency" "KGS"}]})
+                  jev/select-cards
+                  (fn [query cards _]
+                    (reset! seen-query query)
+                    {:cards cards :selection {}})]
+      (let [result (search/search "телефон от 10000 до 20000"
+                                  {:budget-override? true :price-min nil :price-max 50000})]
+        (is (= ["low" "high"] (mapv :id (:cards result))))
+        (is (nil? (get-in result [:qb-result :price-min])))
+        (is (= 50000 (get-in result [:qb-result :price-max])))
+        (is (not (re-find #"10000|20000" @seen-query)))))))

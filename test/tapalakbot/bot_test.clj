@@ -1,11 +1,17 @@
 (ns tapalakbot.bot-test
   "Unit tests for bot formatting, text processing, and message handling.
    Tests the private function: parse-update-extended. No LLM calls — pure function tests."
-  (:require [clojure.test :refer [deftest is testing are]]
+  (:require [clj-harness.core :as harness]
             [clj-harness.telegram :as tg]
+            [clojure.string :as str]
+            [clojure.test :refer [deftest is testing]]
             [tapalakbot.bot :as bot]
+            [tapalakbot.bot-state :as state]
             [tapalakbot.core :as t]
-            [clojure.string :as str]))
+            [tapalakbot.result-delivery :as delivery]
+            [tapalakbot.monitor.client :as monitor]
+            [tapalakbot.monitor.store :as store]
+            [tapalakbot.result-store :as result-store]))
 
 ;; Production polling and webhooks share the parent parser.
 (def parse-update-extended* tg/parse-update)
@@ -15,9 +21,9 @@
 (deftest parse-update-extended-test
   (testing "parses regular text message"
     (let [update {"message" {"chat" {"id" 123}
-                              "from" {"id" 456 "first_name" "Test"}
-                              "text" "hello"
-                              "message_id" 789}}
+                             "from" {"id" 456 "first_name" "Test"}
+                             "text" "hello"
+                             "message_id" 789}}
           result (parse-update-extended* update)]
       (is (= 123 (:chat-id result)))
       (is (= 456 (:user-id result)))
@@ -28,10 +34,10 @@
 
   (testing "parses callback query"
     (let [update {"callback_query" {"id" "cb-123"
-                                     "data" "track:1234"
-                                     "from" {"id" 789}
-                                     "message" {"chat" {"id" 100}
-                                                 "message_id" 200}}}
+                                    "data" "track:1234"
+                                    "from" {"id" 789}
+                                    "message" {"chat" {"id" 100}
+                                               "message_id" 200}}}
           result (parse-update-extended* update)]
       (is (= "cb-123" (:callback-id result)))
       (is (= "track:1234" (:data result)))
@@ -42,8 +48,8 @@
 
   (testing "handles missing first_name gracefully"
     (let [update {"message" {"chat" {"id" 1}
-                              "from" {"id" 2}
-                              "message_id" 3}}
+                             "from" {"id" 2}
+                             "message_id" 3}}
           result (parse-update-extended* update)]
       (is (= "друг" (:first-name result)))))
 
@@ -54,28 +60,25 @@
 
   (testing "parses message with location"
     (let [update {"message" {"chat" {"id" 1}
-                              "from" {"id" 2}
-                              "message_id" 3
-                              "location" {"latitude" 42.87 "longitude" 74.59}}}
+                             "from" {"id" 2}
+                             "message_id" 3
+                             "location" {"latitude" 42.87 "longitude" 74.59}}}
           result (parse-update-extended* update)]
       (is (some? (:location result)))
       (is (= 42.87 (:lat (:location result))))
       (is (= 74.59 (:lon (:location result)))))))
 
 (deftest conversation-id-isolates-forum-topics
-  (let [conversation-id (ns-resolve 'tapalakbot.bot 'conversation-id)]
-    (is (some? conversation-id))
-    (when conversation-id
-      (is (= "tg-42"
-             (conversation-id {:chat-id 42 :user-id 42})))
-      (is (= "tg-42:-100123:17"
-             (conversation-id {:chat-id -100123 :user-id 42 :thread-id 17})))
-      (is (not= (conversation-id {:chat-id -100123 :user-id 42 :thread-id 17})
-                (conversation-id {:chat-id -100123 :user-id 42 :thread-id 18}))))))
+  (is (= "tg-42"
+         (state/conversation-id {:chat-id 42 :user-id 42})))
+  (is (= "tg-42:-100123:17"
+         (state/conversation-id {:chat-id -100123 :user-id 42 :thread-id 17})))
+  (is (not= (state/conversation-id {:chat-id -100123 :user-id 42 :thread-id 17})
+            (state/conversation-id {:chat-id -100123 :user-id 42 :thread-id 18}))))
 
 (deftest result-cards-are-rendered-from-structured-data
   (let [sent (atom [])
-        render-and-send @#'bot/render-and-send
+        send-reply delivery/send-reply!
         reply {:mode :shortlist
                :intro "Короткий анализ"
                :cards [{:title "iPhone 13"
@@ -92,7 +95,7 @@
                     {"ok" true
                      "result" {"message_id" (count @sent)
                                "rich_message" {}}})]
-      (render-and-send -100123 42 "iphone" reply :thread-id 17))
+      (send-reply -100123 reply {:thread-id 17}))
     (is (= 2 (count @sent)) "analysis and cards are separate rich messages")
     (is (= "Короткий анализ" (get-in @sent [0 :options :markdown])))
     (is (nil? (get-in @sent [0 :options :html])))
@@ -107,7 +110,7 @@
 
 (deftest tracking-buttons-keep-their-own-query
   (let [make-button @#'bot/track-context-button
-        take-query (ns-resolve 'tapalakbot.bot 'take-track-query!)
+        take-query state/take-track-query!
         first-kb (make-button 42 "iphone 13")
         second-kb (make-button 42 "macbook air")
         callback-id (fn [kb]
@@ -150,9 +153,8 @@
 (deftest reset-command-clears-session-and-responds
   (let [handle-reset @#'bot/handle-reset
         replies (atom [])]
-    (with-redefs-fn {#'clj-harness.core/reset-session! (fn [& _])
-                     #'bot/store-pending! (fn [& _])
-                     #'bot/set-thread-id! (fn [& _])
+    (with-redefs-fn {#'harness/reset-session! (fn [& _])
+                     #'state/store-pending! (fn [& _])
                      #'bot/send-menu! (fn [chat-id text & options]
                                         (swap! replies conj {:chat-id chat-id
                                                              :text text
@@ -165,21 +167,10 @@
   (let [needs-fallback? @#'bot/needs-fallback-search?]
     (is (true? (needs-fallback? {:text "" :cards []} "пылесос")))
     (is (false? (needs-fallback? {:text "Ничего не найдено" :cards []} "пылесос")))
+    (is (false? (needs-fallback? {:text "" :cards [] :search-status :unavailable} "пылесос")))
+    (is (false? (needs-fallback? {:text "" :cards [] :search-status :ok} "пылесос")))
     (is (false? (needs-fallback? {:text "" :cards [{:title "Пылесос"}]} "пылесос")))))
 
-(deftest result-keyboard-prefers-a-cursor-over-a-new-search
-  (let [results-keyboard @#'bot/results-keyboard]
-    (is (some? results-keyboard))
-    (when results-keyboard
-      (let [keyboard (results-keyboard "toyota camry 70" "cursor123" true)
-            buttons (get keyboard "inline_keyboard")]
-        (is (= "page:cursor123" (get-in buttons [0 0 "callback_data"])))
-        (is (= "🔄 Ещё 20 вариантов" (get-in buttons [0 0 "text"])))
-        (is (= "cheaper:toyota camry 70" (get-in buttons [1 0 "callback_data"])))
-        (is (= "dearer:toyota camry 70" (get-in buttons [1 1 "callback_data"])))))
-    (when results-keyboard
-      (let [keyboard (results-keyboard "toyota camry 70" nil false)]
-        (is (= 1 (count (get keyboard "inline_keyboard"))))))))
 
 (deftest page-callback-delivers-each-cached-result-once
   (let [handle-callback @#'bot/handle-callback
@@ -194,7 +185,7 @@
                        :currency "KGS"
                        :url (str "https://lalafo.kg/ad/" i)})
                     (range 1 46))]
-    (with-redefs [tapalakbot.core/result-pools pools
+    (with-redefs [result-store/result-pools pools
                   tg/answer-callback-query
                   (fn [& args] (swap! callback-answers conj args) {"ok" true})
                   tg/send-md
@@ -205,8 +196,8 @@
                   (fn [chat-id & args]
                     (swap! rich-sends conj [chat-id (apply hash-map args)])
                     {"ok" true "result" {"message_id" (count @rich-sends)}})]
-      (let [cursor (tapalakbot.core/cache-result-pool!
-                    "tg-42" "query" cards tapalakbot.core/result-page-size)
+      (let [cursor (result-store/cache-result-pool!
+                    "tg-42:-100:17" "query" cards result-store/page-size)
             callback-base {:data (str "page:" cursor)
                            :user-id 42 :chat-id -100 :msg-id 7 :thread-id 17}]
         (handle-callback (assoc callback-base :callback-id "cb-1"))
@@ -226,9 +217,84 @@
           (is (nil? (:reply-markup first-rich)))
           (is (nil? (:reply-markup second-rich)))
           (is (= (str "page:" cursor)
-                 (get-in first-intro [:reply_markup "inline_keyboard" 0 0 "callback_data"])))
-          (is (= "cheaper:query"
-                 (get-in second-intro [:reply_markup "inline_keyboard" 0 0 "callback_data"]))))
+                 (get-in first-intro [:reply_markup "inline_keyboard" 0 0 "callback_data"]))))
         (is (= "Больше сохранённых вариантов нет."
-               (:text (apply hash-map (rest (last @callback-answers)))))))))
-  )
+               (:text (apply hash-map (rest (last @callback-answers))))))))))
+
+(deftest concurrent-forum-topics-rename-their-own-thread
+  (let [handle-orchestrated @#'bot/handle-orchestrated
+        first-started (promise)
+        second-started (promise)
+        release-first (promise)
+        sessions (atom [])
+        renamed (atom [])
+        next-message-id (atom 0)
+        fake-agent (fn [session-id text _status-cb _options]
+                     (swap! sessions conj session-id)
+                     (cond
+                       (str/ends-with? session-id ":11")
+                       (do
+                         (deliver first-started true)
+                         @release-first)
+
+                       (str/ends-with? session-id ":22")
+                       (deliver second-started true))
+                     {:text "Готово" :cards [] :pool [] :query text})
+        fake-send (fn [& _]
+                    {"message_id" (swap! next-message-id inc)})]
+    (with-redefs-fn {#'t/ask-stream fake-agent
+                     #'delivery/send-reply! (fn [& _])
+                     #'tg/send-message fake-send
+                     #'tg/edit-message (fn [& _])
+                     #'tg/delete-message (fn [& _])
+                     #'tg/edit-forum-topic
+                     (fn [chat-id thread-id & options]
+                       (swap! renamed conj
+                              [chat-id thread-id (:name (apply hash-map options))]))}
+      (fn []
+        (let [first-run (future
+                          (handle-orchestrated
+                           {:chat-id -100 :user-id 42 :thread-id 11 :text "iphone"}))]
+          (is (= true (deref first-started 2000 :timeout)))
+          (let [second-run (future
+                             (handle-orchestrated
+                              {:chat-id -100 :user-id 42 :thread-id 22 :text "macbook"}))]
+            (is (= true (deref second-started 2000 :timeout)))
+            (deliver release-first true)
+            (is (nil? (deref first-run 2000 :timeout)))
+            (is (nil? (deref second-run 2000 :timeout)))))))
+    (is (= #{"tg-42:-100:11" "tg-42:-100:22"} (set @sessions)))
+    (is (= #{[-100 11 "iphone"] [-100 22 "macbook"]} (set @renamed)))))
+
+(deftest fast-path-messages-preserve-forum-thread
+  (let [handle-update @#'bot/handle-update-now
+        handle-callback @#'bot/handle-callback
+        sent (atom [])
+        capture (fn [kind]
+                  (fn [chat-id text & options]
+                    (swap! sent conj {:kind kind
+                                      :chat-id chat-id
+                                      :text text
+                                      :options (apply hash-map options)})
+                    {"message_id" (count @sent)}))
+        base {:chat-id -100 :user-id 42 :thread-id 17}]
+    (reset! result-store/ad-cache {})
+    (result-store/cache-ads!
+     "tg-42:-100:17"
+     [{:title "iPhone 13" :price 35000 :currency "KGS"
+       :url "https://lalafo.kg/ad/1" :platform :lalafo}])
+    (with-redefs-fn {#'tg/send-message (capture :message)
+                     #'tg/send-md (capture :markdown)
+                     #'tg/answer-callback-query (fn [& _])
+                     #'monitor/fetch-categories (constantly {:categories []})
+                     #'store/get-user-tracks (constantly [])}
+      (fn []
+        (handle-update (assoc base :text "📍 Город"))
+        (handle-update (assoc base :text "/help"))
+        (handle-update (assoc base :text "/prices"))
+        (handle-update (assoc base :text "/tracking"))
+        (handle-update (assoc base :text "привет"))
+        (handle-callback
+         (assoc base :callback-id "cb-ad" :data "ad:1" :msg-id 9))))
+    (is (= 6 (count @sent)))
+    (is (every? #(= 17 (get-in % [:options :thread-id])) @sent))))

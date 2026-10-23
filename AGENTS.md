@@ -1,15 +1,16 @@
-<!-- Updated: 2026-07-13 -->
+<!-- Updated: 2026-10-23 -->
 # tapalakbot-v2
 
 - **Agent-first architecture** — clj-harness LLM is the brain: sees conversation, decides intent, calls tools, generates text. Tools return structured data. Cards rendered deterministically. LLM never touches prices or URLs.
 - **Streaming is the agent path** — non-fast-path Telegram messages use `handle-message-stream!` (core.clj), which calls `stream/stream-agent` directly and bypasses the middleware pipeline. Observability hooks must live in `observe/record!` + mulog, not middleware alone.
-- **Configured model contract** — production agent and helper calls use `:gemini-3.5-flash` through OpenRouter; keep provider/model choices explicit and sourced from `resources/config.edn`. Production sets `OPENROUTER_BASE_URL` to the authenticated Railway proxy because OpenRouter and `workers.dev` reject the Russian VPS egress.
+- **Configured models** — the conversation agent and generative helpers use `:gemini-3.5-flash` through OpenRouter; semantic listing selection uses typed `typesafe/jev-1.13` requests, not a second generative relevance filter. Both are configured in `resources/config.edn`. Russian VPS egress requires a working authenticated gateway.
 - **clj-harness** — middleware stack for synchronous handler: `handle-message` goes through core-agent and clj-harness wrappers; streaming uses `stream/stream-agent` directly. `:nudges` requires tools before final answers. `:effects? true` uses effect-driven agent loop.
 - **Observability** — mulog structured events + observe ring buffer. Every LLM call emits `:llm-call` with model/latency/tokens. Every turn emits `::agent.turn.start/end`. Trace IDs correlate full request trajectories. See Observability section.
 - **Simulation** — `clojure -M:simulation` runs 20 realistic queries through the real pipeline, capturing every event (LLM calls, tool calls, draft chunks, status phases) to JSONL. See Simulation section.
 - **Monitor in same JVM** — `server.clj` starts the monitor on its own thread and immediately continues to Telegram polling; never wait for the initial market scan on the bot startup path. Notifications use the same `render/render-reply`.
-- **Telegram rendering split** — agent analysis is one native Rich Markdown message; deterministic listings are a second Rich HTML document. First visible page contains up to 20 ranked cards with decision metadata, and the response keyboard now exposes deterministic result pagination plus curated price refinements. Links are standalone and platform-labelled because Telegram Android may not activate links inside Rich tables. Mashina cards preserve image/year/mileage/engine/gearbox/city. Never send duplicate media groups.
+- **Telegram rendering split** — agent analysis is native Rich Markdown; deterministic listings are a separate Rich HTML document. Pages contain up to 20 cards with source-owned prices/currencies/URLs and typed decision reasons. `result_delivery.clj` owns opaque price refinements and media → text-only Rich → complete legacy fallbacks. Links stay outside tables for Android. Never send duplicate media groups.
 - **Conversation isolation** — Telegram updates are keyed by chat/user/thread. A bounded executor processes one update per conversation and coalesces a busy conversation to its newest pending update.
+- **Lalafo only** — all categories, including vehicles, use Lalafo. The conversation agent supplies full `user_want` and up to three keyword variants; collection preserves complete descriptions and source parameters, caps the candidate pool at 200, applies deterministic KGS budgets, then calls JEV.
 
 ## Architecture
 
@@ -18,54 +19,38 @@ Telegram update → clj-harness parser → bot.clj bounded per-conversation disp
     → fast path or core.clj (handle-message-stream!)
     → stream/stream-agent: SSE streaming + tool loop
     → LLM sees conversation + tools (search, research)
-    → agent calls tools → structured data captured in dynamic vars
+    → search.clj → full Lalafo collection → source-currency budget checks → typed JEV selection
     → agent generates conversational text (streamed to user)
     ↓
-bot.clj extracts captured cards → render.clj → deterministic HTML
+bot.clj extracts accepted source cards → result_delivery.clj + render.clj
     ↓
 Telegram: agent text (Rich Messages) + rendered cards (HTML)
 ```
 
 **Three layers:**
 1. **Agent** (clj-harness): LLM decides intent, calls tools, generates text. `wrap-tools` middleware for tool calling loop.
-2. **Deterministic** (search + render): search.clj, render.clj, query_builder.clj, lalafo.clj, mashina.clj — own all trust-critical facts and deterministic pagination/ranking.
-3. **Transport** (Telegram): bot.clj — fast paths, streaming drafts, card rendering, tracking UI.
+2. **Search + selection**: `lalafo_collection.clj` normalizes and round-robins source candidates; `search.clj` owns numeric constraints and currency-safe statistics; `jev.clj` evaluates semantic fit/condition/evidence/risk, validates complete responses and annotates exact owned cards. No lexical prefilter or statistical price-outlier removal.
+3. **Transport**: `bot.clj` owns dispatch, fast paths, streaming and tracking callbacks; `result_delivery.clj` owns result delivery and refinements; `bot_state.clj` and `result_store.clj` own expiring conversation-scoped state and atomic pagination.
 
-## File Map
 
-| File | Lines | Purpose |
-|------|-------|---------|
-| `core.clj` | ~900 | Agent: system prompt, tools (search/research), ask-stream, card capture, relevance filter |
-| `bot.clj` | ~880 | Telegram: agent dispatch, fast paths, streaming drafts, tracking UI, city selection |
-| `simulation.clj` | ~370 | Full-scale simulation runner with JSONL event logging for auto-research |
-| `query_builder.clj` | ~450 | NL→structured params: price, platform, category extraction. Uses :kimi-k2 for query generation |
-| `lalafo.clj` | ~470 | Lalafo.kg HTTP client, Cloudflare bypass, category fetch, search |
-| `riskbypass.clj` | ~220 | RiskBypass API client for Cloudflare cf_clearance solving |
-| `render.clj` | ~195 | Deterministic card renderer — tier groups, formatted prices, Telegram HTML |
-| `search.clj` | ~210 | Structured search pipeline — combines Lalafo + Mashina, cards out |
-| `policy.clj` | ~110 | Fast-path intent classification (greetings, reset, search trigger) |
-| `mashina.clj` | ~155 | Mashina.kg public REST API client |
-| `server.clj` | ~270 | Entry point: webhook/polling, monitor auto-start, mulog config |
+## Marketplace
 
-## Marketplace Platforms
-
-### Lalafo.kg (Primary)
+### Lalafo.kg
 - General classifieds (cars, real estate, electronics, services)
-- Direct HTTP, requires cf_clearance cookie via RiskBypass + Smartproxy
-- All KG regions, ~50K+ active listings
+- Direct Java `HttpClient`; no subprocess, browser cookie, proxy credential, or RiskBypass dependency
+- Main search passes `:city-id nil` to include all regions; never replace an explicit nil with the old Bishkek default.
+- Provider numeric price filters are deliberately omitted: mixed-currency semantics are unverified. Local budget checks require an explicitly known KGS amount or authoritative source KGS equivalent. Missing currency is not KGS.
+- JEV batches contain at most 20 cards and a conservative 30k-character request estimate, with three workers and a 30s request timeout. Descriptions are not truncated; an oversized individual listing fails explicitly.
+- The selector returns source-bound cards plus `:selection` counts; partial/malformed responses fail the whole selection. A valid empty decision remains empty. Tracker failures defer the check without marking candidates seen.
+- Reconcile typed decisions before admission: missing product identity, explicit incompatibility and current-offer price/currency conflict are excluded; concrete suspicious-source evidence can only produce an uncertain alternative. Missing photos/descriptions alone are not a filter. Historical purchase amounts are not current sale-price conflicts.
 
-### Mashina.kg (Auto-focused)
-- Auto marketplace (cars, motorcycles, parts)
-- Public REST API at `www.mashina.kg/api` — no auth needed
-- Endpoints: `/api/ads/listings`, `/api/categories`, `/api/ads/slug/{slug}`
-- 136K+ auto listings, rich attributes (year, engine, gearbox, mileage)
 
 ## Observability
 
 Three-layer architecture — each covers what the others miss:
 
 1. **Middleware** (sync path only): `wrap-trace-id` stamps UUID, `wrap-observability` emits mulog events + observe ring buffer. Only sees `handle-message` (sync), NOT `handle-message-stream!`.
-2. **observe/record! hooks** (all paths): `:llm-call` events at `core-agent` (llm.clj) and `stream-agent` (stream.clj) — the two chokepoints covering sync + streaming. Token usage from raw LLM response (was discarded, now passed through as `:usage`).
+2. **observe/record! hooks** (all paths): `:llm-call` events at `core-agent` and `stream-agent` cover generative calls. `jev.clj` records each typed HTTP batch directly, including failures, model, latency, correlation ID and provider-reported usage/cost.
 3. **mulog events** (structured logs): `::agent.msg-in/out`, `::agent.turn.start/end/error` with trace-id, dialogue-id, latency-ms, tokens. Console publisher now, Prometheus/file later.
 
 **Trace ID flow**: handle-message-stream! generates UUID → passed to stream-agent → every observe event + mulog event carries it → grep one user's full trajectory.
@@ -76,7 +61,7 @@ Three-layer architecture — each covers what the others miss:
 
 `clojure -M:simulation [N|0 "custom query"]` — runs queries through the REAL agent pipeline.
 
-20-query catalog covers: direct searches, research-first, budget/market, vague intent, follow-ups, edge cases (English, typos, greetings), multi-platform, Russian product names.
+20-query catalog covers: direct searches, research-first, budget/market, vague intent, follow-ups, edge cases (English, typos, greetings), product categories, Russian product names.
 
 Output: `~/agent-artifacts/tapalakbot-v2/simulation/<timestamp>/`
 - `events.jsonl` — every event with trace-id: query.start/end, draft.chunk (streaming deltas), status, llm-call, tool, msg-in/out
@@ -116,12 +101,12 @@ clojure -M:test -n tapalakbot.render-test -n tapalakbot.policy-test
 
 ### Dokploy / webhook mode
 
-The container exposes plain HTTP on `PORT` (default 8080); Dokploy terminates TLS. `WEBHOOK_URL` enables webhook mode and requires `TELEGRAM_WEBHOOK_SECRET`; without both, startup falls back to long polling. Persist `/data` for session and monitor SQLite databases. `/health` is the container health endpoint.
+The container exposes plain HTTP on `PORT` (default 8080); Dokploy terminates TLS. `WEBHOOK_URL` enables webhook mode and requires `TELEGRAM_WEBHOOK_SECRET`; without both, startup falls back to long polling. Persist `/data` for session and monitor SQLite databases. `/health` is process liveness; `/ready` returns 200 only after transport startup and a successful marketplace probe.
 
 ## Testing
 
 ```bash
-# Full deterministic suite (64 tests / 244 assertions as of 2026-07-13)
+# Full deterministic suite: 103 tests / 426 assertions on 2026-10-23
 clojure -M:test
 ```
 
@@ -135,15 +120,19 @@ clojure -M:test
 - **Container build must fail closed** — the Dockerfile compilation step must not use `|| true`; build failures must stop deployment.
 - **Full SHA required** — tools.deps git dependencies require a full SHA.
 - **clj-harness pinned** — update its full git SHA in `deps.edn` after parent fixes; do not assume local parent changes are deployed.
-- **OpenRouter egress** — Dokploy must set `OPENROUTER_BASE_URL=https://tapalak-openrouter-proxy-production.up.railway.app/api/v1/chat/completions`. The Railway project `tapalak-openrouter-proxy` runs `infra/openrouter-proxy/` and validates the same `OPENROUTER_API_KEY`; a public `workers.dev` proxy returns 403 from this VPS.
+- **OpenRouter egress** — use the dedicated `pass openrouter/lalabot-token` credential and `https://openrouter-proxy-production-1ad8.up.railway.app/api/v1/chat/completions`; typed JEV uses the same origin at `/api/v1/systemone`. Verify both authenticated routes from the VPS. Do not overwrite the old global credential. Save Dokploy runtime env before pushing auto-deployed `main`; keep `createEnvFile=false`. See `docs/deployment.md`.
+- **Monitor trust boundary** — the monitor API binds to `127.0.0.1` unless `MONITOR_HOST` overrides it. Set `MONITOR_ADMIN_TOKEN` before exposing it; `POST /scan` requires `Authorization: Bearer …` and permits only one active scan.
 
 ### General
 
 - **Java (?i) doesn't work for Cyrillic** — `policy.clj` lowercases input before regex matching. Never use `(?i)` with Russian text.
 - **Only ONE process per bot token** — Two pollers = 409 Conflict.
-- **Forum topics are distinct conversations** — preserve `message_thread_id` through parsing, sending, and session IDs.
+- **Stop-first rollback too** — both Swarm update and rollback order must be `stop-first`; verify after Dokploy release because service-spec recreation can reset rollout settings. Never deploy via the obsolete standalone-container recipe.
+- **Forum topics are distinct conversations** — `message_thread_id` from the current update is immutable request context: preserve it through every send/edit and in the session ID. Never store a mutable "active thread" per user; one user can run multiple topics concurrently.
 - **Busy conversations coalesce** — only the newest pending update is retained while a conversation is running; never add raw `future` dispatch around this path.
 - **Lalafo search noise** — Generic queries return junk. Use exact model names.
-- **Mashina listing route** — API results provide a `slug`, not a page URL. Canonical public listings are `https://mashina.kg/details/{slug}`; `/ru/{slug}` returns 404.
-- **Empty relevance is valid** — `relevance-filter` must preserve a parsed `[]`; only malformed/error model output may fall back to unfiltered listings. Treating an empty decision as parse failure leaks unrelated cards.
+- **Full source context** — JEV sees complete descriptions, condition and source parameters, not 80-character snippets. It only selects/annotates; trusted prices, currency, images and action URLs stay on the original cards.
+- **Unavailable is not no-match** — collection/selector failure or an empty provider answer before search returns `:search-status :unavailable`. Never retry it as an automatic fallback search or show a successful empty-market claim.
+- **Authoritative refinements** — `ask-stream` accepts `:price-min`/`:price-max` options. Presence, including nil, replaces old bounds; deterministic search removes the old textual budget before JEV evaluation. Always use owned opaque callbacks, not truncated queries.
+- **Inflected budget continuations** — “до 1 сома”, “до 5 сомов” and similar budget-only turns refine the current product; classifying them as new searches clears conversation context.
 - **deps.edn brace matching** — mulog dep addition caused `}}}` instead of `}}` via fuzzy patch. Always verify `clojure -Spath` after deps.edn edits.

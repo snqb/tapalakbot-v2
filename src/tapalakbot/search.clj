@@ -1,311 +1,121 @@
 (ns tapalakbot.search
-  "Deterministic search pipeline — produces structured results."
+  "Full-source Lalafo collection, deterministic budget checks and JEV selection."
   (:require [tapalakbot.query-builder :as qb]
             [tapalakbot.lalafo :as lalafo]
-            [tapalakbot.mashina :as mashina]
+            [tapalakbot.jev :as jev]
             [cheshire.core :as json]
             [clojure.string :as str]
             [clojure.tools.logging :as log]))
 
-;; ════════════════════ CONVERSION ════════════════════
-
 (defn lalafo-item->card
-  "Convert a Lalafo API item (JSON map with string keys) to a card map."
+  "Normalize source facts without shortening descriptions or inferring specifications."
   [item]
-  (let [p (get item "price")]
-    {:id       (get item "id")
-     :title    (get item "title")
-     :price    (when p (long p))
-     :currency (get item "currency" "KGS")
-     :url      (get item "url")
+  (let [images (get item "images")
+        image-url (fn [image]
+                    (if (string? image) image
+                        (or (get image "original_url") (get image "thumbnail_url"))))]
+    {:id (get item "id")
+     :title (get item "title")
+     :desc (or (get item "desc") (get item "description") "")
+     :price (get item "price")
+     :currency (get item "currency")
+     :price-kgs (get item "price_kgs")
+     :url (get item "url")
      :platform :lalafo
-     :image    (or (get item "image") (get item "image_url"))
-     :desc     (get item "desc")}))
-
-(defn mashina-item->card
-  "Convert a Mashina listing to a rich result card."
-  [listing]
-  (let [p (:price listing)]
-    {:id       (:id listing)
-     :title    (:title listing)
-     :price    (when (and p (:amount p)) (long (:amount p)))
-     :price-kgs (:price-kgs listing)
-     :price-usd (:price-usd listing)
-     :currency (or (:currency p) "KGS")
-     :url      (:url listing)
-     :image    (first (:images listing))
-     :year     (:year listing)
-     :mileage  (when-let [m (:mileage listing)]
-                 (when (number? m) (long m)))
-     :engine   (:engine listing)
-     :gearbox  (:gearbox listing)
-     :city     (:city listing)
-     :platform :mashina}))
-
-;; ════════════════════ FILTERING ════════════════════
-
-(def ^:private accessory-bad-words
-  "Words indicating accessory, service, or non-product listing."
-  ["зарядк" "кабел" "чехол" "стекло" "ремонт" "установка"
-   "обложк" "коробка" "настройк" "адаптер" "переходник"
-   "плeнк" "защитн" "аксессуар" "запчаст" "комплект"
-   "подароч" "упаков" "держател" "кронштейн" "стенд"
-   "подставк" "сидень" "накладк" "наклейк"
-   "обтяжк" "шнур" "провод" "розетк"
-   "удлинител" "объектив" "штатив" "монопод"])
-
-(defn accessory-score
-  "Quick deterministic score for junk.
-   Count of bad-words found in the lowercased title."
-  [title]
-  (let [t (str/lower-case (or title ""))]
-    (count (filter #(str/includes? t %) accessory-bad-words))))
+     :image (or (some image-url images) (get item "image") (get item "image_url"))
+     :images (vec (keep image-url images))
+     :city (get item "city")
+     :condition (get item "condition")
+     :params (get item "params")}))
 
 (defn dedup-cards
-  "Remove duplicate source listings without collapsing distinct ads of one model."
+  "Deduplicate source IDs/URLs while retaining distinct offers for the same model."
   [cards]
-  (let [seen (volatile! #{})]
-    (filterv
-     (fn [card]
-       (let [key (or (:url card)
-                     (when (:id card) [(:platform card) (:id card)])
-                     [(:platform card) (:title card) (:price card)])]
-         (if (@seen key)
-           false
-           (do (vswap! seen conj key) true))))
-     cards)))
-
-(def ^:private token-aliases
-  {"тойота" "toyota" "камри" "camry" "лексус" "lexus"
-   "хонда" "honda" "хендай" "hyundai" "хундай" "hyundai"
-   "мерседес" "mercedes" "бмв" "bmw"})
-
-(def ^:private query-stopwords
-  #{"до" "от" "макс" "мин" "бюджет" "цена" "сом" "кгс" "kgs" "тыс"})
-
-(defn- normalize-search-text
-  [value]
-  (reduce-kv str/replace
-             (-> (str (or value "")) str/lower-case (str/replace "ё" "е"))
-             token-aliases))
-
-(defn- query-tokens
-  [query]
-  (->> (re-seq #"[\p{L}\p{N}.]+" (normalize-search-text query))
-       (remove query-stopwords)
-       (remove (fn [token]
-                 (when-let [n (try (Long/parseLong token) (catch Exception _ nil))]
-                   (> n 9999))))
-       distinct
-       vec))
-
-(defn- token-match-count
-  [title tokens]
-  (let [title (normalize-search-text title)]
-    (count (filter #(str/includes? title %) tokens))))
-
-(defn- kgs-currency?
-  [currency]
-  (#{"KGS" "СОМ"} (some-> (or currency "KGS") str str/upper-case)))
+  (:cards
+   (reduce (fn [{:keys [seen] :as state} card]
+             (let [key (or (when (:id card) [(:platform card) (str (:id card))])
+                           (:url card))]
+               (if (and key (contains? seen key)) state
+                   (-> state (update :seen conj key) (update :cards conj card)))))
+           {:seen #{} :cards []} cards)))
 
 (defn card-price-kgs
-  "Return a card's comparable KGS price, or nil when only another currency is known."
-  [card]
-  (let [p (:price card)]
-    (cond
-      (number? (:price-kgs card)) (long (:price-kgs card))
-      (and (number? p) (kgs-currency? (:currency card))) (long p)
-      (and (map? p)
-           (number? (:amount p))
-           (kgs-currency? (:currency p))) (long (:amount p))
-      :else nil)))
+  "Return a known KGS amount, never treating a raw foreign-currency price as KGS."
+  [{:keys [price price-kgs currency]}]
+  (cond
+    (number? price-kgs) price-kgs
+    (and (number? price)
+         (contains? #{"KGS" "СОМ"} (str/upper-case (str currency)))) price
+    :else nil))
 
-(defn- within-price-range?
-  [card price-min price-max]
-  (if (or price-min price-max)
+(defn- within-budget? [card minimum maximum]
+  (if (or minimum maximum)
     (when-let [price (card-price-kgs card)]
-      (and (or (nil? price-min) (<= price-min price))
-           (or (nil? price-max) (<= price price-max))))
+      (and (or (nil? minimum) (<= minimum price))
+           (or (nil? maximum) (<= price maximum))))
     true))
 
-(defn- card-completeness
-  [card]
-  (count (keep card [:price :url :image :year :mileage :engine :gearbox :city])))
+(defn- compute-stats [cards]
+  (let [prices (vec (keep card-price-kgs cards))]
+    (if (seq prices)
+      {:avg (long (/ (reduce + prices) (count prices)))
+       :min (apply min prices) :max (apply max prices) :count (count prices)}
+      {:count 0})))
 
-(defn rank-marketplace-cards
-  "Filter a fuzzy marketplace pool locally, then rank exact, in-budget matches.
-
-   Mashina's public endpoint performs broad fuzzy search and has no usable
-   structured filters, so title and price constraints are enforced here."
-  [cards {:keys [query price-min price-max]}]
-  (let [tokens (query-tokens query)
-        deduped (dedup-cards cards)
-        in-budget (filterv #(within-price-range? % price-min price-max) deduped)
-        matched (mapv #(assoc % ::matches (token-match-count (:title %) tokens))
-                      in-budget)
-        required (count tokens)
-        exact (if (pos? required)
-                (filterv #(= required (::matches %)) matched)
-                matched)
-        relevant (cond
-                   (seq exact) exact
-                   ;; A multi-token model query is a hard contract. Returning a
-                   ;; nearby generation/model is worse than returning no cards.
-                   (> required 1) []
-                   :else
-                   (let [best (apply max 0 (map ::matches matched))]
-                     (if (pos? best)
-                       (filterv #(= best (::matches %)) matched)
-                       [])))
-        budget-target price-max
-        ranked (sort-by
-                (fn [card]
-                  [(- (::matches card))
-                   (if-let [price (and budget-target (card-price-kgs card))]
-                     (Math/abs (long (- budget-target price)))
-                     Long/MAX_VALUE)
-                   (- (long (or (:year card) 0)))
-                   (long (or (:mileage card) Long/MAX_VALUE))
-                   (- (card-completeness card))])
-                relevant)]
-    (mapv (fn [index card]
-            (-> card
-                (dissoc ::matches)
-                (assoc :tier (cond
-                               (zero? index) :great
-                               (< index 5) :good
-                               :else nil))))
-          (range)
-          ranked)))
-
-;; ════════════════════ LALAFO SEARCH ════════════════════
-
-(defn- search-lalafo
-  "Search Lalafo with a vector of queries.
-   Returns a vector of card maps."
-  [queries price-min price-max]
-  (log/info :search-lalafo :queries queries :price [price-min price-max])
-  (let [raw (try
-              (lalafo/search {"queries"       queries
-                              "price_min"     price-min
-                              "price_max"     price-max
-                              "candidate_limit" 80})
-              (catch Exception e
-                (log/warn :lalafo-search-error (.getMessage e))
-                nil))]
-    (if (or (nil? raw) (and (string? raw) (str/blank? raw)))
-      []
-      (let [parsed (if (string? raw)
-                     (try (json/parse-string raw) (catch Exception _ {}))
-                     raw)
-            items (get parsed "items" [])]
-        (mapv lalafo-item->card items)))))
-
-;; ════════════════════ MASHINA SEARCH ════════════════════
-
-(defn- search-mashina
-  "Search Mashina for cars.
-   Returns a vector of card maps."
-  [query]
-  (log/info :search-mashina :query query)
-  (let [result (try
-                 (mashina/search-cars :query query :size 100)
-                 (catch Exception e
-                   (log/warn :mashina-search-error (.getMessage e))
-                   nil))]
-    (if (or (nil? result) (not (map? result)))
-      []
-      (mapv mashina-item->card (:listings result)))))
-
-;; ════════════════════ RELEVANCE ════════════════════
-
-(defn relevance-score
-  "Score how relevant a card is to the search query. Higher = more relevant.
-   10 if query words appear in title, 0 otherwise."
-  [title query]
-  (let [t (str/lower-case (or title ""))
-        q-words (str/split (str/lower-case (or query "")) #"\s+")]
-    (if (some #(str/includes? t %) q-words) 10 0)))
-
-;; ════════════════════ STATS ════════════════════
-
-(defn- compute-stats
-  "Compute KGS-only avg/min/max/count from marketplace cards."
-  [cards]
-  (let [ps (vec (keep card-price-kgs cards))]
-    (if (empty? ps)
-      {:avg 0 :min 0 :max 0 :count 0}
-      (let [sum (reduce + ps)]
-        {:avg   (long (/ sum (count ps)))
-         :min   (apply min ps)
-         :max   (apply max ps)
-         :count (count ps)}))))
-
-
-;; ════════════════════ MAIN ════════════════════
+(defn- search-terms [query supplied]
+  (let [terms (->> supplied
+                   (filter string?)
+                   (map str/trim)
+                   (remove str/blank?)
+                   distinct
+                   (take 3)
+                   vec)]
+    (if (seq terms) terms [query])))
 
 (defn search
-  "Main search entry point. Deterministic — no LLM involvement.
-
-   Takes a user-query string and optional opts map:
-     :use-llm?  — pass to qb/build (default true)
-
-   Steps:
-     1. qb/build to get platform routing + price constraints
-     2. Route to appropriate platforms
-     3. Search Lalafo / Mashina
-     4. Filter accessories, dedup, sort by relevance
-     5. Compute stats
-
-   Returns {:cards [...] :stats {:avg N :min N :max N :count N}
-            :platforms [...] :query \"...\"}"
+  "Collect up to 200 full listings, apply source-bound budgets, then select with JEV.
+   :queries are short keyword variants supplied by the conversation agent.
+   :query remains the complete user intent used by the semantic selector."
   ([user-query] (search user-query {}))
-  ([user-query {:keys [use-llm?] :or {use-llm? true}}]
-   (log/info :search-start :query user-query :use-llm? use-llm?)
-   (let [qb-result (qb/build user-query :use-llm? use-llm?)
-         {:keys [query price-min price-max mashina-query
-                 is-auto? is-electronics? is-real-estate?]} qb-result
-
-         ;; 2. Determine platforms
-         platforms (cond
-                     is-auto?        [:mashina]
-                     is-electronics? [:lalafo :mashina]
-                     is-real-estate? [:lalafo]
-                     :else           [:lalafo])
-
-         ;; 3. Search Lalafo
-         lalafo-cards (when (some #{:lalafo} platforms)
-                        (try
-                          (search-lalafo [query] price-min price-max)
-                          (catch Exception e
-                            (log/warn :lalafo-search-failed :error (.getMessage e))
-                            [])))
-
-         ;; 4. Search Mashina (cars)
-         mashina-cards (when (some #{:mashina} platforms)
-                         (try
-                           (search-mashina (or mashina-query query))
-                           (catch Exception e
-                             (log/warn :mashina-search-failed :error (.getMessage e))
-                             [])))
-
-         ;; 5. Filter obvious junk, enforce exact/local constraints, then rank.
-         all-cards (concat lalafo-cards mashina-cards)
-         filtered (filterv #(<= (accessory-score (:title %)) 1) all-cards)
-         ranked (rank-marketplace-cards
-                 filtered
-                 {:query (or mashina-query query)
-                  :price-min price-min
-                  :price-max price-max})
-         stats (compute-stats ranked)]
-
-     (log/info :search-done
-               :platforms platforms
-               :candidates (count filtered)
-               :final-count (count ranked))
-
-     {:cards ranked
-      :stats stats
-      :platforms platforms
-      :query query
-      :qb-result qb-result})))
+  ([user-query {:keys [queries price-min price-max city-id category-id status-cb
+                      budget-override?]}]
+   (let [parsed (qb/parse user-query)
+         minimum (if budget-override? price-min (or (:price-min parsed) price-min))
+         maximum (if budget-override? price-max (or (:price-max parsed) price-max))
+         effective-query (if budget-override?
+                           (str (:query parsed) "\nДействующий бюджет в сомах: "
+                                (if (or minimum maximum)
+                                  (str (when minimum (str "от " minimum " "))
+                                       (when maximum (str "до " maximum)))
+                                  "без ограничений"))
+                           user-query)
+         terms (search-terms (:query parsed) queries)
+         base {:query effective-query :platforms [:lalafo]
+               :qb-result (assoc parsed :price-min minimum :price-max maximum)}]
+     (try
+       (when status-cb (status-cb "Собираю объявления с Lalafo…"))
+       (let [raw (lalafo/search {"queries" terms "price_min" minimum "price_max" maximum
+                                 "city_id" city-id "category_id" category-id
+                                 "per_page" 200 "candidate_limit" 200})
+             data (if (string? raw) (json/parse-string raw) raw)
+             _ (when (or (not (map? data)) (get data "error"))
+                 (throw (ex-info "Marketplace collection unavailable" {:type :collection-unavailable})))
+             collection (get data "stats" {})
+             candidates (->> (get data "items" [])
+                             (mapv lalafo-item->card)
+                             dedup-cards
+                             (filterv #(within-budget? % minimum maximum)))
+             selected (jev/select-cards effective-query candidates
+                                        {:status-cb status-cb
+                                         :price-min minimum :price-max maximum})
+             cards (vec (:cards selected))]
+         (log/info :search-selected :query user-query :candidates (count candidates)
+                   :accepted (count cards) :model (get-in selected [:selection :model]))
+         (merge base {:cards cards :stats (compute-stats cards)
+                      :selection (:selection selected)
+                      :collection (into {} (map (fn [[k v]] [(keyword k) v])) collection)
+                      :search-status :ok}))
+       (catch Exception e
+         (log/error e :search-unavailable :query user-query :type (:type (ex-data e)))
+         (merge base {:cards [] :stats {:count 0} :search-status :unavailable
+                      :error "Не удалось проверить объявления. Это не означает, что подходящих вариантов нет. Попробуйте повторить поиск позже."}))))))

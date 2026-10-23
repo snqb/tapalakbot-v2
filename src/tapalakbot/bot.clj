@@ -4,13 +4,16 @@
   Button-based tracking UI via inline keyboards.
   Persistent menu: [🔄 Новый диалог] [🔔 Отслеживание]"
   (:require [tapalakbot.core :as t]
+            [tapalakbot.bot-state :as state]
             [tapalakbot.render :as render]
             [tapalakbot.monitor.client :as monitor]
             [tapalakbot.monitor.store :as store]
             [tapalakbot.monitor.tracker :as tracker]
             [tapalakbot.query-builder :as qb]
-            [cheshire.core :as json]
+            [tapalakbot.result-store :as result-store]
+            [tapalakbot.result-delivery :as delivery]
             [clj-harness.telegram :as tg]
+            [clj-harness.telegram.format :as hfmt]
             [clj-harness.core :as hc]
             [clojure.string :as str]
             [clojure.tools.logging :as log]))
@@ -44,78 +47,11 @@
                 :queued (.size (.getQueue handler-pool)))
       nil)))
 
-;; ══════════════════════ USER + CONVERSATION STATE ══════════════════════
-
-(def ^:private user-state
-  "Per-user preferences. Conversation serialization lives separately because
-   one user can own several independent forum topics."
-  (atom {}))
-
-(defn- get-user-state [uid]
-  (or (get @user-state uid)
-      (let [fresh {:last-seen (atom (System/currentTimeMillis))
-                   :city-id (atom nil)
-                   :thread-id (atom nil)}]
-        (get (swap! user-state #(if (contains? % uid) % (assoc % uid fresh))) uid))))
-
-(defn conversation-id
-  "Stable clj-harness session key. Forum topics are independent dialogues;
-   ordinary DMs retain the existing per-user identity."
-  [{:keys [chat-id user-id thread-id]}]
-  (if thread-id
-    (str "tg-" user-id ":" chat-id ":" thread-id)
-    (str "tg-" user-id)))
-
-(def ^:private conversation-state
-  "Conversation id → single-flight lock plus latest pending update."
-  (atom {}))
-
-(defn- get-conversation-state [id]
-  (or (get @conversation-state id)
-      (let [fresh {:lock (atom :idle)
-                   :pending (atom nil)
-                   :last-seen (atom (System/currentTimeMillis))}]
-        (get (swap! conversation-state
-                    #(if (contains? % id) % (assoc % id fresh)))
-             id))))
-
-(defn- try-acquire! [id]
-  (let [{:keys [lock last-seen]} (get-conversation-state id)]
-    (reset! last-seen (System/currentTimeMillis))
-    (compare-and-set! lock :idle :busy)))
-
-(defn- release! [id]
-  (reset! (:lock (get-conversation-state id)) :idle))
-
-(defn- store-pending! [id msg]
-  (reset! (:pending (get-conversation-state id)) msg))
-
-(defn- take-pending! [id]
-  (let [pending (:pending (get-conversation-state id))]
-    (loop []
-      (let [current @pending]
-        (if (compare-and-set! pending current nil)
-          current
-          (recur))))))
-
 ;; ══════════════════════ THREAD MANAGEMENT ══════════════════════
 
-(defn- get-thread-id
-  "Get current thread-id for user. Returns message_thread_id or nil."
-  [uid]
-  (let [st (get-user-state uid)]
-    @(:thread-id st)))
-
-(defn- set-thread-id!
-  "Set current thread-id for user."
-  [uid thread-id]
-  (let [st (get-user-state uid)]
-    (reset! (:thread-id st) thread-id)))
-
 (defn- ensure-topic!
-  "Create a NEW forum topic EVERY time — never reuse old thread-ids.
-   Stores the message_thread_id in user-state. Returns thread-id or nil.
-   Returns nil gracefully if the chat doesn't support forum topics (e.g. private DMs)."
+  "Create a new forum topic and return its message_thread_id.
+   Returns nil gracefully if the chat does not support forum topics."
   ([chat-id uid] (ensure-topic! chat-id uid "Новый диалог"))
   ([chat-id uid topic-name]
    (when-let [envelope (try (tg/create-forum-topic chat-id topic-name :icon-color 0x6FB9F0)
@@ -125,19 +61,19 @@
      ;; tg/call returns {"ok":true, "result": {"message_thread_id": N}} — unwrap result first!
      (let [result (get envelope "result" envelope)
            thread-id (get result "message_thread_id")]
-       (set-thread-id! uid thread-id)
        (log/info :topic-created :user uid :thread-id thread-id :name topic-name)
        thread-id))))
 
 (defn- rename-topic!
-  "Rename the user's active forum topic. Logs errors."
-  [chat-id uid new-name]
-  (when-let [thread-id (get-thread-id uid)]
-    (try (let [r (tg/edit-forum-topic chat-id thread-id :name new-name)]
-           (log/info :topic-renamed :user uid :thread-id thread-id :name new-name))
-         (catch Exception e
-           (log/warn e :topic-rename-failed :user uid :thread-id thread-id :name new-name
-                     :error (.getMessage e))))))
+  "Rename the exact forum topic associated with the current update."
+  [chat-id thread-id new-name]
+  (when thread-id
+    (try
+      (tg/edit-forum-topic chat-id thread-id :name new-name)
+      (log/info :topic-renamed :thread-id thread-id :name new-name)
+      (catch Exception e
+        (log/warn e :topic-rename-failed :thread-id thread-id :name new-name
+                  :error (.getMessage e))))))
 
 (defn- topic-name-for-query
   "Generate a short topic name from the user's query text."
@@ -193,6 +129,12 @@
      (if thread-id
        (tg/send-md chat-id text :reply_markup (persistent-menu) :thread-id thread-id)
        (tg/send-md chat-id text :reply_markup (persistent-menu))))))
+(defn- send-typing!
+  [chat-id thread-id]
+  ;; Pinned clj-harness send-typing lacks message_thread_id support. Suppress
+  ;; the action in forum topics instead of leaking it into General.
+  (when-not thread-id
+    (tg/send-typing chat-id)))
 
 ;; ══════════════════════ RESPONSES ══════════════════════
 
@@ -222,33 +164,12 @@
     72 "каждые 72ч"
     (str "каждые " hours "ч")))
 
-(def ^:private pending-track-queries
-  "Callback id → immutable query ownership. Multiple result messages from the
-   same user remain independently actionable."
-  (atom {}))
-
 (defn- track-context-button
   [user-id query]
-  (let [short-id (str (java.util.UUID/randomUUID))]
-    (swap! pending-track-queries assoc short-id
-           {:user-id user-id
-            :query query
-            :created-at (System/currentTimeMillis)})
+  (let [callback-id (state/cache-track-query! user-id query)]
     (tg/inline-keyboard
      [[(str "🔔 Отслеживать «" query "»")
-       {:callback_data (str "track_quick:" short-id)}]])))
-
-(defn take-track-query!
-  "Consume a tracking callback only when it belongs to the clicking user and
-   has not expired."
-  [user-id short-id]
-  (let [{owner :user-id query :query created-at :created-at :as entry}
-        (get @pending-track-queries short-id)
-        fresh? (and created-at (< (- (System/currentTimeMillis) created-at)
-                                  (* 2 60 60 1000)))]
-    (when (and entry (= owner user-id) fresh?)
-      (swap! pending-track-queries dissoc short-id)
-      query)))
+       {:callback_data (str "track_quick:" callback-id)}]])))
 
 (defn- handle-track-quick
   "Handle quick track button — create filter with 24h default.
@@ -258,12 +179,7 @@
         ;; Parse with QueryBuilder to extract price constraints
         qb-result (qb/build query :use-llm? true)
         price-min (:price-min qb-result)
-        price-max (:price-max qb-result)
-        ;; Determine platform for display
-        platform-str (cond
-                       (:is-auto? qb-result) "🚗 Mashina.kg"
-                       false nil
-                       :else "🔍 Lalafo.kg")]
+        price-max (:price-max qb-result)]
     ;; Show immediate feedback with price info
     (edit-with-buttons chat-id msg-id
                        (str "⏳ Подписываю на «" query "»..."
@@ -314,24 +230,28 @@
 
 (defn- show-tracking-list
   "Show user's tracking subscriptions with frequency controls."
-  [chat-id user-id]
+  [chat-id user-id thread-id]
   (let [uid (str "tg-" user-id)
         tracks (store/get-user-tracks uid)]
     (if (empty? tracks)
-      (send-with-buttons chat-id
-                         "📋 *Ваши подписки пусты*\n\nНайдите товар и нажмите «🔔 Отслеживать»"
-                         (tg/inline-keyboard
-                          [["🔍 Поиск товаров" {:callback_data "open_search"}]]))
+      (send-with-buttons
+       chat-id
+       "📋 *Ваши подписки пусты*\n\nНайдите товар и нажмите «🔔 Отслеживать»"
+       (tg/inline-keyboard
+        [["🔍 Поиск товаров" {:callback_data "open_search"}]])
+       {:thread-id thread-id})
       (let [track-rows (mapv (fn [t]
                                (let [freq (format-interval (:notify_interval t))]
                                  [[(str "🔍 " (:title t)) {:callback_data (str "track_info:" (:id t))}]
                                   [(str "📅 " freq) {:callback_data (str "track_freq:" (:id t))}]
                                   ["❌" {:callback_data (str "track_del_ask:" (:id t))}]]))
                              tracks)]
-        (send-with-buttons chat-id
-                           (str "📋 *Ваши подписки* (" (count tracks) ")\n\n"
-                                "📅 — частота уведомлений\n❌ — удалить")
-                           (apply tg/inline-keyboard track-rows))))))
+        (send-with-buttons
+         chat-id
+         (str "📋 *Ваши подписки* (" (count tracks) ")\n\n"
+              "📅 — частота уведомлений\n❌ — удалить")
+         (apply tg/inline-keyboard track-rows)
+         {:thread-id thread-id})))))
 
 (defn- show-track-settings
   "Show frequency settings for a track."
@@ -357,10 +277,10 @@
 
 ;; ══════════════════════ CALLBACK ROUTER ══════════════════════
 
-(declare handle-orchestrated render-and-send results-keyboard)
+(declare handle-orchestrated)
 
 (defn- set-city! [uid city-id]
-  (let [st (get-user-state uid)]
+  (let [st (state/get-user-state uid)]
     (reset! (:city-id st) (when city-id (Integer/parseInt city-id)))))
 
 (defn- handle-callback
@@ -379,7 +299,7 @@
       (re-matches #"track_quick:(.+)" data)
       (let [[_ short-id] (re-matches #"track_quick:(.+)" data)]
         (tg/answer-callback-query callback-id)
-        (if-let [query (take-track-query! user-id short-id)]
+        (if-let [query (state/take-track-query! user-id short-id)]
           (handle-track-quick chat-id msg-id user-id query)
           (edit-with-buttons chat-id msg-id
                              "⌛ Эта кнопка устарела. Выполните поиск ещё раз."
@@ -389,7 +309,7 @@
     ;; === TRACKING: Show subscription list ===
       (= data "track_list")
       (do (tg/answer-callback-query callback-id)
-          (show-tracking-list chat-id user-id))
+          (show-tracking-list chat-id user-id thread-id))
 
     ;; === TRACKING: Show settings for a track ===
       (re-matches #"track_settings:(\d+)" data)
@@ -444,20 +364,22 @@
     ;; === NEXT CACHED RESULT PAGE ===
       (re-matches #"page:([A-Za-z0-9]+)" data)
       (let [[_ cursor-id] (re-matches #"page:([A-Za-z0-9]+)" data)
-            owner-id (str "tg-" user-id)]
-        (if-let [{:keys [cards query start end total has-more]}
-                 (t/next-result-page! owner-id cursor-id t/result-page-size)]
+            owner-id (state/conversation-id {:chat-id chat-id
+                                             :user-id user-id
+                                             :thread-id thread-id})]
+        (if-let [{:keys [cards query start end total has-more context]}
+                 (result-store/next-result-page! owner-id cursor-id result-store/page-size)]
           (do
             (tg/answer-callback-query callback-id
                                       :text (str "Показываю " start "–" end " из " total))
-            (render-and-send
-             chat-id user-id query
-             {:mode :shortlist
-              :intro (str "## Ещё варианты\nПозиции " start "–" end " из " total ".")
-              :cards cards
-              :assumptions []}
-             :keyboard (results-keyboard query cursor-id has-more)
-             :thread-id thread-id)
+            (delivery/send-reply!
+             chat-id
+             {:intro (str "## Ещё варианты\nПозиции " start "–" end " из " total ".")
+              :cards cards :selection (:selection context) :collection (:collection context)}
+             {:keyboard (delivery/results-keyboard
+                         query cursor-id has-more owner-id
+                         (or context {:query query :cards cards}))
+              :thread-id thread-id})
             (log/info :result-page-sent :user owner-id :start start :end end
                       :total total :has-more has-more))
           (tg/answer-callback-query callback-id
@@ -471,47 +393,48 @@
                               :thread-id thread-id
                               :text (str "найди ещё " query)}))
 
-    ;; === CHEAPER ===
-      (re-matches #"cheaper:(.+)" data)
-      (let [[_ query] (re-matches #"cheaper:(.+)" data)]
-        (tg/answer-callback-query callback-id :text "Ищу дешевле...")
-        (handle-orchestrated {:chat-id chat-id :user-id user-id
-                              :thread-id thread-id
-                              :text (str query " подешевле")}))
-
-    ;; === DEARER ===
-      (re-matches #"dearer:(.+)" data)
-      (let [[_ query] (re-matches #"dearer:(.+)" data)]
-        (tg/answer-callback-query callback-id :text "Ищу дороже...")
-        (handle-orchestrated {:chat-id chat-id :user-id user-id
-                              :thread-id thread-id
-                              :text (str query " подороже")}))
+    ;; === PRICE REFINEMENTS ===
+      (re-matches #"(cheaper|dearer):(.+)" data)
+      (let [[_ direction-token callback-token] (re-matches #"(.+?):(.+)" data)
+            direction (keyword direction-token)
+            owner-id (state/conversation-id {:chat-id chat-id
+                                             :user-id user-id
+                                             :thread-id thread-id})]
+        (if-let [refined (delivery/refinement-message owner-id direction callback-token)]
+          (do
+            (tg/answer-callback-query callback-id
+                                      :text (if (= direction :cheaper)
+                                              "Ищу дешевле..." "Ищу дороже..."))
+            (handle-orchestrated (merge {:chat-id chat-id :user-id user-id
+                                         :thread-id thread-id}
+                                        refined)))
+          (tg/answer-callback-query callback-id :text "Эта кнопка устарела.")))
 
     ;; === DRILL-DOWN: Show detailed ad ===
       (re-matches #"ad:(\d+)" data)
       (let [[_ idx-str] (re-matches #"ad:(\d+)" data)
             idx (Integer/parseInt idx-str)
-            uid (str "tg-" user-id)
-            ad (t/get-ad uid idx)]
+            owner-id (state/conversation-id {:chat-id chat-id
+                                             :user-id user-id
+                                             :thread-id thread-id})
+            ad (result-store/get-ad owner-id idx)]
         (tg/answer-callback-query callback-id)
         (if ad
           (let [card-text (str "<b>" (render/escape-html (:title ad)) "</b>\n\n"
-                               "💰 " (when (:price ad) (format "%,d" (:price ad)))
-                               " " (:currency ad "KGS") "\n"
+                               "💰 " (render/format-money (:price ad) (:currency ad)) "\n"
                                (when (:desc ad) (str "\n" (render/escape-html (:desc ad)) "\n")) "\n"
-                               "📍 " (get ad :platform "lalafo") "\n\n"
-                               "<a href=\"" (:url ad) "\">🔗 Открыть на площадке</a>")
+                               "📍 " (render/escape-html (or (:city ad) "Город не указан")) "\n\n"
+                               "<a href=\"" (render/escape-html (:url ad)) "\">🔗 Открыть на площадке</a>")
                 kb {"inline_keyboard"
-                    [[{"text" "🔗 Открыть на Lalafo"
-                       "url" (:url ad)}]
-                     [{"text" "◀️ Назад к результатам"
-                       "callback_data" "back_to_results"}]]}]
+                    [[{"text" "🔗 Открыть на Lalafo" "url" (:url ad)}]]}]
             (try
-              (tg/send-message chat-id card-text :parse-mode "HTML"
-                               :reply_markup kb)
+              (doseq [chunk (tg/split-message card-text)]
+                (tg/send-message chat-id chunk :parse-mode "HTML"
+                                 :reply_markup kb :thread-id thread-id))
               (catch Exception e
                 (log/error e :drilldown-send-failed))))
-          (tg/send-md chat-id "❌ Объявление не найдено в кеше. Попробуйте новый поиск.")))
+          (tg/send-md chat-id "❌ Объявление не найдено в кеше. Попробуйте новый поиск."
+                      :thread-id thread-id)))
 
     ;; Unknown callback
       :else
@@ -531,8 +454,7 @@
                     (:thread-id msg)
                     (or (:thread-id msg)
                         (ensure-topic! chat-id user-uid topic-name)))
-        session-id (conversation-id (assoc msg :thread-id thread-id))]
-    (when thread-id (set-thread-id! user-uid thread-id))
+        session-id (state/conversation-id (assoc msg :thread-id thread-id))]
     (hc/reset-session! @t/tapalakbot session-id)
     (let [stats (monitor/fetch-categories)
           cats (:categories stats)
@@ -554,15 +476,14 @@
 
 (defn- handle-reset [{:keys [chat-id user-id] :as msg}]
   (let [user-uid (str "tg-" user-id)
-        current-id (conversation-id msg)]
+        current-id (state/conversation-id msg)]
     (hc/reset-session! @t/tapalakbot current-id)
-    (store-pending! current-id nil)
-    (set-thread-id! user-uid nil)
+    (state/store-pending! current-id nil)
     (let [topic-name (str "🔄 " (.format (java.time.LocalDateTime/now)
-                                           (java.time.format.DateTimeFormatter/ofPattern "HH:mm")))
+                                         (java.time.format.DateTimeFormatter/ofPattern "HH:mm")))
           thread-id (when-not (pos? chat-id)
                       (ensure-topic! chat-id user-uid topic-name))
-          session-id (conversation-id (assoc msg :thread-id thread-id))]
+          session-id (state/conversation-id (assoc msg :thread-id thread-id))]
       (when (not= current-id session-id)
         (hc/reset-session! @t/tapalakbot session-id))
       (send-menu! chat-id "🗑️ Контекст очищен. Начнём заново!"
@@ -580,24 +501,25 @@
    {"text" "🌿 Талас" "callback_data" "city:103207"}
    {"text" "🕌 Баткен" "callback_data" "city:103206"}])
 
-(defn- handle-city [{:keys [chat-id user-id]}]
+(defn- handle-city [{:keys [chat-id thread-id]}]
   (tg/send-message chat-id "📍 Выберите город для поиска:"
-                   :reply_markup {"inline_keyboard" (partition-all 1 cities)})
+                   :reply_markup {"inline_keyboard" (partition-all 1 cities)}
+                   :thread-id thread-id)
   nil)
 
-
-(defn- handle-tracking [{:keys [chat-id user-id]}]
-  (show-tracking-list chat-id user-id)
+(defn- handle-tracking [{:keys [chat-id user-id thread-id]}]
+  (show-tracking-list chat-id user-id thread-id)
   nil)
 
-(defn- handle-help [{:keys [chat-id]}]
+(defn- handle-help [{:keys [chat-id thread-id]}]
   (send-menu!
    chat-id
-   "*TapalakBot* — поиск на Lalafo.kg\n\n🔍 Поиск товаров\n🔔 Отслеживание новых объявлений\n📊 Рыночные цены\n\nПросто опиши что ищешь!")
+   "*TapalakBot* — поиск на Lalafo.kg\n\n🔍 Поиск товаров\n🔔 Отслеживание новых объявлений\n📊 Рыночные цены\n\nПросто опиши что ищешь!"
+   {:thread-id thread-id})
   nil)
 
 (defn- handle-prices
-  [{:keys [chat-id text]}]
+  [{:keys [chat-id text thread-id]}]
   (let [parts (str/split text #"\s+" 2)
         query (when (> (count parts) 1) (str/trim (second parts)))]
     (if (str/blank? query)
@@ -612,29 +534,24 @@
                                    (when-let [p (:avg_price c)]
                                      (str "ср. " (format "%,.0f" (double p)) " сом"))))
                             stats))]
-            (tg/send-md chat-id (str/join "\n" lines)))
-          (tg/send-md chat-id "⚠️ Мониторинг пока не запущен.")))
+            (tg/send-md chat-id (str/join "\n" lines) :thread-id thread-id))
+          (tg/send-md chat-id "⚠️ Мониторинг пока не запущен." :thread-id thread-id)))
       (let [results (monitor/search-items query)]
         (if (and results (pos? (:count results)))
-          (tg/send-md chat-id (monitor/format-search-results results))
-          (tg/send-md chat-id (str "🔍 Ничего не найдено по запросу «" query "»")))))))
-
-(defn- extract-search-query
-  "Try to extract the original search query from agent response.
-   Looks for patterns like 'Поиск по запросу: ...' or the user's original text."
-  [result-text user-text]
-  ;; Use the user's text as the query (it's what they searched for)
-  (when (and user-text (not (str/blank? user-text)))
-    (str/trim user-text)))
+          (tg/send-md chat-id (monitor/format-search-results results) :thread-id thread-id)
+          (tg/send-md chat-id (str "🔍 Ничего не найдено по запросу «" query "»")
+                      :thread-id thread-id))))))
 
 (defn- needs-fallback-search?
   "Retry only when the agent produced neither cards nor text.
    A textual no-results answer is complete and must not run the same search twice."
   [result text]
   (and (not (seq (:cards result)))
+       (nil? (:search-status result))
        (str/blank? (:text result))
        (> (count text) 3)
-       (not (re-find #"(?i)^\s*(привет|здрав|спасибо|ок|да|нет|/reset|/start)" text))))
+       (not (re-find #"^\s*(привет|здрав|спасибо|ок|да|нет|/reset|/start)"
+                     (str/lower-case text)))))
 
 (defn- suggest-alternatives
   "Generate smart suggestions when search returns nothing.
@@ -667,36 +584,9 @@
 
                         ;; Generic fallback — just the cleaned core
                         (and (seq clean) (not (str/blank? clean)))
-                        (conj clean)
-
-                        ;; Auto-related → suggest Mashina
-                        (re-find #"(машин|авто|hyundai|toyota|honda|bmw|mercedes|lexus|kia|nissan)" q)
-                        (conj "mashina.kg"))]
+                        (conj clean))]
       (when (seq suggestions)
         (distinct suggestions)))))
-
-(defn- render-orchestrated
-  "Render a reply to Telegram HTML + buttons."
-  [chat-id msg-id reply user-id query]
-  (let [html (render/render-reply reply)
-        track-btn (when (and (seq (:cards reply)) query)
-                    (track-context-button user-id query))]
-    (if msg-id
-      (try
-        (tg/edit-message chat-id msg-id html :parse-mode "HTML")
-        (catch Exception e
-          (log/error e :orchestrated-edit-fail)
-          (tg/send-message chat-id html :parse-mode "HTML")))
-      ;; No thinking message — send directly
-      (tg/send-message chat-id html :parse-mode "HTML"))
-    (when track-btn
-      (try
-        (Thread/sleep 300)
-        (tg/send-message chat-id
-                         (str "🔔 Хотите отслеживать «" query "»?")
-                         :reply_markup track-btn)
-        (catch Exception e
-          (log/warn e :track-button-fail))))))
 
 (defn- truncate-cb
   "Truncate string to fit within max-bytes when UTF-8 encoded (for Telegram callback_data).
@@ -715,85 +605,6 @@
                   n))]
         (String. bs 0 n "UTF-8")))))
 
-(defn- results-keyboard
-  "Build deterministic result controls. A cursor advances through cached,
-   already-ranked candidates; price refinements intentionally start new searches."
-  [query cursor-id has-more]
-  (let [max-q (- 64 8)
-        rows (cond-> []
-               (and has-more cursor-id)
-               (conj [{"text" (str "🔄 Ещё " t/result-page-size " вариантов")
-                       "callback_data" (str "page:" cursor-id)}])
-               true
-               (conj [{"text" "⬇️ Дешевле"
-                       "callback_data" (str "cheaper:" (truncate-cb query max-q))}
-                      {"text" "⬆️ Дороже"
-                       "callback_data" (str "dearer:" (truncate-cb query (- 64 7)))}]))]
-    {"inline_keyboard" rows}))
-
-(defn- log-transcript!
-  "Log a transcript entry for later review."
-  [user-id user-text reply]
-  (try
-    (log/info :transcript {:user-id user-id
-                           :user-text user-text
-                           :mode (:mode reply)
-                           :intro (:intro reply)
-                           :card-count (count (:cards reply))
-                           :cta (:cta reply)
-                           :timestamp (System/currentTimeMillis)})
-    (catch Exception _)))
-
-(defn- render-and-send
-  "Send analysis and marketplace results as separate native Rich Messages.
-   Analysis stays Rich Markdown. Deterministic cards use Android-safe standalone
-   links, inline media, and collapsed overflow.
-
-   When cards exist, attach inline controls to the intro message so pagination
-   callbacks stay reachable even if the Rich Message render itself is degraded."
-  [chat-id user-id text reply & {:keys [keyboard thread-id]}]
-  (let [default-kb (when (seq (:cards reply))
-                     (track-context-button user-id text))
-        kb (or keyboard default-kb)
-        intro (:intro reply)
-        cards (:cards reply)
-        intro-kb (when (and kb (seq cards)) kb)]
-    (log/info :render-and-send :text-len (count (or intro ""))
-              :cards (count cards) :has-kb (boolean kb) :thread-id thread-id)
-    (try
-      (if (seq cards)
-        (do
-          ;; Put the primary controls on the intro message so buttons survive
-          ;; even when the card-only rich message renders as unsupported media.
-          (when (and intro (not (str/blank? intro)))
-            (tg/send-md chat-id intro
-                        :reply_markup intro-kb
-                        :thread-id thread-id))
-          ;; Cards are a separate structured document, never concatenated prose.
-          (let [html (render/render-results-rich cards)
-                sent (tg/send-rich-message chat-id
-                                           :html html
-                                           :preview false
-                                           :thread-id thread-id)]
-            (if sent
-              (let [message (or (get sent "result") sent)]
-                (log/info :rich-results-sent
-                          :message-id (get message "message_id")
-                          :rich? (boolean (get message "rich_message"))))
-              (let [fallback (render/render-cards (take 6 cards))]
-                (doseq [chunk (tg/split-message fallback)]
-                  (tg/send-message chat-id chunk :parse-mode "HTML"
-                                   :preview false
-                                   :thread-id thread-id))))))
-        (when (and intro (not (str/blank? intro)))
-          (tg/send-md chat-id intro :reply_markup kb :thread-id thread-id)))
-      (catch Exception e
-        (log/error e :tg-send-failed :msg (.getMessage e))
-        (try
-          (tg/send-message chat-id (or intro "Ошибка — попробуйте ещё раз.")
-                           :parse-mode nil :reply_markup kb
-                           :thread-id thread-id)
-          (catch Exception _))))))
 
 (defn- handle-orchestrated
   "Handle message via agent-first pipeline.
@@ -806,8 +617,7 @@
                     (or thread-id
                         (ensure-topic! chat-id user-uid
                                        (str "🔍 " (subs text 0 (min 30 (count text)))))))
-        _ (when thread-id (set-thread-id! user-uid thread-id))
-        session-id (conversation-id (assoc msg :thread-id thread-id))
+        session-id (state/conversation-id (assoc msg :thread-id thread-id))
         buf (StringBuilder.)
         last-edit (atom 0)
         last-typing (atom 0)
@@ -841,56 +651,62 @@
                       ;; Typing indicator every 3s (avoids 5s expiry gap)
                       (when (> (- now @last-typing) 3000)
                         (reset! last-typing now)
-                        (try (tg/send-typing chat-id) (catch Exception _)))
-                      ;; Streaming preview (throttled 1500ms / 800ms)
-                      (when (> (- now @last-edit) (if is-dm? 800 1500))
-                        (reset! last-edit now)
-                        (when (and (> (.length buf) 50) (not (str/blank? (.toString buf))))
-                          (let [preview (str/trimr (subs (.toString buf) 0 (min (count (.toString buf)) 800)))]
-                            (if is-dm?
-                              (send-draft! preview)
-                              (show-status! preview)))))))
+                        (try (send-typing! chat-id thread-id) (catch Exception _)))
+                      (let [preview (hfmt/streaming-preview
+                                     (subs (.toString buf) 0 (min (.length buf) 2000)))]
+                        (when-not (str/blank? preview)
+                          (if is-dm?
+                            (send-draft! preview)
+                            (when (> (- now @last-edit) 1500)
+                              (reset! last-edit now)
+                              (show-status! (hfmt/strip-md preview))))))))
         status-cb (fn [status]
                     (when status
                       (if is-dm? (send-draft! status) (show-status! status))))]
     ;; Initial feedback
     (if is-dm?
-      (try (tg/send-typing chat-id) (catch Exception _))
+      (try (send-typing! chat-id thread-id) (catch Exception _))
       (show-status! (str "🔍 Ищу «" (subs text 0 (min 40 (count text))) "»...")))
     (try
-      (let [city-id @(:city-id (get-user-state user-uid))
+      (let [city-id @(:city-id (state/get-user-state user-uid))
             result (t/ask-stream session-id text status-cb
-                                 {:stream-cb stream-cb
-                                  :city-id city-id
-                                  :search-status-cb status-cb})
+                                 (merge {:stream-cb stream-cb
+                                         :city-id city-id
+                                         :search-status-cb status-cb}
+                                        (select-keys msg [:price-min :price-max])))
             result* (if (needs-fallback-search? result text)
                       (do
                         (log/info :fallback-auto-search :query text)
                         (.setLength buf 0)
                         (when-not is-dm? (show-status! "🔍 Ищу подробнее..."))
                         (t/ask-stream session-id (str "найди " text) status-cb
-                                      {:stream-cb stream-cb
-                                       :city-id city-id
-                                       :search-status-cb status-cb}))
+                                      (merge {:stream-cb stream-cb
+                                              :city-id city-id
+                                              :search-status-cb status-cb}
+                                             (select-keys msg [:price-min :price-max]))))
                       result)
             effective-query (or (:query result*) text)
             all-cards (vec (:cards result*))
             candidate-pool (vec (or (seq (:pool result*)) all-cards))
-            cursor-id (t/cache-result-pool! user-uid effective-query
-                                            candidate-pool (count all-cards))
+            result-context {:query effective-query :cards candidate-pool
+                            :selection (:selection result*) :collection (:collection result*)}
+            cursor-id (result-store/cache-result-pool! session-id effective-query
+                                                       candidate-pool (count all-cards)
+                                                       result-context)
             ;; URL verification: replace any hallucinated link with warning.
             ;; The answer model may have seen candidates outside the visible page.
             agent-text (if (seq candidate-pool)
                          (let [valid-urls (set (keep :url candidate-pool))]
                            (clojure.string/replace (or (:text result*) "")
-                             #"\[([^\]]*)\]\(([^)]+)\)"
-                             (fn [[_ label url]]
-                               (if (valid-urls url)
-                                 (str "[" label "](" url ")")
-                                 (do (log/warn :url-hallucination-replaced :url url)
-                                     (str "⚠️ " label " (ссылка недоступна)"))))))
+                                                   #"\[([^\]]*)\]\(([^)]+)\)"
+                                                   (fn [[_ label url]]
+                                                     (if (valid-urls url)
+                                                       (str "[" label "](" url ")")
+                                                       (do (log/warn :url-hallucination-replaced :url url)
+                                                           (str "⚠️ " label " (ссылка недоступна)"))))))
                          (:text result*))
-            suggestions (when (empty? all-cards) (suggest-alternatives text))
+            suggestions (when (and (empty? all-cards) (= :ok (:search-status result*)))
+                          (suggest-alternatives text))
             no-results-intro (if (seq agent-text)
                                agent-text
                                (if (seq suggestions)
@@ -902,11 +718,14 @@
             reply {:mode (if (seq all-cards) :shortlist :no-results)
                    :intro (if (seq all-cards) (or agent-text "") no-results-intro)
                    :cards (vec all-cards)
+                   :selection (:selection result*) :collection (:collection result*)
+                   :pool-count (count candidate-pool)
                    :cta nil
                    :assumptions []}
             more-btn (cond
                        (seq all-cards)
-                       (results-keyboard effective-query cursor-id (some? cursor-id))
+                       (delivery/results-keyboard effective-query cursor-id (some? cursor-id)
+                                                  session-id result-context)
                        (seq suggestions)
                        {"inline_keyboard"
                         (mapv (fn [s]
@@ -921,15 +740,13 @@
         (when-let [mid (some-> status-msg deref (get "message_id"))]
           (try (tg/delete-message chat-id mid) (catch Exception _)))
         ;; Send analysis, inline media, and linked result cards as Rich Messages.
-        (render-and-send chat-id user-id text reply
-                         :keyboard more-btn
-                         :thread-id thread-id)
+        (delivery/send-reply! chat-id reply {:keyboard more-btn :thread-id thread-id})
         ;; Keep the full ranked pool available for numeric drill-down callbacks.
         (when (seq candidate-pool)
-          (t/cache-ads! user-uid candidate-pool))
+          (result-store/cache-ads! session-id candidate-pool))
         ;; Rename topic
         (let [topic-name (topic-name-for-query effective-query)]
-          (rename-topic! chat-id user-uid topic-name))
+          (rename-topic! chat-id thread-id topic-name))
         ;; Track button
         (when (and (seq all-cards) (> (count effective-query) 3))
           (try
@@ -946,21 +763,7 @@
         (try (tg/send-message chat-id "❌ Ошибка. Попробуйте ещё раз." :parse-mode nil :thread-id thread-id)
              (catch Exception _))))))
 
-(defn- handle-market-stats [{:keys [chat-id]}]
-  (let [cats (monitor/fetch-categories)
-        stats (:categories cats)]
-    (if (seq stats)
-      (let [lines (mapv (fn [c]
-                          (str "• *" (:name c) "* — "
-                               (:item_count c) " об'яв"))
-                        stats)]
-        (tg/send-md chat-id (str "📊 *Рынок Lalafo.kg*\n\n"
-                                 (str/join "\n" lines))))
-      (tg/send-md chat-id "⚠️ Нет данных"))
-    nil))
-
 ;; ══════════════════════ POLLING (delegated to clj-harness) ══════════════════════
-
 
 (defn- handle-update-now
   "Process one normalized Telegram update on its conversation's single-flight
@@ -1000,29 +803,29 @@
 
 (defn- process-conversation!
   [initial]
-  (let [id (conversation-id initial)]
+  (let [id (state/conversation-id initial)]
     (try
       (loop [current initial]
         (handle-update-now current)
-        (when-let [pending (take-pending! id)]
+        (when-let [pending (state/take-pending! id)]
           (recur pending)))
       (finally
-        (release! id)
+        (state/release! id)
         ;; Close the handoff race: an update can arrive after the loop's last
         ;; take but before release.
-        (when-let [pending (take-pending! id)]
+        (when-let [pending (state/take-pending! id)]
           (dispatch-conversation! pending))))))
 
 (defn- dispatch-conversation!
   "Run at most one update per conversation. While busy, retain the newest
    pending update instead of corrupting session ordering or growing a queue."
   [parsed]
-  (let [id (conversation-id parsed)]
-    (if (try-acquire! id)
+  (let [id (state/conversation-id parsed)]
+    (if (state/try-acquire! id)
       (when-not (handler-future #(process-conversation! parsed))
-        (release! id))
+        (state/release! id))
       (do
-        (store-pending! id parsed)
+        (state/store-pending! id parsed)
         (log/info :conversation-update-coalesced :conversation-id id)))))
 
 (defn extended-handler

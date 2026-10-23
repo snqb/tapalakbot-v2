@@ -1,173 +1,83 @@
-# TapalakBot Deployment
+# TapalakBot deployment
 
-## Server
+## Actual production topology
 
-- **IP**: `85.239.40.192`
-- **OS**: NixOS 25.11 (Xantusia, unstable channel)
-- **Provider**: Timeweb Cloud (Moscow, Russia)
-- **Root access**: password in `pass servers/clojurebayke`
+Verified on 2026-10-23:
 
-## Layout
+- SSH host: `krugosvet` (`147.45.158.152`). The old NixOS host is not the release target.
+- Dokploy application: `zXRWauuXqMP-7XIYSWLR5`, project `tapalakbot`, environment `production`.
+- Docker Swarm service: `tapalakbot-production-densux`, one replica. Do not launch a standalone replacement container or a second Telegram poller.
+- Source: `https://github.com/snqb/tapalakbot-v2.git`; Dokploy uses the root Dockerfile and root build context.
+- Persistent volume: `tapalakbot-production-data` mounted at `/data`.
+- Required host mapping: `149.154.167.220 api.telegram.org`.
+- Current Telegram transport is polling: `getWebhookInfo` returned an empty URL. The bot is `@tapalakin_bot`.
 
-```
-/opt/tapalakbot-v2/              ← Clojure project (git: snqb/tapalakbot-v2)
-  src/tapalakbot/
-    core.clj                      — Agent: system prompt, tools, pre-hook
-    lalafo.clj                    — Lalafo HTTP client + Exa research
-    bot.clj                       — Telegram handler + streaming
-    server.clj                    — Entry point + healthcheck + monitor auto-start
-    monitor/
-      store.clj                   — SQLite: categories, items, price snapshots
-      scanner.clj                 — Background Lalafo scanner (every 4h)
-      api.clj                     — Ring/Jetty HTTP API (:8787)
-      client.clj                  — HTTP client for monitor API
-      main.clj                    — Monitor standalone entry point
-/etc/tapalakbot/secrets.env      ← BOT_TOKEN, DEEPSEEK_API_KEY, EXA_API_KEY, WEBHOOK_URL (chmod 600)
-/opt/tapalakbot-v2/certs/        ← Self-signed TLS cert (key.pem, cert.pem, keystore.p12)
-/tmp/tapalakbot-monitor.db       ← SQLite DB (ephemeral, recreated on reboot)
-```
+Updates and rollbacks must both use stop-first ordering. Process health alone does not establish that model credentials or the external gateway work.
 
-## Dependencies
+## Search and rendering contract
 
-- **Clojure 1.12** + tools.deps
-- **Java 21** (JDK)
-- **clj-harness** (git dep, pinned SHA in `deps.edn`)
-- **ring/ring-core + ring-jetty-adapter + ring-json** — Monitor HTTP API
-- **next.jdbc + sqlite-jdbc** — Monitor SQLite storage
-- **No Python** — all tools use Java HttpClient directly
+The Clojure/clj-harness stack remains in place. Migrating to Mastra or AI SDK would not replace the typed JEV endpoint and would require moving working session, tracking, callback and conversation-serialization code.
 
-## Services
+The conversation agent supplies full user intent and up to three keyword variants. Lalafo collection round-robins and deduplicates up to 200 complete source listings. Deterministic budget checks require known KGS prices or authoritative source equivalents; unknown currency is not KGS, and foreign amounts are never compared directly against a KGS budget. Provider numeric filters are not used because their mixed-currency semantics are unverified.
 
-The bot runs as a single systemd service. On startup, `server.clj`:
-1. Initializes the agent (clj-harness + DeepSeek)
-2. Auto-starts the price monitor in a background thread (scanner + API on :8787)
-3. Runs Lalafo healthcheck
-4. Starts Telegram webhook (HTTPS on :8443) or falls back to polling
+JEV evaluates fit, condition, evidence and risk through `/api/v1/systemone`. Complete typed responses are required for every batch; a partial or failed batch fails the entire selection. Valid empty decisions remain empty. Prices, currencies, URLs and images remain on the original source cards. Descriptions are never shortened before selection.
 
-Webhook mode is enabled via `WEBHOOK_URL` in secrets.env. Self-signed TLS cert
-is generated on first run in `certs/` (uploaded to Telegram via setWebhook).
+Typed decisions are reconciled before admission: missing product-identity evidence, explicit incompatibility and current-offer price/currency conflicts cannot be recommended. A concrete suspicious-source decision can only remain an uncertain alternative. Historical purchase prices are not current-offer conflicts, and a missing photo or description is not an automatic exclusion. JEV classifies supplied seller claims; it does not verify actual hardware or the seller.
 
-```bash
-systemctl restart tapalakbot    # Deploy latest code
-systemctl status tapalakbot     # Check status
-journalctl -u tapalakbot -f     # Follow logs
-journalctl -u tapalakbot | grep healthcheck  # Verify health
-```
+Agent analysis is native Rich Markdown. Result cards are deterministic Rich HTML, with standalone source links, original photos and collapsed overflow. Media failure retries as text-only Rich HTML, then complete legacy HTML without dropping cards or controls. Pagination and opaque refinement callbacks belong to the exact conversation/thread. Explicit refinement bounds replace old budgets, including nil to clear a bound.
 
-### Webhook (port 8443)
+Collection, selector or pre-search conversation-provider failure is unavailable, not an empty successful market. A failed tracker check must not retire unseen candidates.
 
-Telegram sends updates to `https://<IP>:8443/webhook`. Self-signed cert, CN=IP.
-Endpoints: `/webhook` (Telegram updates), `/health` (healthcheck).
+## Required configuration
+
+| Variable | Purpose |
+| --- | --- |
+| `BOT_TOKEN` | Existing Telegram bot identity; keep exactly one poller |
+| `OPENROUTER_API_KEY` | Dedicated credential from `pass openrouter/lalabot-token`; do not overwrite or reuse the old global entry |
+| `OPENROUTER_BASE_URL` | `https://openrouter-proxy-production-1ad8.up.railway.app/api/v1/chat/completions` |
+| `JEV_BASE_URL` | `https://openrouter-proxy-production-1ad8.up.railway.app/api/v1/systemone` |
+| `SESSION_DB_PATH` | `/data/tapalakbot-sessions.db` |
+| `MONITOR_DB_PATH` | `/data/tapalakbot-monitor.db` |
+| `PORT` | Plain HTTP container port; default 8080 |
+| `WEBHOOK_URL`, `TELEGRAM_WEBHOOK_SECRET` | Both required to switch to an authenticated webhook |
+| `MONITOR_ADMIN_TOKEN` | Required before exposing the monitor administration API |
+
+Model names and JEV bounds are in `resources/config.edn`: `google/gemini-3.5-flash`, `typesafe/jev-1.13`, batches at most 20, concurrency at most three, and 30-second request timeouts. Source descriptions are not truncated to fit a request; oversized individual listings fail explicitly.
+
+Save runtime variables with Dokploy `application.saveEnvironment` without deploying. Preserve existing values and build settings; set `createEnvFile=false` because this Clojure image reads runtime environment variables and does not need a plaintext build-checkout `.env` file. `main` has auto-deploy enabled, so complete this preparation before pushing.
+
+## Verification before release
 
 ```bash
-# Verify webhook status from Telegram's perspective
-curl -s "https://api.telegram.org/bot$BOT_TOKEN/getWebhookInfo"
-
-# Local health check (from VPS)
-curl -sk https://localhost:8443/health
+clojure -M -e "(require 'tapalakbot.bot 'tapalakbot.server) (println :compile-ok)"
+clojure -M:test
+clojure -M:run "дорожка для ходьбы до 15000"
 ```
 
-**⚠️ Timeweb security group**: port 8443 must be open for inbound TCP.
-Check in Timeweb dashboard → Security Groups → add rule for port 8443.
+The terminal command is one-shot and must exit. An unavailable response is useful outage evidence, not a successful positive integration test.
 
-### Monitor API (port 8787)
+With working credentials, exercise the real agent, Lalafo and JEV together: walking treadmill, exact phone, budget-only follow-up, different-product isolation, valid no-match, selector failure, and real streaming deltas. Verify accepted source IDs and unchanged monetary facts. Exercise Telegram cards, source links, pagination, refinements and distinct topics in a real client, not just API acceptance.
 
-Available after startup. Used by bot for `/start` and `/prices` commands.
+## Gateway and bot release order
 
-```bash
-curl http://localhost:8787/health            # Health check
-curl http://localhost:8787/prices/start      # Market digest text
-curl http://localhost:8787/prices/categories # Category stats JSON
-curl http://localhost:8787/prices/trending   # Top items per category
-curl http://localhost:8787/prices/search?q=macbook  # Search items
-curl http://localhost:8787/prices/deals      # Items below average
-curl http://localhost:8787/prices/history/:id  # Price history
-curl -X POST http://localhost:8787/scan      # Trigger immediate scan
-```
+1. Verify the OpenRouter credential against both the configured conversation model and the typed System One endpoint without printing the key.
+2. If gateway code changed, deploy `infra/openrouter-proxy/` to its authorized Railway service; otherwise reuse the verified running service. It must require the same bearer credential and allow only `/api/v1/chat/completions` and `/api/v1/systemone`.
+3. Observe the exact Railway deployment reach `SUCCESS`; check `/health`, both authenticated routes, and rejection of unauthorized requests. Obtain its actual public domain rather than reusing a stale hostname.
+4. Set the matching gateway endpoints and credential in Dokploy. Preserve the Telegram host entry, persisted volume, one replica and stop-first update order. Ensure rollback also cannot overlap two pollers.
+5. Release the verified source through the existing Dokploy application. Do not use the obsolete standalone `docker run` or NixOS/systemd instructions.
+6. Check `/health` and `/ready`, Swarm task state, transport logs, and an actual Telegram conversation. `/ready` covers transport startup and marketplace probing, not model-credential validity.
 
-## NixOS Config
+Do not publish code or restart production merely because deterministic tests pass while model verification is blocked.
 
-Key points in `/etc/nixos/configuration.nix`:
+## Observed verification — 2026-10-23
 
-```nix
-# Telegram API routing (Russia workaround)
-networking.extraHosts = "149.154.167.220 api.telegram.org";
+- Bot/server namespaces compiled; 103 deterministic tests / 426 assertions passed.
+- Real one-shot CLI: compact electric walking treadmill under 15,000 KGS, 61 JEV candidates, 15 confirmed plus 38 uncertain matches, 8 rejected; first 20 cards stayed within budget and the process exited normally.
+- Real same-session phone → one-som follow-up → different-router search succeeded through the hosted gateway with actual content deltas. The follow-up retained iPhone context, returned a valid empty pool and a bounded two-sentence reply; the new product did not leak phone cards. Accepted source fields remained unchanged.
+- Focused real JEV checks excluded an unidentified “Брали за 18000” offer and a current ruble/KGS conflict, retained explicitly under-desk controls, kept unsupported form factors uncertain, recognized an explicit device defect and rejected an exchange-only offer.
+- Real two-turn treadmill evaluation enforced 20,000 then 15,000 KGS while retaining conversation context and unchanged cross-turn source facts.
+- The hosted gateway deployment reached `SUCCESS`; health, Gemini, JEV and SSE forwarding passed. Wrong bearer returned 401 and forbidden routes 404. Both model routes also returned 200 from the production VPS.
+- The production network's Java HTTP client fetched Lalafo directly with status 200 and complete descriptions up to 2,354 characters.
+- Telegram accepted native Rich HTML with six source photos and standalone links; native desktop rendering was observed in the isolated QA topic. Production release must additionally exercise its actual pagination/refinement callbacks and topic ownership.
 
-# System packages
-environment.systemPackages = with pkgs; [ git clojure ];
-
-# Systemd service
-systemd.services.tapalakbot = {
-  description = "TapalakBot - Lalafo.kg Telegram AI Search Bot";
-  after = [ "network.target" "network-online.target" ];
-  wants = [ "network-online.target" ];
-  serviceConfig = {
-    Type = "simple";
-    User = "root";
-    WorkingDirectory = "/opt/tapalakbot-v2";
-    EnvironmentFile = "/etc/tapalakbot/secrets.env";
-    ExecStartPre = "${pkgs.bash}/bin/bash -c 'cd /opt/tapalakbot-v2 && git pull origin main 2>/dev/null || true'";
-    ExecStart = "${pkgs.clojure}/bin/clojure -M:bot";
-    Restart = "always";
-    RestartSec = 10;
-    StandardOutput = "journal";
-    StandardError = "journal";
-    SyslogIdentifier = "tapalakbot";
-  };
-  # CRITICAL: git must be in PATH for Clojure tools.deps git dep resolution
-  environment = {
-    PATH = lib.mkForce (lib.makeBinPath [
-      pkgs.coreutils pkgs.findutils pkgs.gnugrep pkgs.gnused
-      pkgs.git pkgs.clojure
-    ]);
-  };
-  wantedBy = [ "multi-user.target" ];
-};
-```
-
-⚠️ **Do not forget `environment.PATH`** — Without `pkgs.git` in PATH, Clojure crashes with `Cannot run program "git": No such file or directory` when resolving git deps.
-
-## Initial Setup (done)
-
-1. Connected to VPS, explored system
-2. Saved server credentials to `pass servers/clojurebayke`
-3. Configured NixOS with `clojure`, `git` packages + systemd tapalakbot service
-4. Cloned tapalakbot-v2 from GitHub to `/opt/tapalakbot-v2`
-5. Created `/etc/tapalakbot/secrets.env` (chmod 600) with API keys
-6. Fixed Telegram API routing in Russia: `networking.extraHosts`
-7. Added `pkgs.git` to systemd PATH for git dep resolution
-8. Built and deployed: `nixos-rebuild switch`
-
-## Redeploy
-
-```bash
-# Push code from local
-cd ~/Projects/tapalakbot-v2
-git push origin main
-
-# Restart on VPS (ExecStartPre does git pull automatically)
-ssh root@85.239.40.192 systemctl restart tapalakbot
-
-# Verify
-ssh root@85.239.40.192 journalctl -u tapalakbot -n 5 | grep healthcheck
-```
-
-If deps.edn changed (new deps, SHA update), clear classpath cache first:
-```bash
-ssh root@85.239.40.192 "rm -rf /opt/tapalakbot-v2/.cpcache && systemctl restart tapalakbot"
-```
-
-If NixOS config changed:
-```bash
-ssh root@85.239.40.192 "nixos-rebuild switch"
-```
-
-## Healthcheck
-
-On startup, the bot runs `tapalakbot.lalafo/smoke-test` — searches for "iphone" on Lalafo API:
-- `:healthcheck-pass :found N` — API reachable
-- `:healthcheck-fail` — API unreachable or blocked
-
-Monitor health: `curl http://localhost:8787/health`
-
-Check: `journalctl -u tapalakbot | grep healthcheck`
+Gateway release identity, exact Dokploy rollout identity and post-release consumer evidence are kept in the sanitized deployment/verification receipts. Historical invalid-key and missing-gateway failures are retained as outage baselines, not current blockers.

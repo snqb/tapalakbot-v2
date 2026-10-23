@@ -69,6 +69,10 @@
       ;; Comparison queries BEFORE search — specific language pattern
       ;; "что лучше iphone или samsung" should be :compare not :search
       (re-find comparison-re tl)      :compare
+      ;; A budget-only continuation must not clear the product it refines.
+      (and active-search?
+           (re-matches #"^(?:а\s+)?(?:до|от)\s+\d[\d\s.,]*(?:к|тыс|сом(?:а|ов)?|кгс)?(?:\s+(?:есть|можно|найдется|найдётся))?[?!.]*$" tl))
+      :refine
       (re-find purchase-intent-re tl) :search
 
       ;; Fast paths (greeting, reset, tracking, help, thanks)

@@ -21,6 +21,36 @@
             [clojure.tools.logging :as log]
             [clojure.java.io :as io]))
 
+(def ^:private docs-root
+  (.getCanonicalFile (io/file "docs")))
+
+(defn- static-file
+  [uri]
+  (let [relative-path (if (= uri "/") "index.html" (subs uri 1))
+        candidate (.getCanonicalFile (io/file docs-root relative-path))]
+    (when (.startsWith (.toPath candidate) (.toPath docs-root))
+      candidate)))
+
+(defn- monitor-admin-token []
+  (or (System/getenv "MONITOR_ADMIN_TOKEN")
+      (System/getProperty "tapalakbot.monitor-admin-token")))
+
+(defn- secure-equal?
+  [expected actual]
+  (and (string? expected)
+       (not (str/blank? expected))
+       (string? actual)
+       (java.security.MessageDigest/isEqual
+        (.getBytes expected "UTF-8")
+        (.getBytes actual "UTF-8"))))
+
+(defn- scan-authorized?
+  [request]
+  (secure-equal? (str "Bearer " (monitor-admin-token))
+                 (get-in request [:headers "authorization"])))
+
+(defonce ^:private scan-job (atom nil))
+
 ;; ════════════════════════════ HELPERS ════════════════════════════
 
 (defn- json-response
@@ -40,9 +70,7 @@
 ;; ════════════════════════════ ROUTES ════════════════════════════
 
 (defn- handle-website [request]
-  (let [uri (:uri request)
-        path (if (= uri "/") "/index.html" uri)
-        file (io/file "docs" (subs path 1))]
+  (if-let [file (static-file (:uri request))]
     (cond
       (.isDirectory file)
       (let [index (io/file file "index.html")]
@@ -50,9 +78,10 @@
           (-> (response/response (slurp index))
               (response/content-type "text/html"))
           (json-response 404 {:error "Not found"})))
-      
-      (.exists file)
-      (let [content-type (cond
+
+      (.isFile file)
+      (let [path (.getName file)
+            content-type (cond
                            (.endsWith path ".html") "text/html"
                            (.endsWith path ".css") "text/css"
                            (.endsWith path ".js") "application/javascript"
@@ -63,9 +92,10 @@
                            :else "application/octet-stream")]
         (-> (response/response (slurp file))
             (response/content-type content-type)))
-      
+
       :else
-      (json-response 404 {:error "Not found"}))))
+      (json-response 404 {:error "Not found"}))
+    (json-response 404 {:error "Not found"})))
 
 (defn- handle-health [_]
   (let [stats (store/get-stats)]
@@ -172,17 +202,33 @@
       :price-range (:price-range stats)
       :scanner {:running (scanner/scanner-running?)}})))
 
-(defn- handle-scan-now [_]
-  (future (scanner/scan-all!))
-  (json-response {:status "scan started"}))
+(defn- handle-scan-now [request]
+  (cond
+    (not (scan-authorized? request))
+    (json-response 403 {:error "Forbidden"})
+
+    (not (compare-and-set! scan-job nil :running))
+    (json-response 409 {:error "Scan already running"})
+
+    :else
+    (do
+      (future
+        (try
+          (scanner/scan-all!)
+          (catch Exception e
+            (log/error e :manual-scan-error))
+          (finally
+            (reset! scan-job nil))))
+      (json-response 202 {:status "scan started"}))))
 
 (defn- format-price [p]
   (if (and p (> p 0))
     (str (format "%,.0f" (double p)) " KGS")
     "?"))
 
-(defn- handle-start-digest [_]
+(defn- handle-start-digest
   "Formatted price digest for Telegram /start."
+  [_]
   (let [summary (store/get-category-summary)
         stats (store/get-stats)
         lines (vec
@@ -206,13 +252,13 @@
       :items (:items stats)
       :last-scan (:last-scan stats)})))
 
-(defn- handle-search [request]
+(defn- handle-search
   "Search items by query string."
+  [request]
   (let [query (get-in request [:params "q"])]
     (if (str/blank? query)
       (json-response 400 {:error "Missing ?q= parameter"})
-      (let [summary (store/get-category-summary)
-            ;; Search across all items by title match
+      (let [;; Search across all items by title match
             items (jdbc/execute! (store/get-datasource)
                                  ["SELECT i.*, c.name as category_name
                                    FROM monitor_items i
@@ -274,14 +320,18 @@
 (defonce ^:private server (atom nil))
 
 (defn start-server!
-  "Start the HTTP API server."
-  [& {:keys [port] :or {port 8787}}]
-  (when @server
-    (log/warn :server-already-running))
-  (let [s (jetty/run-jetty app {:port port :join? false})]
-    (reset! server s)
-    (log/info :api-server-started :port port)
-    s))
+  "Start the HTTP API server on loopback unless MONITOR_HOST explicitly overrides it."
+  [& {:keys [port host]
+      :or {port 8787
+           host (or (System/getenv "MONITOR_HOST") "127.0.0.1")}}]
+  (if-let [running @server]
+    (do
+      (log/warn :server-already-running)
+      running)
+    (let [s (jetty/run-jetty app {:port port :host host :join? false})]
+      (reset! server s)
+      (log/info :api-server-started :port port :host host)
+      s)))
 
 (defn stop-server!
   "Stop the HTTP API server."

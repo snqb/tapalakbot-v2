@@ -99,3 +99,9 @@
   (is (p/needs-llm? :compare))
   (is (not (p/needs-llm? :search)))
   (is (not (p/needs-llm? :greeting))))
+
+(deftest inflected-budget-only-followups-preserve-the-product
+  (let [session {"messages" [{"role" "user" "content" "iPhone 13"}
+                              {"role" "assistant" "content" "Подборка"}]}]
+    (doseq [text ["А до 1 сома есть?" "до 2 сома" "а от 5 сомов найдётся?"]]
+      (is (= :refine (p/classify text session)) text))))

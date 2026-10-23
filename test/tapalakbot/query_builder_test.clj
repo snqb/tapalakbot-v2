@@ -9,31 +9,17 @@
    
    Run: clojure -M test/tapalakbot/query_builder_test.clj"
   (:require [tapalakbot.query-builder :as qb]
-            [clojure.string :as str]
             [clojure.test :refer [deftest is]]))
 
 ;; ════════════════════════════ TEST UTILITIES ════════════════════════════
 
-(def ^:private results (atom {:passed 0 :failed 0 :errors []}))
-
-(defn- pass! [name]
-  (swap! results update :passed inc)
-  (println (str "  ✅ " name)))
-
-(defn- fail! [name expected actual]
-  (swap! results (fn [r] (-> r (update :failed inc) (update :errors conj {:name name :expected expected :actual actual}))))
-  (println (str "  ❌ " name " — expected " (pr-str expected) " got " (pr-str actual))))
-
-(defn- assert-eq
-  "Assert actual equals expected."
+(defmacro assert-eq
   [name actual expected]
-  (if (= actual expected)
-    (pass! name)
-    (fail! name expected actual)))
+  `(is (= ~expected ~actual) ~name))
 
 ;; ════════════════════════════ PRICE EXTRACTION TESTS ════════════════════════════
 
-(defn test-price-extraction []
+(deftest price-extraction-cases
   (println "\n📊 === Price Extraction Tests ===")
 
   ;; 🌡️ Air conditioner prices (the original bug)
@@ -153,44 +139,44 @@
 
 ;; ════════════════════════════ PLATFORM DETECTION TESTS ════════════════════════════
 
-(defn test-platform-detection []
+(deftest platform-detection-cases
   (println "\n🚗 === Platform Detection Tests ===")
 
-  ;; Cars → Mashina + Bazar
-  (assert-eq "hyundai solaris" (:platforms (qb/detect-platform "hyundai solaris")) [:mashina :bazar])
-  (assert-eq "toyota camry" (:platforms (qb/detect-platform "toyota camry")) [:mashina :bazar])
-  (assert-eq "BMW X5" (:platforms (qb/detect-platform "BMW X5")) [:mashina :bazar])
-  (assert-eq "mercedes" (:platforms (qb/detect-platform "mercedes")) [:mashina :bazar])
-  (assert-eq "kia rio" (:platforms (qb/detect-platform "kia rio")) [:mashina :bazar])
-  (assert-eq "ford focus" (:platforms (qb/detect-platform "ford focus")) [:mashina :bazar])
-  (assert-eq "tesla model 3" (:platforms (qb/detect-platform "tesla model 3")) [:mashina :bazar])
-  (assert-eq "mitsubishi pajero" (:platforms (qb/detect-platform "mitsubishi pajero")) [:mashina :bazar])
-  (assert-eq "авто новое" (:platforms (qb/detect-platform "авто новое")) [:mashina :bazar])
-  (assert-eq "машина" (:platforms (qb/detect-platform "машина")) [:mashina :bazar])
-  (assert-eq "nissan qashqai" (:platforms (qb/detect-platform "nissan qashqai")) [:mashina :bazar])
+  ;; Cars also route to Lalafo while retaining the auto category flag.
+  (assert-eq "hyundai solaris" (:platforms (qb/detect-platform "hyundai solaris")) [:lalafo])
+  (assert-eq "toyota camry" (:platforms (qb/detect-platform "toyota camry")) [:lalafo])
+  (assert-eq "BMW X5" (:platforms (qb/detect-platform "BMW X5")) [:lalafo])
+  (assert-eq "mercedes" (:platforms (qb/detect-platform "mercedes")) [:lalafo])
+  (assert-eq "kia rio" (:platforms (qb/detect-platform "kia rio")) [:lalafo])
+  (assert-eq "ford focus" (:platforms (qb/detect-platform "ford focus")) [:lalafo])
+  (assert-eq "tesla model 3" (:platforms (qb/detect-platform "tesla model 3")) [:lalafo])
+  (assert-eq "mitsubishi pajero" (:platforms (qb/detect-platform "mitsubishi pajero")) [:lalafo])
+  (assert-eq "авто новое" (:platforms (qb/detect-platform "авто новое")) [:lalafo])
+  (assert-eq "машина" (:platforms (qb/detect-platform "машина")) [:lalafo])
+  (assert-eq "nissan qashqai" (:platforms (qb/detect-platform "nissan qashqai")) [:lalafo])
 
   ;; Russian/CIS cars
-  (assert-eq "ваз 2107" (:platforms (qb/detect-platform "ваз 2107")) [:mashina :bazar])
-  (assert-eq "lada granta" (:platforms (qb/detect-platform "lada granta")) [:mashina :bazar])
-  (assert-eq "уаз патриот" (:platforms (qb/detect-platform "уаз патриот")) [:mashina :bazar])
+  (assert-eq "ваз 2107" (:platforms (qb/detect-platform "ваз 2107")) [:lalafo])
+  (assert-eq "lada granta" (:platforms (qb/detect-platform "lada granta")) [:lalafo])
+  (assert-eq "уаз патриот" (:platforms (qb/detect-platform "уаз патриот")) [:lalafo])
 
   ;; Chinese cars
-  (assert-eq "chery tiggo" (:platforms (qb/detect-platform "chery tiggo")) [:mashina :bazar])
-  (assert-eq "geely coolray" (:platforms (qb/detect-platform "geely coolray")) [:mashina :bazar])
-  (assert-eq "changan uni-t" (:platforms (qb/detect-platform "changan uni-t")) [:mashina :bazar])
+  (assert-eq "chery tiggo" (:platforms (qb/detect-platform "chery tiggo")) [:lalafo])
+  (assert-eq "geely coolray" (:platforms (qb/detect-platform "geely coolray")) [:lalafo])
+  (assert-eq "changan uni-t" (:platforms (qb/detect-platform "changan uni-t")) [:lalafo])
 
   ;; Electronics → Lalafo + Bazar
-  (assert-eq "iphone 13" (:platforms (qb/detect-platform "iphone 13")) [:lalafo :bazar])
-  (assert-eq "samsung s24" (:platforms (qb/detect-platform "samsung s24")) [:lalafo :bazar])
-  (assert-eq "macbook pro" (:platforms (qb/detect-platform "macbook pro")) [:lalafo :bazar])
-  (assert-eq "ipad air" (:platforms (qb/detect-platform "ipad air")) [:lalafo :bazar])
-  (assert-eq "ноутбук asus" (:platforms (qb/detect-platform "ноутбук asus")) [:lalafo :bazar])
-  (assert-eq "кондиционер lg" (:platforms (qb/detect-platform "кондиционер lg")) [:lalafo :bazar])
-  (assert-eq "телевизор samsung" (:platforms (qb/detect-platform "телевизор samsung")) [:lalafo :bazar])
-  (assert-eq "наушники airpods" (:platforms (qb/detect-platform "наушники airpods")) [:lalafo :bazar])
-  (assert-eq "playstation 5" (:platforms (qb/detect-platform "playstation 5")) [:lalafo :bazar])
-  (assert-eq "холодильник" (:platforms (qb/detect-platform "холодильник")) [:lalafo :bazar])
-  (assert-eq "пылесос" (:platforms (qb/detect-platform "пылесос")) [:lalafo :bazar])
+  (assert-eq "iphone 13" (:platforms (qb/detect-platform "iphone 13")) [:lalafo])
+  (assert-eq "samsung s24" (:platforms (qb/detect-platform "samsung s24")) [:lalafo])
+  (assert-eq "macbook pro" (:platforms (qb/detect-platform "macbook pro")) [:lalafo])
+  (assert-eq "ipad air" (:platforms (qb/detect-platform "ipad air")) [:lalafo])
+  (assert-eq "ноутбук asus" (:platforms (qb/detect-platform "ноутбук asus")) [:lalafo])
+  (assert-eq "кондиционер lg" (:platforms (qb/detect-platform "кондиционер lg")) [:lalafo])
+  (assert-eq "телевизор samsung" (:platforms (qb/detect-platform "телевизор samsung")) [:lalafo])
+  (assert-eq "наушники airpods" (:platforms (qb/detect-platform "наушники airpods")) [:lalafo])
+  (assert-eq "playstation 5" (:platforms (qb/detect-platform "playstation 5")) [:lalafo])
+  (assert-eq "холодильник" (:platforms (qb/detect-platform "холодильник")) [:lalafo])
+  (assert-eq "пылесос" (:platforms (qb/detect-platform "пылесос")) [:lalafo])
 
   ;; Real estate → Lalafo only
   (assert-eq "квартира" (:platforms (qb/detect-platform "квартира")) [:lalafo])
@@ -199,9 +185,9 @@
   (assert-eq "купить дом" (:platforms (qb/detect-platform "купить дом")) [:lalafo])
 
   ;; Default → Lalafo + Bazar
-  (assert-eq "книга" (:platforms (qb/detect-platform "книга")) [:lalafo :bazar])
-  (assert-eq "стул" (:platforms (qb/detect-platform "стул")) [:lalafo :bazar])
-  (assert-eq "собака" (:platforms (qb/detect-platform "собака")) [:lalafo :bazar])
+  (assert-eq "книга" (:platforms (qb/detect-platform "книга")) [:lalafo])
+  (assert-eq "стул" (:platforms (qb/detect-platform "стул")) [:lalafo])
+  (assert-eq "собака" (:platforms (qb/detect-platform "собака")) [:lalafo])
 
   ;; Bool flags
   (assert-eq "car is-auto?" (:is-auto? (qb/detect-platform "hyundai")) true)
@@ -211,10 +197,9 @@
 
 ;; ════════════════════════════ BAZAR CATEGORY TESTS ════════════════════════════
 
-
 ;; ════════════════════════════ QUERY STRIPPING TESTS ════════════════════════════
 
-(defn test-query-stripping []
+(deftest query-stripping-cases
   (println "\n🔍 === Query Stripping Tests ===")
   (assert-eq "strips price" (:query (qb/parse "кондиционер до 20к")) "кондиционер")
   (assert-eq "strips min-max" (:query (qb/parse "iphone от 15000 до 30000")) "iphone")
@@ -224,22 +209,22 @@
 
 ;; ════════════════════════════ FULL BUILD TESTS ════════════════════════════
 
-(defn test-full-build []
+(deftest full-build-cases
   (println "\n🏗 === Full Build Tests ===")
   (let [r1 (qb/parse "кондиционер до 20к")]
     (assert-eq "build: ac price" (:price-max r1) 20000)
-    (assert-eq "build: ac platforms" (:platforms r1) [:lalafo :bazar])
+    (assert-eq "build: ac platforms" (:platforms r1) [:lalafo])
     (assert-eq "build: ac query" (:query r1) "кондиционер"))
 
   (let [r2 (qb/parse "hyundai solaris 2020 до 800000")]
     (assert-eq "build: car price" (:price-max r2) 800000)
-    (assert-eq "build: car platforms" (:platforms r2) [:mashina :bazar])
+    (assert-eq "build: car platforms" (:platforms r2) [:lalafo])
     (assert-eq "build: car is-auto?" (:is-auto? r2) true))
 
   (let [r3 (qb/parse "iphone 13 pro max от 15000 до 35000")]
     (assert-eq "build: phone price-min" (:price-min r3) 15000)
     (assert-eq "build: phone price-max" (:price-max r3) 35000)
-    (assert-eq "build: phone platforms" (:platforms r3) [:lalafo :bazar])
+    (assert-eq "build: phone platforms" (:platforms r3) [:lalafo])
     (assert-eq "build: phone is-auto?" (:is-auto? r3) false))
 
   (let [r4 (qb/parse "аренда офиса в бишкеке")]
@@ -248,7 +233,7 @@
 
 ;; ════════════════════════════ PRICE EDGE CASES ════════════════════════════
 
-(defn test-price-edge-cases []
+(deftest price-edge-cases
   (println "\n🎯 === Price Edge Case Tests ===")
 
   ;; Multi-word prices
@@ -272,39 +257,6 @@
 
   ;; Large prices
   (assert-eq "до 1 500 000" (qb/extract-price "дом до 1 500 000") {:price-min nil :price-max 1500000}))
-
-;; ════════════════════════════ RUNNER ════════════════════════════
-
-(defn run-all []
-  (println "╔═══════════════════════════════════════════════════╗")
-  (println "║  🧪 QueryBuilder Comprehensive Test Suite          ║")
-  (println "╚═══════════════════════════════════════════════════╝")
-  
-  (reset! results {:passed 0 :failed 0 :errors []})
-  
-  (test-price-extraction)
-  (test-price-edge-cases)
-  (test-platform-detection)
-  (test-query-stripping)
-  (test-full-build)
-  
-  (let [{:keys [passed failed errors]} @results
-        total (+ passed failed)]
-    (println "\n" (apply str (repeat 55 "─")))
-    (println (str "📊 Results: " passed "/" total " passed"))
-    (when (pos? failed)
-      (println (str "❌ " failed " failed:"))
-      (doseq [e errors]
-        (println (str "  • " (:name e) " — expected " (pr-str (:expected e)) " got " (pr-str (:actual e))))))
-    (println)
-    (if (zero? failed)
-      (println "🎉 ALL TESTS PASSED!")
-      (println "⚠️  SOME TESTS FAILED"))
-    (println (apply str (repeat 55 "─")))
-    
-    {:passed passed :failed failed :total total :errors errors}))
-
-
 
 (deftest million-price-and-prefixes-are-normalized-in-kgs
   (is (= {:price-min nil :price-max 2000000}

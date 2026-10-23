@@ -5,15 +5,15 @@
    Architecture (lalafo-client-first):
    - At creation: LLM matches user query → category_id via search-categories
    - At check time: use category_id + user's original query (no LLM for search)
-   - LLM relevance filter on results only"
+   - Typed JEV selection over full source descriptions"
   (:require [tapalakbot.monitor.store :as store]
             [tapalakbot.lalafo :as lalafo]
-            [tapalakbot.query-builder :as qb]
+            [tapalakbot.search :as search]
+            [tapalakbot.jev :as jev]
             [tapalakbot.render :as render]
             [clj-harness.telegram :as tg]
             [clj-harness.llm :as llm]
             [cheshire.core :as json]
-            [clojure.edn :as edn]
             [clojure.string :as str]
             [clojure.tools.logging :as log])
   (:import [java.time LocalDateTime]
@@ -47,24 +47,11 @@
        (let [last-checked (LocalDateTime/parse last_checked_at sqlite-time)
              next-check (.plusHours last-checked (long (or notify_interval 24)))]
          (not (.isAfter next-check now)))
-       (catch Exception e
+       (catch Exception _
          (log/warn :track-invalid-last-checked :value last_checked_at)
          true)))))
 
 ;; ══════════════════════ CATEGORY MATCHING (called once at track creation) ══════════════════════
-
-(def ^:private category-match-prompt
-  "You are a category matcher for Lalafo.kg marketplace in Kyrgyzstan.
-Given a user's search intent, find the MOST SPECIFIC category_id from the category list.
-
-Rules:
-1. Pick the DEEPEST (most specific) leaf category
-2. For 'кофейня/кафе помещение' → Restaurant and cafe rentals (2067)
-3. For 'офис' → Office rentals (2068)
-4. For 'магазин' → Retail rentals (2066)
-5. For 'склад' → Warehouse and workshop rentals (2065)
-6. If unsure, return null for category_id and use the original query as text search
-7. Return ONLY a JSON object: {\"category_id\": number|null, \"category_name\": \"string\", \"text_query\": \"string\"}")
 
 (defn match-category
   "Match user query to Lalafo category_id. Called ONCE at track creation.
@@ -95,106 +82,42 @@ Rules:
       (log/warn :category-match-failed :track-title track-title :error (.getMessage e))
       {:category-id nil :category-name nil :text-query track-title})))
 
-;; ══════════════════════ RELEVANCE FILTER (LLM-based) ══════════════════════
-
-(def ^:private relevance-prompt
-  "You are a relevance filter for Lalafo.kg marketplace listings.
-Given a user's search intent and a list of items, return ONLY the indices (0-based) of items that are relevant.
-
-Rules:
-1. Include items that MATCH the user's intent — don't be overly strict
-2. For 'кофейня/кафе помещение' → include any commercial space suitable for food service
-3. For 'офис' → include any office space
-4. For 'магазин' → include any retail space
-5. For electronics/phones/cars → include matching products
-6. EXCLUDE only: completely unrelated items, services, repairs, accessories
-7. Return ONLY a JSON array of indices, e.g. [0, 2, 4]
-8. If 3+ items look relevant, return them all")
+;; ══════════════════════ SOURCE-BOUND JEV SELECTION ══════════════════════
 
 (defn filter-relevant
-  "Use LLM to filter items by relevance. Returns only relevant items.
-   Category-aware prompt that knows the search context."
+  "Use the same full-description JEV selector as interactive search.
+   Failure defers the subscription check; it never retires unseen candidates."
   [track-title items]
-  (if (empty? items)
-    []
-    (let [item-lines (mapv (fn [i item]
-                             (str i ". " (get item "title" "") " | " (get item "price" "нет цены")))
-                           (range) items)
-          prompt (str "User monitors Lalafo.kg for: " track-title "\n"
-                      "\nItems found:\n" (str/join "\n" item-lines) "\n\n"
-                      "Rules:\n"
-                      "- INCLUDE: items that match the user's search intent\n"
-                      "- EXCLUDE: services, repairs, job postings, vehicle rentals, furniture sales\n"
-                      "- EXCLUDE: residential (квартиры, комнаты) unless user specifically wants them\n"
-                      "- Return JSON array of indices of relevant items")
-          messages [{:role "user" :content prompt}]]
-      (try
-        (let [resp (llm/llm :gemini-3.5-flash messages [] :provider :openrouter :max-tokens 200)
-              content (get-in resp ["choices" 0 "message" "content"])
-              json-str (or (re-find #"(?s)\[.*\]" content) "[]")
-              indices (try (json/parse-string json-str)
-                           (catch Exception _ []))
-              valid-indices (filterv #(and (integer? %) (>= % 0) (< % (count items))) indices)
-              relevant (mapv #(nth items %) valid-indices)]
-          (log/info :track-relevance :track track-title :total (count items) :relevant (count relevant))
-          relevant)
-        (catch Exception e
-          (log/warn :track-relevance-failed :error (.getMessage e))
-          nil)))))
+  (try
+    (let [by-id (into {} (map (fn [item] [(str (get item "id")) item])) items)
+          result (jev/select-cards track-title (mapv search/lalafo-item->card items) {})]
+      (mapv #(get by-id (str (:id %))) (:cards result)))
+    (catch Exception e
+      (log/warn :track-relevance-failed :error (.getMessage e))
+      nil)))
 
 ;; ══════════════════════ SEARCH (lalafo-client-first) ══════════════════════
 
 (defn search-track
-  "Search Lalafo using category_id + text query. No LLM calls.
-   This is the lalafo-client-first approach."
-  [{:keys [queries price_min price_max city_id category_id]} text-query]
-  (let [client (#'lalafo/build-client)
-        all-items (atom {})]
-    (log/info :track-search-start :category-id category_id :text-query text-query)
-    ;; Search with category_id + text query
-    (try
-      (let [[found items pages] (#'lalafo/search-all-pages
-                                 client text-query
-                                 :category-id category_id
-                                 :city-id (or city_id 103184)
-                                 :price-min price_min
-                                 :price-max price_max
-                                 :max-pages max-pages-per-query
-                                 :per-page per-page)]
-        (log/info :track-search :query text-query :category-id category_id :found found :items (count items))
-        (doseq [item items]
-          (let [item-id (get item "id")
-                price (get item "price")]
-            (when (or (nil? price) (> price 50))
-              (swap! all-items assoc item-id item)))))
-      (catch Exception e
-        (log/warn :track-search-error :query text-query :error (.getMessage e))))
-    (log/info :track-search-result :items (count @all-items))
-    (vals @all-items)))
+  "Collect full source listings. Provider failure defers the check."
+  [{:keys [price_min price_max city_id category_id]} text-query]
+  (let [[found items pages] (#'lalafo/search-all-pages
+                            (#'lalafo/build-client) text-query
+                            :category-id category_id :city-id city_id
+                            :price-min price_min :price-max price_max
+                            :max-pages max-pages-per-query :per-page per-page)]
+    (log/info :track-search :query text-query :category-id category_id
+              :found found :items (count items) :pages pages)
+    (vec items)))
 
 ;; ══════════════════════ NOTIFICATION ══════════════════════
-
-(defn- format-price [p]
-  (if (and p (> p 0))
-    (str (format "%,.0f" (double p)) " сом")
-    "цена неизвестна"))
 
 (defn- format-notification
   "Format a notification message for relevant items using render module."
   [track-title items]
-  (let [cards (mapv (fn [item]
-                      (let [raw-url (or (get item "url") "")
-                            url (if (str/starts-with? raw-url "http")
-                                  raw-url
-                                  (str "https://lalafo.kg" raw-url))]
-                        {:title    (get item "title" "")
-                         :price    (get item "price")
-                         :currency "KGS"
-                         :url      url
-                         :platform :lalafo}))
-                    items)
+  (let [cards (mapv search/lalafo-item->card items)
         reply {:mode :shortlist
-               :intro (str "🔔 <b>«" track-title "»</b> — " (count items) " новых")
+               :intro (str "🔔 <b>«" (render/escape-html track-title) "»</b> — " (count items) " новых")
                :cards cards
                :cta nil
                :assumptions []}]
@@ -217,13 +140,13 @@ Rules:
           new-items (filterv #(not (store/seen-item? id (get % "id"))) items)
           in-budget (if (or price_min price_max)
                       (filterv (fn [item]
-                                 (let [p (get item "price")]
-                                   (and p
-                                        (or (nil? price_min) (>= p price_min))
+                                 (when-let [p (search/card-price-kgs
+                                               (search/lalafo-item->card item))]
+                                   (and (or (nil? price_min) (>= p price_min))
                                         (or (nil? price_max) (<= p price_max)))))
                                new-items)
                       new-items)
-          clean-items (qb/filter-accessories in-budget title)
+          clean-items in-budget
           candidates (vec (take (* 3 max-notifications-per-check) clean-items))]
       (log/info :track-check-detail :track-id id :total-items (count items)
                 :new-items (count new-items) :in-budget (count in-budget))

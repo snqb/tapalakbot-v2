@@ -32,15 +32,14 @@
 ;; ════════════════════ PRICE FORMATTING ════════════════════
 
 (defn format-price
-  "Format long price with space-separated thousands.
-   25000 → \"25 000\""
+  "Format source amounts without rounding away fractional units."
   [price]
   (when price
-    (let [p (long price)]
-      (-> (str p)
-          (str/reverse)
-          (str/replace #"(\d{3})(?=\d)" "$1 ")
-          (str/reverse)))))
+    (let [[whole fraction] (str/split (.toPlainString (bigdec price)) #"\." 2)
+          grouped (-> whole str/reverse
+                      (str/replace #"(\d{3})(?=\d)" "$1 ")
+                      str/reverse)]
+      (str grouped (when fraction (str "." fraction))))))
 
 ;; ════════════════════ HTML ESCAPING ════════════════════
 
@@ -52,6 +51,14 @@
       (str/replace "<" "&lt;")
       (str/replace ">" "&gt;")
       (str/replace "\"" "&quot;")))
+
+(defn format-money
+  "Render a source amount and currency; unknown currency never becomes KGS."
+  [price currency]
+  (if (some? price)
+    (str (format-price price) " "
+         (escape-html (if (str/blank? currency) "валюта не указана" currency)))
+    "Цена не указана"))
 
 (defn strip-markdown
   "Convert agent Markdown to Telegram-safe HTML through the shared harness
@@ -72,11 +79,10 @@
    📋 Отличное состояние
    <i>Description snippet…</i>
    <a href=\"url\">Открыть на lalafo →</a>"
-  [{:keys [title price currency url platform condition year mileage city tier desc]
-    :or {currency "сом"}}]
+  [{:keys [title price currency url platform condition year mileage city tier desc]}]
   (let [emoji    (tier-emoji tier)
         price-s  (when price
-                   (str "<b>" (format-price price) " " (escape-html currency) "</b>"))
+                   (str "<b>" (format-money price currency) "</b>"))
         ;; Detail chips: location, year, mileage, condition
         chips    (cond-> []
                    city     (conj (str "📍 " (escape-html city)))
@@ -94,7 +100,7 @@
          (when chip-str (str chip-str "\n"))
          (when desc-snip (str desc-snip "\n"))
          (when (and url (not (str/blank? url)))
-           (str "<a href=\"" url "\">Открыть"
+           (str "<a href=\"" (escape-html url) "\">Открыть"
                 (when platform (str " на " (escape-html (name platform))))
                 " →</a>")))))
 
@@ -140,59 +146,7 @@
   [platform]
   (case platform
     :lalafo "Lalafo.kg"
-    :mashina "Mashina.kg"
     nil))
-
-(defn- result-link
-  [{:keys [url platform]}]
-  (when-not (str/blank? url)
-    (let [label (platform-label platform)]
-      (str "<a href=\"" (escape-html url) "\">"
-           (if label (str "Открыть на " label) "Открыть объявление")
-           " →</a>"))))
-
-(defn- result-price
-  [{:keys [price currency]}]
-  (if price
-    (str (format-price price) " " (escape-html (or currency "сом")))
-    "Цена не указана"))
-
-(defn- result-detail
-  [{:keys [year mileage engine gearbox city condition]}]
-  (->> [(when year (str year " г."))
-        (when mileage (str (format-price mileage) " км"))
-        (when engine (str (escape-html engine) " л"))
-        (when gearbox (escape-html (truncate-text gearbox 24)))
-        (when city (str "📍 " (escape-html city)))
-        (when condition (escape-html (truncate-text condition 36)))]
-       (remove nil?)
-       (str/join " · ")))
-
-(defn- result-tier-prefix
-  [card]
-  (when (:tier card)
-    (str (tier-emoji (:tier card)) " ")))
-
-(defn- render-featured-result
-  [index card]
-  (let [detail (result-detail card)
-        link (result-link card)]
-    (str "<h3>" index ". " (result-tier-prefix card)
-         (result-title card) "</h3>"
-         "<p><mark>" (result-price card) "</mark>"
-         (when-not (str/blank? detail) (str "<br/>" detail))
-         "</p>"
-         (when link (str "<p>" link "</p>")))))
-
-(defn- render-hidden-result
-  [card]
-  (let [detail (result-detail card)
-        link (result-link card)]
-    (str "<li>" (result-tier-prefix card) "<b>" (result-title card) "</b>"
-         " — <mark>" (result-price card) "</mark>"
-         (when-not (str/blank? detail) (str "<br/>" detail))
-         (when link (str "<br/>" link))
-         "</li>")))
 
 (defn- http-url?
   [value]
@@ -200,19 +154,103 @@
        (or (str/starts-with? value "https://")
            (str/starts-with? value "http://"))))
 
+(defn- result-link
+  [{:keys [url platform]}]
+  (when (and (http-url? url) (not (str/blank? url)))
+    (let [label (platform-label platform)]
+      (str "<a href=\"" (escape-html url) "\">"
+           (if label (str "Открыть на " label) "Открыть объявление")
+           " →</a>"))))
+
+(defn- result-price
+  [{:keys [price currency]}]
+  (format-money price currency))
+
+(defn- result-detail
+  [{:keys [year mileage engine gearbox city condition params]}]
+  (let [known-spec? (or year mileage engine gearbox (seq params))
+        detail (->> [(when year (str year " г."))
+                     (when mileage (str (format-price mileage) " км"))
+                     (when engine (str (escape-html engine) " л"))
+                     (when gearbox (escape-html (truncate-text gearbox 24)))
+                     (str "📍 " (escape-html (or city "Город не указан")))
+                     (str "📋 " (escape-html (or condition "Состояние не указано")))
+                     (when-not known-spec? "ℹ️ Характеристики не указаны")]
+                    (remove nil?))]
+    (str/join " · " detail)))
+
+(defn- decision-fit-label
+  [fit]
+  (cond
+    (contains? #{:direct :exact :strong :match :good :relevant} fit) "Ближе к запросу"
+    (contains? #{:possible :partial :uncertain :maybe :weak} fit) "Стоит проверить"
+    :else "Стоит проверить"))
+
+(defn- decision-condition-label
+  [condition]
+  (cond
+    (contains? #{:new :новое} condition) "Новое"
+    (contains? #{:used :б/у :бу} condition) "Б/у"
+    (contains? #{:damaged :поврежденное} condition) "Поврежденное"
+    (contains? #{:refurbished :восстановленное} condition) "Восстановленное"
+    (contains? #{:unknown :неизвестно} condition) "Состояние не указано"
+    condition (str condition)))
+
+(defn- decision-block
+  [{:keys [decision]}]
+  (let [decision (or decision {})
+        fit (decision-fit-label (:fit decision))
+        condition (decision-condition-label (:condition decision))
+        reasons (->> (:reasons decision) (remove str/blank?) (map escape-html))
+        warnings (->> (concat (:warnings decision)
+                              (when-let [risk (:risk decision)] [risk]))
+                      (remove str/blank?)
+                      (map escape-html))]
+    (str "<p><b>" fit "</b>"
+         (when condition (str " · " condition))
+         (when (seq reasons)
+           (str "<br/>" (str/join " · " reasons)))
+         (when (seq warnings)
+           (str "<br/>⚠️ " (str/join " · " warnings)))
+         "</p>")))
+
+(defn- render-featured-result
+  [index card]
+  (let [detail (result-detail card)
+        link (result-link card)]
+    (str "<h3>" (or (:result-index card) index) ". "
+         (result-title card) "</h3>"
+         "<p><mark>" (result-price card) "</mark><br/>" detail "</p>"
+         (decision-block card)
+         (when link (str "<p>" link "</p>")))))
+
+(defn- render-hidden-result
+  [index card]
+  (let [detail (result-detail card)
+        link (result-link card)]
+    (str "<li><b>" (or (:result-index card) index) ". "
+         (result-title card) "</b>"
+         " — <mark>" (result-price card) "</mark><br/>" detail
+         (decision-block card)
+         (when link (str "<br/>" link))
+         "</li>")))
+
 (defn- render-image-slideshow
-  [cards]
-  (let [images (->> cards
-                    (keep :image)
-                    (filter http-url?)
-                    distinct
-                    (take inline-image-limit))]
-    (when (seq images)
-      (str "<tg-slideshow>"
-           (apply str
-                  (map #(str "<img src=\"" (escape-html %) "\"/>") images))
-           "<figcaption>Фото вариантов 1–" (count images) "</figcaption>"
-           "</tg-slideshow>"))))
+  [cards include-images?]
+  (when include-images?
+    (let [images (->> cards
+                      (map-indexed (fn [index card]
+                                     {:index (or (:result-index card) (inc index))
+                                      :url (or (:image card) (first (:images card)))}))
+                      (filter #(http-url? (:url %)))
+                      (take inline-image-limit))]
+      (when (seq images)
+        (str "<tg-slideshow>"
+             (apply str
+                    (map #(str "<img src=\"" (escape-html (:url %)) "\"/>") images))
+             "<figcaption>Фото объявлений: "
+             (str/join ", " (map :index images)) "</figcaption>"
+             "</tg-slideshow>")))))
 
 (defn- russian-variant-word
   [n]
@@ -231,29 +269,59 @@
       (str "<footer>" (if (= 1 (count sources)) "Источник: " "Источники: ")
            (str/join " · " sources) "</footer>"))))
 
+(defn selection-summary-text
+  "Describe only source counts and completed selection decisions."
+  [{:keys [selection collection]}]
+  (let [parts (cond-> []
+                (number? (:raw collection))
+                (conj (str "Собрано " (:raw collection)))
+                (number? (:input-count selection))
+                (conj (str "проверено " (:input-count selection)))
+                (number? (:accepted-count selection))
+                (conj (str (:accepted-count selection) " ближе к запросу"))
+                (number? (:rejected-count selection))
+                (conj (str (:rejected-count selection) " отклонено"))
+                (pos? (or (:uncertain-count selection) 0))
+                (conj (str (:uncertain-count selection) " требуют проверки"))
+                (:truncated collection)
+                (conj "сбор ограничен")
+                (pos? (or (:failed-queries collection) 0))
+                (conj "часть запросов к площадке не выполнена"))]
+    (when (seq parts) (str (str/join " · " parts) "."))))
+
 (defn render-results-rich
-  "Render dense, Android-safe Telegram Rich HTML.
-   Up to six photos share one slideshow, six linked cards stay visible, and
-   all remaining cards stay actionable inside collapsed details."
-  [cards]
-  (let [cards (vec cards)
-        visible (take visible-result-limit cards)
-        hidden (drop visible-result-limit cards)]
-    (when (seq cards)
-      (str "<h2>Варианты (" (count cards) ")</h2>"
-           (render-image-slideshow visible)
-           (str/join "<hr/>"
-                     (map-indexed
-                      (fn [index card]
-                        (render-featured-result (inc index) card))
-                      visible))
-           (when (seq hidden)
-             (let [hidden-count (count hidden)]
-               (str "<details><summary>Ещё " hidden-count " "
-                    (russian-variant-word hidden-count) "</summary>"
-                    "<ul>" (apply str (map render-hidden-result hidden)) "</ul>"
-                    "</details>")))
-           (render-source-footer cards)))))
+  "Render deterministic Telegram Rich HTML recommendation cards.
+   The optional opts map carries :selection/:collection facts and
+   :include-images? for a text-only retry."
+  ([cards] (render-results-rich cards {}))
+  ([cards opts]
+   (let [cards (vec cards)
+         visible (take visible-result-limit cards)
+         hidden (drop visible-result-limit cards)
+         include-images? (not= false (:include-images? opts))]
+     (when (or (seq cards) (:selection opts))
+       (str (if (seq cards)
+              (str "<h2>Варианты (" (count cards) ")</h2>")
+              "<h2>Подходящих вариантов не подтверждено</h2>")
+            (when-let [summary (selection-summary-text opts)]
+              (str "<p><i>" (escape-html summary) "</i></p>"))
+            (render-image-slideshow cards include-images?)
+            (str/join "<hr/>"
+                      (map-indexed
+                       (fn [index card]
+                         (render-featured-result (inc index) card))
+                       visible))
+            (when (seq hidden)
+              (let [hidden-count (count hidden)]
+                (str "<details><summary>Ещё " hidden-count " "
+                     (russian-variant-word hidden-count) "</summary>"
+                     "<ul>"
+                     (apply str (map-indexed
+                                 (fn [index card]
+                                   (render-hidden-result (+ visible-result-limit (inc index)) card))
+                                 hidden))
+                     "</ul></details>")))
+            (render-source-footer cards))))))
 
 ;; ════════════════════ FULL REPLY RENDERING ════════════════════
 

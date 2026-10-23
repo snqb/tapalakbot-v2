@@ -1,5 +1,4 @@
 {:openrouter-key #or [#env OPENROUTER_API_KEY ""]
- :riskbypass-key #or [#env RISKBYPASS_API_KEY ""]
  :models {;; Latest models (June 2026)
           :kimi-k2.7     "moonshotai/kimi-k2.7-code"
           :glm-5.2       "z-ai/glm-5.2"
@@ -16,8 +15,12 @@
           :kimi-k2       "moonshotai/kimi-k2"
           :gemini-flash  "google/gemini-2.5-flash"
           :gpt-4o        "openai/gpt-4o"}
+ :jev {:model "typesafe/jev-1.13"
+       :endpoint #env JEV_BASE_URL
+       :batch-size 20
+       :concurrency 3
+       :timeout-ms 30000}
  :agent {:max-turns 8
          :max-tool-output 12000
          :compact-threshold 40000
-         :keep-recent 8}
- :tapalakbot {:cli-path "./lalafo_cli.py"}}
+         :keep-recent 8}}

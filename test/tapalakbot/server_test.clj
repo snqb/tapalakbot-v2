@@ -36,3 +36,7 @@
           (is (= -100123 (:chat-id @received)))))
       (finally
         (System/clearProperty "tapalakbot.webhook-secret")))))
+
+(deftest readiness-is-separate-from-liveness
+  (is (= 200 (:status (app {:uri "/health" :request-method :get}))))
+  (is (= 503 (:status (app {:uri "/ready" :request-method :get})))))

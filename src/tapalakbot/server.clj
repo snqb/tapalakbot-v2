@@ -17,6 +17,9 @@
 
 ;; ══════════════════════ MONITOR ══════════════════════
 
+(defonce ^:private readiness
+  (atom {:bot false :transport false :marketplace nil}))
+
 (defn- ensure-monitor!
   "Start the monitor service if not already running."
   []
@@ -74,19 +77,29 @@
        :body "{\"ok\":true}"})))
 
 (defn- health-handler
-  "Simple health check endpoint."
+  "Process liveness endpoint."
   [_request]
   {:status 200
    :headers {"Content-Type" "application/json"}
    :body (json/generate-string {:status "ok" :bot "tapalakbot-v2"})})
 
+(defn- readiness-handler
+  "Dependency readiness endpoint for the container orchestrator."
+  [_request]
+  (let [state @readiness
+        ready? (and (:bot state) (:transport state))]
+    {:status (if ready? 200 503)
+     :headers {"Content-Type" "application/json"}
+     :body (json/generate-string
+            (assoc state :status (if ready? "ready" "starting")))}))
+
 (defn- app
-  "Ring app — routes webhook and health endpoints."
+  "Ring app — routes webhook, liveness, and readiness endpoints."
   [request]
   (case (:uri request)
     "/webhook" (webhook-handler request)
     "/health"  (health-handler request)
-    ;; 404 for everything else
+    "/ready"   (readiness-handler request)
     {:status 404
      :headers {"Content-Type" "application/json"}
      :body "{\"error\":\"not found\"}"}))
@@ -125,13 +138,14 @@
 
 ;; ══════════════════════ ENTRY POINT ══════════════════════
 
-(defn -main [& args]
+(defn -main [& _args]
   (let [token          (or (System/getenv "BOT_TOKEN") "")
         webhook-url    (System/getenv "WEBHOOK_URL")
         webhook-secret (webhook-secret)
         port            (or (some-> (System/getenv "PORT") parse-long)
                             (some-> (System/getenv "WEBHOOK_PORT") parse-long)
                             8080)]
+    (reset! readiness {:bot false :transport false :marketplace nil})
 
     ;; mulog observability — structured event logging
     (u/set-global-context!
@@ -148,6 +162,7 @@
     (log/info :tapalakbot-start)
     @t/tapalakbot
     (log/info :bot-ready)
+    (swap! readiness assoc :bot true)
 
     ;; Auto-start monitor if not running
     (ensure-monitor!)
@@ -163,6 +178,7 @@
 
     ;; Healthcheck — smoke test Lalafo API
     (let [hc (lalafo/smoke-test)]
+      (swap! readiness assoc :marketplace (boolean (:ok? hc)))
       (if (:ok? hc)
         (log/info :healthcheck-pass :found (:found hc))
         (log/warn :healthcheck-fail (or (:error hc) "unknown"))))
@@ -200,7 +216,8 @@
           (do
             (delete-webhook! token)
             (.start (Thread. ^Runnable (fn [] (bot/start-polling)) "tapalakbot-poller"))
-            (log/info :polling-mode)))))
+            (log/info :polling-mode)))
+        (swap! readiness assoc :transport true)))
 
     ;; Interactive mode fallback
     (println "TapalakBot v2 running. Press Ctrl+C to stop.")

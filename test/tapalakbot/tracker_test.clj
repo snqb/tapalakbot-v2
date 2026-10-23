@@ -1,13 +1,10 @@
 (ns tapalakbot.tracker-test
   (:require [clj-harness.telegram :as tg]
-            [clojure.test :refer [deftest is testing]]
+            [clojure.test :refer [deftest is]]
             [tapalakbot.monitor.store :as store]
             [tapalakbot.monitor.tracker :as tracker]
-            [tapalakbot.query-builder :as qb])
-  (:import [java.time LocalDateTime]
-           [java.time.format DateTimeFormatter]))
-
-(def sqlite-time (DateTimeFormatter/ofPattern "yyyy-MM-dd HH:mm:ss"))
+            [tapalakbot.listing-filter :as listing-filter])
+  (:import [java.time LocalDateTime]))
 
 (deftest subscription-interval-controls-due-time
   (let [due? (ns-resolve 'tapalakbot.monitor.tracker 'track-due?)
@@ -27,7 +24,7 @@
   (let [seen (atom [])]
     (with-redefs [tracker/search-track (fn [& _] [test-item])
                   store/seen-item? (constantly false)
-                  qb/filter-accessories (fn [items _] items)
+                  listing-filter/filter-accessories (fn [items _] items)
                   tracker/filter-relevant (fn [_ items] (vec items))
                   store/mark-item-seen! (fn [_ item-id] (swap! seen conj item-id))
                   store/mark-track-checked! (constantly nil)
@@ -42,7 +39,7 @@
         increments (atom 0)]
     (with-redefs [tracker/search-track (fn [& _] [test-item])
                   store/seen-item? (constantly false)
-                  qb/filter-accessories (fn [items _] items)
+                  listing-filter/filter-accessories (fn [items _] items)
                   tracker/filter-relevant (fn [_ items] (vec items))
                   store/mark-item-seen! (fn [_ item-id] (swap! seen conj item-id))
                   store/mark-track-checked! (constantly nil)
@@ -52,3 +49,23 @@
         (is (true? (:notified? result)))
         (is (= [99] @seen))
         (is (= 1 @increments))))))
+
+(deftest failed-selection-defers-check-and-keeps-candidates-unseen
+  (let [seen (atom [])
+        checked (atom [])]
+    (with-redefs [tracker/search-track (fn [& _] [test-item])
+                  store/seen-item? (constantly false)
+                  tracker/filter-relevant (fn [& _] nil)
+                  store/mark-item-seen! (fn [& args] (swap! seen conj args))
+                  store/mark-track-checked! (fn [& args] (swap! checked conj args))
+                  tg/send-message (fn [& _] (throw (ex-info "Must not notify" {})))]
+      (is (false? (:notified? (tracker/check-track test-track))))
+      (is (= [] @seen))
+      (is (= [] @checked)))))
+
+(deftest provider-failure-does-not-retire-the-check-as-empty
+  (let [checked (atom [])]
+    (with-redefs [tracker/search-track (fn [& _] (throw (ex-info "Provider unavailable" {})))
+                  store/mark-track-checked! (fn [& args] (swap! checked conj args))]
+      (is (false? (:notified? (tracker/check-track test-track))))
+      (is (= [] @checked)))))
