@@ -191,3 +191,12 @@
     (is (= 1 (count (re-seq #"Б/у" html))))
     (is (empty? (re-seq #"⚠️" html)))
     (is (str/includes? html "memory: 128 GB"))))
+
+(deftest explicit-defect-stays-visible-despite-a-generic-source-condition
+  (let [html (r/render-results-rich
+              [{:title "Телефон" :price 1000 :currency "KGS"
+                :condition "new"
+                :url "https://lalafo.kg/ad/defect"
+                :decision {:fit :direct :condition :damaged :warnings []}}])]
+    (is (str/includes? html "⚠️"))
+    (is (str/includes? html "https://lalafo.kg/ad/defect"))))
