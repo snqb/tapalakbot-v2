@@ -7,10 +7,11 @@
 - **clj-harness** — middleware stack for synchronous handler: `handle-message` goes through core-agent and clj-harness wrappers; streaming uses `stream/stream-agent` directly. `:nudges` requires tools before final answers. `:effects? true` uses effect-driven agent loop.
 - **Observability** — mulog structured events + observe ring buffer. Every LLM call emits `:llm-call` with model/latency/tokens. Every turn emits `::agent.turn.start/end`. Trace IDs correlate full request trajectories. See Observability section.
 - **Simulation** — `clojure -M:simulation` runs 20 realistic queries through the real pipeline, capturing every event (LLM calls, tool calls, draft chunks, status phases) to JSONL. See Simulation section.
-- **Monitor in same JVM** — `server.clj` starts the monitor on its own thread and immediately continues to Telegram polling; never wait for the initial market scan on the bot startup path. Notifications use the same `render/render-reply`.
-- **Telegram rendering split** — agent analysis is native Rich Markdown; deterministic listings are a separate Rich HTML document. Pages contain up to 20 cards with source-owned prices/currencies/URLs and typed decision reasons. `result_delivery.clj` owns opaque price refinements and media → text-only Rich → complete legacy fallbacks. Links stay outside tables for Android. Never send duplicate media groups.
+- **Monitor in same JVM** — `server.clj` starts the monitor on its own thread and immediately continues to Telegram transport startup; never wait for the initial market scan. Notifications use the same `render/render-reply`.
+- **Telegram rendering split** — agent analysis is a short native Rich Markdown paragraph; listings are a separate Rich HTML document with controls on the cards. Pages contain up to 20 cards, six expanded with native photos, the rest collapsed. Cards show source facts, one condition and material warnings, not stock JEV explanations. Collection/selection counters are inside “Как отбирали”. Links stay outside tables for Android. Never send duplicate media groups.
 - **Conversation isolation** — Telegram updates are keyed by chat/user/thread. A bounded executor processes one update per conversation and coalesces a busy conversation to its newest pending update.
 - **Lalafo only** — all categories, including vehicles, use Lalafo. The conversation agent supplies full `user_want` and up to three keyword variants; collection preserves complete descriptions and source parameters, caps the candidate pool at 200, applies deterministic KGS budgets, then calls JEV.
+- **Cached result ordering** — `result_order.clj` defaults to direct matches first, then ascending authoritative KGS price within each fit group. Price-desc and JEV relevance are view changes over the full cached pool, never fresh search/LLM calls. Unknown comparable prices sort last in price modes. Every new sort gets a new owned cursor, resets result indexes/page offset, invalidates old controls and preserves the original cache expiry; exhausted cursors remain sortable. Numeric drill-down follows the latest ordered view.
 
 ## Architecture
 
@@ -106,7 +107,7 @@ The container exposes plain HTTP on `PORT` (default 8080); Dokploy terminates TL
 ## Testing
 
 ```bash
-# Full deterministic suite: 105 tests / 433 assertions on 2026-10-24
+# Full deterministic suite: 118 tests / 461 assertions on 2026-10-24
 clojure -M:test
 ```
 

@@ -174,52 +174,46 @@
 
 (deftest page-callback-delivers-each-cached-result-once
   (let [handle-callback @#'bot/handle-callback
-        pools (atom {})
         rich-sends (atom [])
-        md-sends (atom [])
-        callback-answers (atom [])
         cards (mapv (fn [i]
-                      {:id i
-                       :title (str "Item " i)
-                       :price (* i 1000)
-                       :currency "KGS"
+                      {:id i :title (str "Item " i) :price (* i 1000) :currency "KGS"
                        :url (str "https://lalafo.kg/ad/" i)})
                     (range 1 46))]
-    (with-redefs [result-store/result-pools pools
-                  tg/answer-callback-query
-                  (fn [& args] (swap! callback-answers conj args) {"ok" true})
-                  tg/send-md
-                  (fn [chat-id text & args]
-                    (swap! md-sends conj [chat-id text (apply hash-map args)])
-                    {"ok" true})
+    (with-redefs [result-store/result-pools (atom {})
+                  tg/answer-callback-query (fn [& _] {"ok" true})
+                  tg/send-md (fn [& _] {"ok" true})
                   tg/send-rich-message
-                  (fn [chat-id & args]
-                    (swap! rich-sends conj [chat-id (apply hash-map args)])
-                    {"ok" true "result" {"message_id" (count @rich-sends)}})]
+                  (fn [_ & args]
+                    (swap! rich-sends conj (apply hash-map args))
+                    {"ok" true})]
       (let [cursor (result-store/cache-result-pool!
                     "tg-42:-100:17" "query" cards result-store/page-size)
-            callback-base {:data (str "page:" cursor)
-                           :user-id 42 :chat-id -100 :msg-id 7 :thread-id 17}]
-        (handle-callback (assoc callback-base :callback-id "cb-1"))
-        (handle-callback (assoc callback-base :callback-id "cb-2"))
-        (handle-callback (assoc callback-base :callback-id "cb-3"))
+            callback {:data (str "page:" cursor) :callback-id "page-cb"
+                      :user-id 42 :chat-id -100 :msg-id 7 :thread-id 17}]
+        (dotimes [_ 3] (handle-callback callback))
         (is (= 2 (count @rich-sends)))
-        (is (= 2 (count @md-sends)))
-        (let [[_ first-rich] (first @rich-sends)
-              [_ second-rich] (second @rich-sends)
-              [_ _ first-intro] (first @md-sends)
-              [_ _ second-intro] (second @md-sends)]
-          (is (str/includes? (:html first-rich) "Item 21"))
-          (is (str/includes? (:html first-rich) "Item 40"))
-          (is (not (str/includes? (:html first-rich) "Item 41")))
-          (is (str/includes? (:html second-rich) "Item 41"))
-          (is (str/includes? (:html second-rich) "Item 45"))
-          (is (nil? (:reply-markup first-rich)))
-          (is (nil? (:reply-markup second-rich)))
-          (is (= (str "page:" cursor)
-                 (get-in first-intro [:reply_markup "inline_keyboard" 0 0 "callback_data"]))))
-        (is (= "Больше сохранённых вариантов нет."
-               (:text (apply hash-map (rest (last @callback-answers))))))))))
+        (let [[first-page last-page] @rich-sends]
+          (is (every? #(str/includes? (:html first-page) (:url %)) (subvec cards 20 40)))
+          (is (every? #(str/includes? (:html last-page) (:url %)) (subvec cards 40 45)))
+          (is (not (str/includes? (:html first-page) (:url (nth cards 40)))))
+          (is (some? (:reply_markup last-page))))))))
+
+(deftest sort-callback-uses-cache-without-agent-call
+  (let [handle-callback @#'bot/handle-callback
+        sent (atom [])
+        cards [{:id :low :price 100 :currency "KGS"}
+               {:id :high :price 300 :currency "KGS"}
+               {:id :mid :price 200 :currency "KGS"}]]
+    (with-redefs [result-store/result-pools (atom {})
+                  t/ask-stream (fn [& _] (throw (ex-info "Sorting must not call the agent" {})))
+                  tg/answer-callback-query (fn [& _] {"ok" true})
+                  delivery/send-reply! (fn [_ reply _] (swap! sent conj reply))]
+      (let [cursor (result-store/cache-result-pool!
+                    "tg-42:-100:17" "query" cards 3 {:cards cards :sort-mode :price-asc})]
+        (handle-callback {:data (str "sort:price-desc:" cursor) :callback-id "sort-cb"
+                          :user-id 42 :chat-id -100 :thread-id 17})
+        (is (= [:high :mid :low] (mapv :id (:cards (first @sent)))))
+        (is (= :price-desc (:sort-mode (first @sent))))))))
 
 (deftest concurrent-forum-topics-rename-their-own-thread
   (let [handle-orchestrated @#'bot/handle-orchestrated

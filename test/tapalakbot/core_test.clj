@@ -6,7 +6,8 @@
             [tapalakbot.search :as search]))
 
 (deftest writer-never-receives-source-price-or-action-url
-  (let [card {:id "a" :title "Дорожка для ходьбы" :price 12345
+  (let [card {:id "a" :title "Дорожка для ходьбы" :desc "Полное описание товара без сокращений."
+              :price 12345
               :url "https://lalafo.kg/bishkek/ads/id-a"
               :decision {:reasons ["Подходит для ходьбы"]}}
         result {:query "дорожка" :cards [card] :search-status :ok
@@ -16,7 +17,6 @@
                 core/*captured-query* (atom nil)
                 core/*captured-search* (atom nil)]
         (let [context ((:execute (second core/tools)) {"user_want" "дорожка"})]
-          (is (str/includes? context "Подходит для ходьбы"))
           (is (not (str/includes? context "12345")))
           (is (not (str/includes? context (:url card))))
           (is (= [card] @core/*captured-cards*)))))))

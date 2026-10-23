@@ -64,7 +64,9 @@ JEV evaluates fit, condition, evidence and risk through `/api/v1/systemone`. Com
 
 Typed decisions are reconciled before admission: missing product-identity evidence, explicit incompatibility and current-offer price/currency conflicts cannot be recommended. A concrete suspicious-source decision can only remain an uncertain alternative. Historical purchase prices are not current-offer conflicts, and a missing photo or description is not an automatic exclusion. JEV classifies supplied seller claims; it does not verify actual hardware or the seller.
 
-Agent analysis is native Rich Markdown. Result cards are deterministic Rich HTML, with standalone source links, original photos and collapsed overflow. Media failure retries as text-only Rich HTML, then complete legacy HTML without dropping cards or controls. Pagination and opaque refinement callbacks belong to the exact conversation/thread. Explicit refinement bounds replace old budgets, including nil to clear a bound.
+Agent analysis is a short native Rich Markdown paragraph: two sentences, no generic numeric specifications or buying guide. The writer sees only a bounded source-safe preview; JEV still sees complete descriptions. Result cards are deterministic Rich HTML with standalone source links, original photos, one condition indication, material warnings and collapsed overflow. Collection/selection counters are hidden in “Как отбирали”. Media failure retries as text-only Rich HTML, then complete legacy HTML without dropping cards or controls.
+
+Initial results put direct matches before review candidates, then sort by ascending authoritative KGS price inside each group. “Цена ↑”, “Цена ↓” and “По соответствию” reorder the complete cached pool without another search or model call; price modes put non-comparable/unknown amounts last and never invent FX. Sorting resets pagination and numeric indexes, invalidates the old cursor and retains the source pool’s original expiry. Even one-page or exhausted views remain sortable until expiry. Budget refinements are separate new searches; their opaque callbacks belong to the exact conversation/thread and replace old bounds, including nil to clear a bound.
 
 Collection, selector or pre-search conversation-provider failure is unavailable, not an empty successful market. A failed tracker check must not retire unseen candidates.
 
@@ -116,7 +118,7 @@ Do not publish code or restart production merely because deterministic tests pas
 
 ## Observed verification
 
-- Bot/server namespaces compiled; 105 deterministic tests / 433 assertions passed with the published egress harness. The shared-harness startup regression also passed within its 17-test / 55-assertion suite.
+- Bot/server namespaces compiled; 118 deterministic tests / 461 assertions passed. The pinned shared harness previously passed its 17-test / 55-assertion suite.
 - Real one-shot CLI: compact electric walking treadmill under 15,000 KGS, 61 JEV candidates, 15 confirmed plus 38 uncertain matches, 8 rejected; first 20 cards stayed within budget and the process exited normally.
 - Real same-session phone → one-som follow-up → different-router search succeeded through the hosted gateway with actual content deltas. The follow-up retained iPhone context, returned a valid empty pool and a bounded two-sentence reply; the new product did not leak phone cards. Accepted source fields remained unchanged.
 - Focused real JEV checks excluded an unidentified “Брали за 18000” offer and a current ruble/KGS conflict, retained explicitly under-desk controls, kept unsupported form factors uncertain, recognized an explicit device defect and rejected an exchange-only offer.

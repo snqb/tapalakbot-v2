@@ -32,6 +32,7 @@
              "товар" nil false "tg-42"
              {:cards [{:price 100 :currency "USD"} {:price nil :currency "KGS"}]}))))
 
+
 (deftest failed-rich-media-retries-with-all-links-and-without-media
   (let [sent (atom [])
         source (cards 20)]

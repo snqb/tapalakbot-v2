@@ -105,7 +105,7 @@
                        :tier :good})
                     (range 1 10))
         html (r/render-results-rich cards)]
-    (is (str/includes? html "<h2>Варианты (9)</h2>"))
+    (is (str/includes? html "<h2>Варианты</h2>"))
     (is (not (str/includes? html "<table")))
     (is (= 6 (count (re-seq #"<h3>" html))))
     (is (str/includes? html "<details><summary>Ещё 3 варианта</summary>"))
@@ -166,3 +166,28 @@
 (deftest missing-currency-is-not-labelled-as-kgs
   (let [html (r/render-results-rich [{:title "Товар" :price 1000 :currency nil}])]
     (is (not (re-find #"KGS|сом" html)))))
+
+(deftest native-results-hide-selection-counters-in-details
+  (let [html (r/render-results-rich
+              [{:title "Вариант" :price 1000 :currency "KGS"
+                :url "https://lalafo.kg/ad/1"
+                :decision {:fit :direct}}]
+              {:pool-count 4
+               :sort-mode :price-desc
+               :collection {:raw 4}
+               :selection {:input-count 4 :accepted-count 1}})]
+    (is (str/includes? html "Показано 1 из 4"))
+    (is (str/includes? html "<details><summary>Как отбирали</summary>"))
+    (is (< (.indexOf html "<details><summary>Как отбирали</summary>")
+           (.indexOf html "Собрано 4")))))
+
+(deftest native-results-show-one-source-condition-and-source-attributes
+  (let [html (r/render-results-rich
+              [{:title "Телефон" :price 1000 :currency "KGS"
+                :condition "used"
+                :params {"memory" "128 GB"}
+                :decision {:condition :unknown
+                           :warnings ["Состояние в источнике не указано."]}}])]
+    (is (= 1 (count (re-seq #"Б/у" html))))
+    (is (empty? (re-seq #"⚠️" html)))
+    (is (str/includes? html "memory: 128 GB"))))

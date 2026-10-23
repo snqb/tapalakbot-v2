@@ -3,7 +3,8 @@
    Multi-line blocks, bold titles, location chips, separators.
    LLM never touches this."
   (:require [clojure.string :as str]
-            [clj-harness.telegram.format :as hfmt]))
+            [clj-harness.telegram.format :as hfmt]
+            [tapalakbot.result-order :as result-order]))
 
 ;; ════════════════════ TIER ASSIGNMENT ════════════════════
 
@@ -166,74 +167,169 @@
   [{:keys [price currency]}]
   (format-money price currency))
 
-(defn- result-detail
-  [{:keys [year mileage engine gearbox city condition params]}]
-  (let [known-spec? (or year mileage engine gearbox (seq params))
-        detail (->> [(when year (str year " г."))
-                     (when mileage (str (format-price mileage) " км"))
-                     (when engine (str (escape-html engine) " л"))
-                     (when gearbox (escape-html (truncate-text gearbox 24)))
-                     (str "📍 " (escape-html (or city "Город не указан")))
-                     (str "📋 " (escape-html (or condition "Состояние не указано")))
-                     (when-not known-spec? "ℹ️ Характеристики не указаны")]
-                    (remove nil?))]
-    (str/join " · " detail)))
-
-(defn- decision-fit-label
-  [fit]
+(defn- source-param-entries
+  [params]
   (cond
-    (contains? #{:direct :exact :strong :match :good :relevant} fit) "Ближе к запросу"
-    (contains? #{:possible :partial :uncertain :maybe :weak} fit) "Стоит проверить"
-    :else "Стоит проверить"))
+    (map? params) (sort-by (comp str key) params)
+    (sequential? params)
+    (keep (fn [param]
+            (cond
+              (map? param) (let [label (or (:name param) (get param "name"))
+                                value (or (:value param) (get param "value"))]
+                            (when (and label (some? value)) [label value]))
+              (and (sequential? param) (= 2 (count param))) param))
+          params)
+    :else []))
+
+(defn- source-attribute
+  [[key value]]
+  (when (and (some? key) (some? value)
+             (not (str/blank? (str value))))
+    (str (escape-html key) ": " (escape-html value))))
+
+(defn- condition-token
+  [condition]
+  (when (some? condition)
+    (let [token (-> condition str str/trim str/lower-case)]
+      (if (str/starts-with? token ":")
+        (subs token 1)
+        token))))
 
 (defn- decision-condition-label
   [condition]
-  (cond
-    (contains? #{:new :новое} condition) "Новое"
-    (contains? #{:used :б/у :бу} condition) "Б/у"
-    (contains? #{:damaged :поврежденное} condition) "Поврежденное"
-    (contains? #{:refurbished :восстановленное} condition) "Восстановленное"
-    (contains? #{:unknown :неизвестно} condition) "Состояние не указано"
-    condition (str condition)))
+  (let [token (condition-token condition)]
+    (cond
+      (contains? #{"new" "новое" "новый" "новая"} token) "Новое"
+      (contains? #{"used" "б/у" "бу" "использованное" "использованный"} token) "Б/у"
+      (contains? #{"damaged" "поврежденное" "повреждённое" "неисправное"} token) "Поврежденное"
+      (contains? #{"refurbished" "восстановленное"} token) "Восстановленное"
+      (contains? #{"unknown" "неизвестно" "не указано"} token) "Состояние не указано"
+      (and token (not (str/blank? token))) (str condition))))
+
+(defn- condition-indication
+  [{:keys [condition decision]}]
+  (let [label (or (decision-condition-label condition)
+                  (decision-condition-label (:condition decision))
+                  "Состояние не указано")]
+    (str "📋 " (escape-html label))))
+
+(defn- result-detail
+  [{:keys [year mileage engine gearbox city params]}]
+  (let [attributes (concat
+                    [(when year (str year " г."))
+                     (when mileage (str (format-price mileage) " км"))
+                     (when engine (str (escape-html engine) " л"))
+                     (when gearbox (escape-html (truncate-text gearbox 24)))
+                     (when city (str "📍 " (escape-html city)))]
+                    (map source-attribute (source-param-entries params)))]
+    (str/join " · " (remove nil? attributes))))
+
+(defn- risk-warning
+  [risk]
+  (case (condition-token risk)
+    "missing" "Материальная деталь запроса отсутствует в описании."
+    "suspicious" "В источнике есть конкретный сигнал риска; проверьте объявление до покупки."
+    "price_conflict" "Текущая цена или валюта в описании противоречит данным объявления."
+    "incompatible" "Источник содержит явное противоречие запросу."
+    nil))
+
+(defn- unknown-condition-warning?
+  [warning]
+  (= "состояние в источнике не указано."
+     (str/lower-case (str/trim (str warning)))))
+
+(defn- decision-warnings
+  [{:keys [decision]}]
+  (let [warnings (concat (:warnings decision)
+                         (when-let [warning (risk-warning (:risk decision))]
+                           [warning]))]
+    (->> warnings
+         (remove #(str/blank? (str %)))
+         (remove unknown-condition-warning?)
+         (map str)
+         distinct)))
 
 (defn- decision-block
-  [{:keys [decision]}]
-  (let [decision (or decision {})
-        fit (decision-fit-label (:fit decision))
-        condition (decision-condition-label (:condition decision))
-        reasons (->> (:reasons decision) (remove str/blank?) (map escape-html))
-        warnings (->> (concat (:warnings decision)
-                              (when-let [risk (:risk decision)] [risk]))
-                      (remove str/blank?)
-                      (map escape-html))]
-    (str "<p><b>" fit "</b>"
-         (when condition (str " · " condition))
-         (when (seq reasons)
-           (str "<br/>" (str/join " · " reasons)))
-         (when (seq warnings)
-           (str "<br/>⚠️ " (str/join " · " warnings)))
-         "</p>")))
+  [card]
+  (let [warnings (map escape-html (decision-warnings card))]
+    (when (seq warnings)
+      (str "<p><b>⚠️ Важно:</b> " (str/join " · " warnings) "</p>"))))
+
+(defn- decision-fit
+  [card]
+  (if (= :direct (get-in card [:decision :fit])) :direct :possible))
+
+(defn- fit-heading
+  [fit]
+  (if (= fit :direct)
+    "<p><b>Ближе к запросу</b></p>"
+    "<p><b>Возможные варианты — проверьте соответствие</b></p>"))
 
 (defn- render-featured-result
   [index card]
   (let [detail (result-detail card)
+        condition (condition-indication card)
         link (result-link card)]
     (str "<h3>" (or (:result-index card) index) ". "
          (result-title card) "</h3>"
-         "<p><mark>" (result-price card) "</mark><br/>" detail "</p>"
+         "<p><mark>" (result-price card) "</mark>"
+         (when (or (seq detail) condition)
+           (str "<br/>" (str/join " · " (remove nil? [detail condition]))))
+         "</p>"
          (decision-block card)
          (when link (str "<p>" link "</p>")))))
+
+(defn- render-visible-results
+  [cards]
+  (second
+   (reduce (fn [[previous html] [index card]]
+             (let [fit (decision-fit card)]
+               [fit (str html
+                         (when (seq html) "<hr/>")
+                         (when (not= fit previous) (fit-heading fit))
+                         (render-featured-result (inc index) card))]))
+           [nil ""]
+           (map-indexed vector cards))))
 
 (defn- render-hidden-result
   [index card]
   (let [detail (result-detail card)
+        condition (condition-indication card)
         link (result-link card)]
     (str "<li><b>" (or (:result-index card) index) ". "
          (result-title card) "</b>"
-         " — <mark>" (result-price card) "</mark><br/>" detail
-         (decision-block card)
+         " — <mark>" (result-price card) "</mark>"
+         (when (or (seq detail) condition)
+           (str "<br/>" (str/join " · " (remove nil? [detail condition]))))
+         (when-let [warnings (decision-block card)]
+           warnings)
          (when link (str "<br/>" link))
          "</li>")))
+
+(defn- render-hidden-results
+  [cards offset]
+  (loop [remaining cards
+         index offset
+         html ""]
+    (if-let [group (seq (take-while #(= (decision-fit (first remaining))
+                                        (decision-fit %))
+                                    remaining))]
+      (let [group-html (str "<p><b>"
+                            (if (= :direct (decision-fit (first group)))
+                              "Ближе к запросу"
+                              "Возможные варианты — проверьте соответствие")
+                            "</b></p><ul>"
+                            (apply str
+                                   (map-indexed
+                                    (fn [group-index card]
+                                      (render-hidden-result (+ index group-index 1) card))
+                                    group))
+                            "</ul>")]
+        (recur (drop (count group) remaining)
+               (+ index (count group))
+               (str html group-html)))
+      html)))
+
 
 (defn- render-image-slideshow
   [cards include-images?]
@@ -289,38 +385,55 @@
                 (conj "часть запросов к площадке не выполнена"))]
     (when (seq parts) (str (str/join " · " parts) "."))))
 
+(defn- visible-order-caption
+  [visible-count pool-count sort-mode]
+  (let [total (if (number? pool-count) pool-count visible-count)
+        mode (or sort-mode :price-asc)
+        label (result-order/mode-label mode)]
+    (str "Показано " visible-count " из " total
+         " · Подходящие — сначала"
+         " · " label)))
+
+(defn- selection-details
+  [opts]
+  (when (or (:selection opts) (:collection opts))
+    (str "<details><summary>Как отбирали</summary><p>"
+         (escape-html
+          (or (selection-summary-text opts)
+              "Проверка завершена; подходящих вариантов не подтверждено."))
+         "</p></details>")))
+
 (defn render-results-rich
   "Render deterministic Telegram Rich HTML recommendation cards.
-   The optional opts map carries :selection/:collection facts and
-   :include-images? for a text-only retry."
+   The optional opts map carries :selection/:collection facts,
+   :pool-count/:sort-mode display metadata and :include-images? for a
+   text-only retry. Cards are already ordered by the caller."
   ([cards] (render-results-rich cards {}))
   ([cards opts]
    (let [cards (vec cards)
-         visible (take visible-result-limit cards)
-         hidden (drop visible-result-limit cards)
+         visible (vec (take visible-result-limit cards))
+         hidden (vec (drop visible-result-limit cards))
          include-images? (not= false (:include-images? opts))]
-     (when (or (seq cards) (:selection opts))
+     (when (or (seq cards) (:selection opts) (:collection opts))
        (str (if (seq cards)
-              (str "<h2>Варианты (" (count cards) ")</h2>")
+              "<h2>Варианты</h2>"
               "<h2>Подходящих вариантов не подтверждено</h2>")
-            (when-let [summary (selection-summary-text opts)]
-              (str "<p><i>" (escape-html summary) "</i></p>"))
+            (when (seq cards)
+              (str "<p><i>"
+                   (escape-html
+                    (visible-order-caption (count cards)
+                                           (:pool-count opts)
+                                           (:sort-mode opts)))
+                   "</i></p>"))
             (render-image-slideshow cards include-images?)
-            (str/join "<hr/>"
-                      (map-indexed
-                       (fn [index card]
-                         (render-featured-result (inc index) card))
-                       visible))
+            (render-visible-results visible)
             (when (seq hidden)
               (let [hidden-count (count hidden)]
                 (str "<details><summary>Ещё " hidden-count " "
                      (russian-variant-word hidden-count) "</summary>"
-                     "<ul>"
-                     (apply str (map-indexed
-                                 (fn [index card]
-                                   (render-hidden-result (+ visible-result-limit (inc index)) card))
-                                 hidden))
-                     "</ul></details>")))
+                     (render-hidden-results hidden visible-result-limit)
+                     "</details>")))
+            (selection-details opts)
             (render-source-footer cards))))))
 
 ;; ════════════════════ FULL REPLY RENDERING ════════════════════

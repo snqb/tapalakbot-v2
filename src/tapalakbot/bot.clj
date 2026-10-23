@@ -9,9 +9,10 @@
             [tapalakbot.monitor.client :as monitor]
             [tapalakbot.monitor.store :as store]
             [tapalakbot.monitor.tracker :as tracker]
-            [tapalakbot.query-builder :as qb]
-            [tapalakbot.result-store :as result-store]
-            [tapalakbot.result-delivery :as delivery]
+             [tapalakbot.query-builder :as qb]
+             [tapalakbot.result-order :as result-order]
+             [tapalakbot.result-store :as result-store]
+             [tapalakbot.result-delivery :as delivery]
             [clj-harness.telegram :as tg]
             [clj-harness.telegram.format :as hfmt]
             [clj-harness.core :as hc]
@@ -361,13 +362,44 @@
                              (tg/inline-keyboard
                               [["📋 К списку" {:callback_data "track_list"}]]))))
 
+     ;; === SORT CACHED RESULTS ===
+      (re-matches #"sort:(price-asc|price-desc|relevance):([A-Za-z0-9]+)" data)
+      (let [[_ mode-token cursor-token]
+            (re-matches #"sort:(price-asc|price-desc|relevance):([A-Za-z0-9]+)" data)
+            mode (keyword mode-token)
+            owner-id (state/conversation-id {:chat-id chat-id
+                                             :user-id user-id
+                                             :thread-id thread-id})]
+        (if-let [{:keys [cards pool query context cursor-id sort-mode start end total has-more]}
+                 (result-store/sort-result-pool! owner-id cursor-token mode
+                                                 result-store/page-size)]
+          (do
+            (tg/answer-callback-query callback-id
+                                      :text (str "Сортировка: "
+                                                 (result-order/mode-label sort-mode)))
+            (result-store/cache-ads! owner-id pool)
+            (let [context (assoc (or context {}) :query query :cards pool
+                                 :sort-mode sort-mode)]
+              (delivery/send-reply!
+               chat-id
+               {:intro ""
+                :cards cards
+                :selection (:selection context)
+                :collection (:collection context)
+                :sort-mode sort-mode
+                :pool-count total}
+               {:keyboard (delivery/results-keyboard
+                           query cursor-id has-more owner-id context)
+                :thread-id thread-id})))
+          (tg/answer-callback-query callback-id :text "Эта кнопка устарела.")))
+
     ;; === NEXT CACHED RESULT PAGE ===
       (re-matches #"page:([A-Za-z0-9]+)" data)
       (let [[_ cursor-id] (re-matches #"page:([A-Za-z0-9]+)" data)
             owner-id (state/conversation-id {:chat-id chat-id
                                              :user-id user-id
                                              :thread-id thread-id})]
-        (if-let [{:keys [cards query start end total has-more context]}
+        (if-let [{:keys [cards query start end total has-more context sort-mode]}
                  (result-store/next-result-page! owner-id cursor-id result-store/page-size)]
           (do
             (tg/answer-callback-query callback-id
@@ -375,7 +407,8 @@
             (delivery/send-reply!
              chat-id
              {:intro (str "## Ещё варианты\nПозиции " start "–" end " из " total ".")
-              :cards cards :selection (:selection context) :collection (:collection context)}
+              :cards cards :selection (:selection context) :collection (:collection context)
+              :sort-mode sort-mode :pool-count total}
              {:keyboard (delivery/results-keyboard
                          query cursor-id has-more owner-id
                          (or context {:query query :cards cards}))
@@ -686,12 +719,19 @@
                                              (select-keys msg [:price-min :price-max]))))
                       result)
             effective-query (or (:query result*) text)
-            all-cards (vec (:cards result*))
-            candidate-pool (vec (or (seq (:pool result*)) all-cards))
-            result-context {:query effective-query :cards candidate-pool
-                            :selection (:selection result*) :collection (:collection result*)}
+            candidate-pool (vec (or (seq (:pool result*))
+                                    (seq (:cards result*))
+                                    []))
+            ordered-pool (result-order/order-cards candidate-pool
+                                                   result-order/default-mode)
+            all-cards (vec (take result-store/page-size ordered-pool))
+            result-context {:query effective-query
+                            :cards ordered-pool
+                            :selection (:selection result*)
+                            :collection (:collection result*)
+                            :sort-mode result-order/default-mode}
             cursor-id (result-store/cache-result-pool! session-id effective-query
-                                                       candidate-pool (count all-cards)
+                                                       ordered-pool (count all-cards)
                                                        result-context)
             ;; URL verification: replace any hallucinated link with warning.
             ;; The answer model may have seen candidates outside the visible page.
@@ -719,13 +759,16 @@
                    :intro (if (seq all-cards) (or agent-text "") no-results-intro)
                    :cards (vec all-cards)
                    :selection (:selection result*) :collection (:collection result*)
-                   :pool-count (count candidate-pool)
+                   :pool-count (count ordered-pool)
+                   :sort-mode result-order/default-mode
                    :cta nil
                    :assumptions []}
             more-btn (cond
                        (seq all-cards)
-                       (delivery/results-keyboard effective-query cursor-id (some? cursor-id)
-                                                  session-id result-context)
+                       (delivery/results-keyboard
+                        effective-query cursor-id
+                        (> (count ordered-pool) (count all-cards))
+                        session-id result-context)
                        (seq suggestions)
                        {"inline_keyboard"
                         (mapv (fn [s]
@@ -734,16 +777,15 @@
                               (take 3 suggestions))})]
         (log/info :stream-summary :final-len (count agent-text)
                   :cards (count all-cards) :candidates (count candidate-pool)
-                  :has-more (some? cursor-id) :cursor-id cursor-id
+                  :has-more (> (count ordered-pool) (count all-cards))
+                  :cursor-id cursor-id
                   :thread-id thread-id)
         ;; Delete status message now — we have the real result
         (when-let [mid (some-> status-msg deref (get "message_id"))]
           (try (tg/delete-message chat-id mid) (catch Exception _)))
-        ;; Send analysis, inline media, and linked result cards as Rich Messages.
-        (delivery/send-reply! chat-id reply {:keyboard more-btn :thread-id thread-id})
-        ;; Keep the full ranked pool available for numeric drill-down callbacks.
-        (when (seq candidate-pool)
-          (result-store/cache-ads! session-id candidate-pool))
+        ;; Keep the full current ordered pool available for numeric drill-down callbacks.
+        (when (seq ordered-pool)
+          (result-store/cache-ads! session-id ordered-pool))
         ;; Rename topic
         (let [topic-name (topic-name-for-query effective-query)]
           (rename-topic! chat-id thread-id topic-name))
