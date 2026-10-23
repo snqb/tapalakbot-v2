@@ -195,8 +195,7 @@
         (let [[first-page last-page] @rich-sends]
           (is (every? #(str/includes? (:html first-page) (:url %)) (subvec cards 20 40)))
           (is (every? #(str/includes? (:html last-page) (:url %)) (subvec cards 40 45)))
-          (is (not (str/includes? (:html first-page) (:url (nth cards 40)))))
-          (is (some? (:reply_markup last-page))))))))
+          (is (not (str/includes? (:html first-page) (:url (nth cards 40))))))))))
 
 (deftest sort-callback-uses-cache-without-agent-call
   (let [handle-callback @#'bot/handle-callback

@@ -118,7 +118,7 @@ Do not publish code or restart production merely because deterministic tests pas
 
 ## Observed verification
 
-- Bot/server namespaces compiled; 120 deterministic tests / 467 assertions passed, including initial-search delivery through the real renderer and cached sort callbacks. The pinned shared harness previously passed its 17-test / 55-assertion suite.
+- Bot/server namespaces compiled; 120 deterministic tests / 470 assertions passed, including initial-search delivery and cached sorting through the actual Rich transport helper. The pinned shared harness previously passed its 17-test / 55-assertion suite.
 - Real one-shot CLI: compact electric walking treadmill under 15,000 KGS, 61 JEV candidates, 15 confirmed plus 38 uncertain matches, 8 rejected; first 20 cards stayed within budget and the process exited normally.
 - Real same-session phone → one-som follow-up → different-router search succeeded through the hosted gateway with actual content deltas. The follow-up retained iPhone context, returned a valid empty pool and a bounded two-sentence reply; the new product did not leak phone cards. Accepted source fields remained unchanged.
 - Focused real JEV checks excluded an unidentified “Брали за 18000” offer and a current ruble/KGS conflict, retained explicitly under-desk controls, kept unsupported form factors uncertain, recognized an explicit device defect and rejected an exchange-only offer.

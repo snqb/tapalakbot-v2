@@ -99,7 +99,7 @@
                           chat-id :html (render/render-results-rich
                                          cards (assoc card-opts :include-images? images?))
                           :preview false
-                          :reply_markup (when (seq cards) keyboard)
+                          :reply-markup (when (seq cards) keyboard)
                           :thread-id thread-id))]
          (or (attempt :rich-media #(rich-send true))
              (attempt :rich-text #(rich-send false))

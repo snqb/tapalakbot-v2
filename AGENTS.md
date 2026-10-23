@@ -107,7 +107,7 @@ The container exposes plain HTTP on `PORT` (default 8080); Dokploy terminates TL
 ## Testing
 
 ```bash
-# Full deterministic suite: 120 tests / 467 assertions on 2026-10-24
+# Full deterministic suite: 120 tests / 470 assertions on 2026-10-24
 clojure -M:test
 ```
 
@@ -128,6 +128,7 @@ clojure -M:test
 ### General
 
 - **Java (?i) doesn't work for Cyrillic** — `policy.clj` lowercases input before regex matching. Never use `(?i)` with Russian text.
+- **Rich keyboard option** — `tg/send-rich-message` accepts `:reply-markup`; legacy `send-message`/`send-md` use `:reply_markup`. A wrong keyword silently drops all card controls. Result-flow tests exercise the actual Rich helper through the Bot API boundary rather than mocking its keyword arguments.
 - **Only ONE process per bot token** — Two pollers = 409 Conflict.
 - **Persist stop-first ordering** — save `updateConfigSwarm` and `rollbackConfigSwarm` objects through Dokploy `application.update`, both with `Parallelism:1` and `Order:"stop-first"`. A manual service update alone is overwritten on redeploy. Verify the resulting Swarm spec and keep exactly one bot process.
 - **Forum topics are distinct conversations** — `message_thread_id` from the current update is immutable request context: preserve it through every send/edit and in the session ID. Never store a mutable "active thread" per user; one user can run multiple topics concurrently.
