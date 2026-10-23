@@ -116,7 +116,7 @@ clojure -M:test
 
 - **Telegram/gateway networking** — production uses `https://tapalak-gateway-edge.vercel.app`: exact model rewrites forward to the authenticated Railway gateway; `TELEGRAM_PROXY_URL` ends in `/telegram` and authenticates this bot in a bearer header, never the relay URL. Direct Railway and Telegram cold connections intermittently time out; Railway packet headers show unacknowledged ClientHello segments. HTTP/2 and TLS 1.2 did not fix full turns. Keep normal verified TLS and `JAVA_TOOL_OPTIONS=-Djava.net.preferIPv4Stack=true`. Preserve the Telegram IPv4 host entry for direct diagnostics; Dokploy removes manual Swarm host entries.
 - **Persistent data** — mount `/data`; `SESSION_DB_PATH` defaults to `/data/tapalakbot-sessions.db` and `MONITOR_DB_PATH` to `/data/tapalakbot-monitor.db`.
-- **Webhook trust boundary** — set `TELEGRAM_WEBHOOK_SECRET`; unauthenticated POSTs to `/webhook` are rejected.
+- **Webhook ingress** — production sets `WEBHOOK_URL=https://tapalak.esen.works/webhook` and the existing `pass telegram/tapalakbot/webhook-secret` value as `TELEGRAM_WEBHOOK_SECRET`. Unauthenticated POSTs are rejected. Expect one bot JVM and no polling thread in webhook mode; retain polling only as the existing fallback. Do not keep a continuous serverless `getUpdates` call: provisioned memory is billed while waiting for I/O.
 - **Container build must fail closed** — the Dockerfile compilation step must not use `|| true`; build failures must stop deployment.
 - **Full SHA required** — tools.deps git dependencies require a full SHA.
 - **clj-harness pinned** — update its full git SHA in `deps.edn` after parent fixes; do not assume local parent changes are deployed.

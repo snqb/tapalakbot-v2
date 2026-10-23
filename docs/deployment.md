@@ -10,7 +10,7 @@ Verified on 2026-10-24:
 - Source: `https://github.com/snqb/tapalakbot-v2.git`; Dokploy uses the root Dockerfile and root build context.
 - Persistent volume: `tapalakbot-production-data` mounted at `/data`.
 - Retained direct-diagnostic host mapping: `149.154.167.220 api.telegram.org`; runtime `JAVA_TOOL_OPTIONS=-Djava.net.preferIPv4Stack=true`. Production Telegram requests use the authenticated edge relay.
-- Current Telegram transport is polling: `getWebhookInfo` returned an empty URL. The bot is `@tapalakin_bot`.
+- Production ingress uses the authenticated webhook at `https://tapalak.esen.works/webhook`. The bot is `@tapalakin_bot`; expect one bot JVM and no polling thread after successful registration.
 
 Updates and rollbacks must both use stop-first ordering. Process health alone does not establish that model credentials or the external gateway work.
 
@@ -21,11 +21,11 @@ were overwritten by deployment until these API fields were saved. Dokploy also
 removes manual `ContainerSpec.Hosts` entries: the image entrypoint writes the
 Telegram address, and the effective container mapping must be checked after rollout.
 
-The pinned harness handles its first polling request inside the existing
+Fallback polling's pinned harness handles its first request inside the existing
 poll-error loop and preserves unacknowledged updates. The old unguarded
-`offset=-1` startup probe both discarded pending updates and terminated the worker
-on a connect timeout. Readiness now requires the marketplace probe and is revoked
-if the polling worker terminates; process liveness remains separate.
+`offset=-1` probe discarded pending messages and terminated the worker on a
+connect timeout. Readiness requires the marketplace probe and revokes polling
+readiness if its worker terminates; process liveness remains separate.
 
 Cold connection handshakes from this VPS to both Railway aliases and Telegram
 intermittently timed out. For Railway, packet headers showed selected
@@ -39,6 +39,10 @@ Railway gateway, preserving its authentication and allowlist. A separate
 allowlisted Telegram function authorizes only the existing bot; its inbound URLs
 contain method names, not bot tokens. It never starts a poller. Both hops retain
 certificate and hostname verification, and no new retry policy is added.
+
+Incoming updates go directly to the VPS webhook with a secret header; the edge
+is only used for outbound Telegram calls. This avoids a continuous serverless
+long poll: [provisioned memory is billed even while waiting for I/O](https://vercel.com/docs/functions/usage-and-pricing).
 
 From the real container, independent normal-TLS connection gates passed for both
 edge health and relayed Telegram `getMe`. A complete real phone → one-som →
@@ -63,7 +67,7 @@ Collection, selector or pre-search conversation-provider failure is unavailable,
 
 | Variable | Purpose |
 | --- | --- |
-| `BOT_TOKEN` | Existing Telegram bot identity; keep exactly one poller |
+| `BOT_TOKEN` | Existing Telegram bot identity; keep exactly one bot process |
 | `OPENROUTER_API_KEY` | Dedicated credential from `pass openrouter/lalabot-token`; do not overwrite or reuse the old global entry |
 | `OPENROUTER_BASE_URL` | `https://tapalak-gateway-edge.vercel.app/api/v1/chat/completions` |
 | `JEV_BASE_URL` | `https://tapalak-gateway-edge.vercel.app/api/v1/systemone` |
@@ -72,7 +76,8 @@ Collection, selector or pre-search conversation-provider failure is unavailable,
 | `MONITOR_DB_PATH` | `/data/tapalakbot-monitor.db` |
 | `PORT` | Plain HTTP container port; default 8080 |
 | `JAVA_TOOL_OPTIONS` | `-Djava.net.preferIPv4Stack=true`; do not restore the ineffective TLS 1.2 cap |
-| `WEBHOOK_URL`, `TELEGRAM_WEBHOOK_SECRET` | Both required to switch to an authenticated webhook |
+| `WEBHOOK_URL` | `https://tapalak.esen.works/webhook` |
+| `TELEGRAM_WEBHOOK_SECRET` | Existing `pass telegram/tapalakbot/webhook-secret`; required to authenticate incoming updates |
 | `MONITOR_ADMIN_TOKEN` | Required before exposing the monitor administration API |
 
 Model names and JEV bounds are in `resources/config.edn`: `google/gemini-3.5-flash`, `typesafe/jev-1.13`, batches at most 20, concurrency at most three, and 30-second request timeouts. Source descriptions are not truncated to fit a request; oversized individual listings fail explicitly.
