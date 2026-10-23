@@ -1,4 +1,4 @@
-<!-- Updated: 2026-10-23 -->
+<!-- Updated: 2026-10-24 -->
 # tapalakbot-v2
 
 - **Agent-first architecture** — clj-harness LLM is the brain: sees conversation, decides intent, calls tools, generates text. Tools return structured data. Cards rendered deterministically. LLM never touches prices or URLs.
@@ -101,12 +101,12 @@ clojure -M:test -n tapalakbot.render-test -n tapalakbot.policy-test
 
 ### Dokploy / webhook mode
 
-The container exposes plain HTTP on `PORT` (default 8080); Dokploy terminates TLS. `WEBHOOK_URL` enables webhook mode and requires `TELEGRAM_WEBHOOK_SECRET`; without both, startup falls back to long polling. Persist `/data` for session and monitor SQLite databases. `/health` is process liveness; `/ready` returns 200 only after transport startup and a successful marketplace probe.
+The container exposes plain HTTP on `PORT` (default 8080); Dokploy terminates TLS. `WEBHOOK_URL` enables webhook mode and requires `TELEGRAM_WEBHOOK_SECRET`; without both, startup falls back to long polling. Persist `/data` for session and monitor SQLite databases. `/health` is process liveness; `/ready` additionally requires a live polling worker (or configured webhook) and a successful marketplace probe.
 
 ## Testing
 
 ```bash
-# Full deterministic suite: 103 tests / 426 assertions on 2026-10-23
+# Full deterministic suite: 105 tests / 433 assertions on 2026-10-24
 clojure -M:test
 ```
 
@@ -114,12 +114,13 @@ clojure -M:test
 
 ### Deployment (Dokploy)
 
-- **Telegram route is mandatory** — the Swarm service must include `--host-add api.telegram.org:149.154.167.220`; the VPS otherwise resolves Telegram to an unreachable IPv6 endpoint and polling fails with `HttpConnectTimeoutException`. Verify with `docker service inspect tapalakbot-production-densux --format '{{json .Spec.TaskTemplate.ContainerSpec.Hosts}}'`.
+- **Telegram networking** — retain `api.telegram.org:149.154.167.220` and runtime `JAVA_TOOL_OPTIONS=-Djava.net.preferIPv4Stack=true`. Hosts alone did not make the Java client connect reliably. Dokploy removes manual Swarm host entries on redeploy; the entrypoint also writes the mapping, and release verification must inspect the effective container hosts.
 - **Persistent data** — mount `/data`; `SESSION_DB_PATH` defaults to `/data/tapalakbot-sessions.db` and `MONITOR_DB_PATH` to `/data/tapalakbot-monitor.db`.
 - **Webhook trust boundary** — set `TELEGRAM_WEBHOOK_SECRET`; unauthenticated POSTs to `/webhook` are rejected.
 - **Container build must fail closed** — the Dockerfile compilation step must not use `|| true`; build failures must stop deployment.
 - **Full SHA required** — tools.deps git dependencies require a full SHA.
 - **clj-harness pinned** — update its full git SHA in `deps.edn` after parent fixes; do not assume local parent changes are deployed.
+- **Polling startup** — the pinned harness starts at unacknowledged updates inside its existing error handler; never restore the unguarded `offset=-1` startup probe that discarded pending messages and killed the worker on connect timeout. `server/start-poller!` revokes readiness when its thread terminates.
 - **OpenRouter egress** — use the dedicated `pass openrouter/lalabot-token` credential and `https://openrouter-proxy-production-1ad8.up.railway.app/api/v1/chat/completions`; typed JEV uses the same origin at `/api/v1/systemone`. Verify both authenticated routes from the VPS. Do not overwrite the old global credential. Save Dokploy runtime env before pushing auto-deployed `main`; keep `createEnvFile=false`. See `docs/deployment.md`.
 - **Monitor trust boundary** — the monitor API binds to `127.0.0.1` unless `MONITOR_HOST` overrides it. Set `MONITOR_ADMIN_TOKEN` before exposing it; `POST /scan` requires `Authorization: Bearer …` and permits only one active scan.
 
@@ -127,7 +128,7 @@ clojure -M:test
 
 - **Java (?i) doesn't work for Cyrillic** — `policy.clj` lowercases input before regex matching. Never use `(?i)` with Russian text.
 - **Only ONE process per bot token** — Two pollers = 409 Conflict.
-- **Stop-first rollback too** — both Swarm update and rollback order must be `stop-first`; verify after Dokploy release because service-spec recreation can reset rollout settings. Never deploy via the obsolete standalone-container recipe.
+- **Persist stop-first ordering** — save `updateConfigSwarm` and `rollbackConfigSwarm` objects through Dokploy `application.update`, both with `Parallelism:1` and `Order:"stop-first"`. A manual service update alone is overwritten on redeploy. Verify the resulting Swarm spec and keep exactly one poller.
 - **Forum topics are distinct conversations** — `message_thread_id` from the current update is immutable request context: preserve it through every send/edit and in the session ID. Never store a mutable "active thread" per user; one user can run multiple topics concurrently.
 - **Busy conversations coalesce** — only the newest pending update is retained while a conversation is running; never add raw `future` dispatch around this path.
 - **Lalafo search noise** — Generic queries return junk. Use exact model names.

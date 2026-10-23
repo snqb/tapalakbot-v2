@@ -87,11 +87,28 @@
   "Dependency readiness endpoint for the container orchestrator."
   [_request]
   (let [state @readiness
-        ready? (and (:bot state) (:transport state))]
+        ready? (and (:bot state) (:transport state) (:marketplace state))]
     {:status (if ready? 200 503)
      :headers {"Content-Type" "application/json"}
      :body (json/generate-string
             (assoc state :status (if ready? "ready" "starting")))}))
+
+(defn- start-poller!
+  "Revoke readiness whenever the polling worker stops, including on failure."
+  []
+  (let [worker (Thread. ^Runnable
+                       (fn []
+                         (try
+                           (bot/start-polling)
+                           (finally (swap! readiness assoc :transport false))))
+                       "tapalakbot-poller")]
+    (swap! readiness assoc :transport true)
+    (try
+      (.start worker)
+      worker
+      (catch Throwable error
+        (swap! readiness assoc :transport false)
+        (throw error)))))
 
 (defn- app
   "Ring app — routes webhook, liveness, and readiness endpoints."
@@ -196,11 +213,12 @@
           (do
             (delete-webhook! token)
             (if (set-webhook! webhook-url token webhook-secret)
-              (log/info :webhook-mode :url webhook-url :port port)
+              (do
+                (swap! readiness assoc :transport true)
+                (log/info :webhook-mode :url webhook-url :port port))
               (do
                 (log/warn :webhook-failed-falling-back-to-polling)
-                (.start (Thread. ^Runnable (fn [] (bot/start-polling))
-                                 "tapalakbot-poller"))
+                (start-poller!)
                 (log/info :polling-started))))
 
           ;; Never expose an unauthenticated webhook.
@@ -209,15 +227,14 @@
             (log/error :webhook-secret-missing
                        "Set TELEGRAM_WEBHOOK_SECRET; falling back to polling.")
             (delete-webhook! token)
-            (.start (Thread. ^Runnable (fn [] (bot/start-polling)) "tapalakbot-poller"))
+            (start-poller!)
             (log/info :polling-mode :reason :missing-webhook-secret))
 
           :else
           (do
             (delete-webhook! token)
-            (.start (Thread. ^Runnable (fn [] (bot/start-polling)) "tapalakbot-poller"))
-            (log/info :polling-mode)))
-        (swap! readiness assoc :transport true)))
+            (start-poller!)
+            (log/info :polling-mode)))))
 
     ;; Interactive mode fallback
     (println "TapalakBot v2 running. Press Ctrl+C to stop.")

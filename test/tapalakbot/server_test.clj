@@ -40,3 +40,31 @@
 (deftest readiness-is-separate-from-liveness
   (is (= 200 (:status (app {:uri "/health" :request-method :get}))))
   (is (= 503 (:status (app {:uri "/ready" :request-method :get})))))
+
+(deftest readiness-requires-the-marketplace-probe
+  (let [state @#'server/readiness
+        before @state]
+    (try
+      (reset! state {:bot true :transport true :marketplace false})
+      (is (= 503 (:status (app {:uri "/ready" :request-method :get}))))
+      (swap! state assoc :marketplace true)
+      (is (= 200 (:status (app {:uri "/ready" :request-method :get}))))
+      (finally (reset! state before)))))
+
+(deftest terminated-poller-revokes-readiness
+  (let [state @#'server/readiness
+        before @state
+        entered (promise)
+        release (promise)]
+    (try
+      (reset! state {:bot true :transport false :marketplace true})
+      (with-redefs [bot/start-polling (fn [] (deliver entered :running) @release)]
+        (let [worker (#'server/start-poller!)]
+          (try
+            (is (= :running (deref entered 2000 :timeout)))
+            (is (= 200 (:status (app {:uri "/ready" :request-method :get}))))
+            (finally (deliver release true) (.join ^Thread worker 2000)))
+          (is (not (.isAlive ^Thread worker)))
+          (is (= 503 (:status (app {:uri "/ready" :request-method :get}))))
+          (is (= 200 (:status (app {:uri "/health" :request-method :get}))))))
+      (finally (deliver release true) (reset! state before)))))

@@ -9,10 +9,23 @@ Verified on 2026-10-23:
 - Docker Swarm service: `tapalakbot-production-densux`, one replica. Do not launch a standalone replacement container or a second Telegram poller.
 - Source: `https://github.com/snqb/tapalakbot-v2.git`; Dokploy uses the root Dockerfile and root build context.
 - Persistent volume: `tapalakbot-production-data` mounted at `/data`.
-- Required host mapping: `149.154.167.220 api.telegram.org`.
+- Required effective host mapping: `149.154.167.220 api.telegram.org`, plus `JAVA_TOOL_OPTIONS=-Djava.net.preferIPv4Stack=true`.
 - Current Telegram transport is polling: `getWebhookInfo` returned an empty URL. The bot is `@tapalakin_bot`.
 
 Updates and rollbacks must both use stop-first ordering. Process health alone does not establish that model credentials or the external gateway work.
+
+Persist rollout policy through Dokploy `application.update`: both
+`updateConfigSwarm` and `rollbackConfigSwarm` must be objects containing
+`Parallelism: 1` and `Order: "stop-first"`. Manual `docker service update` settings
+were overwritten by deployment until these API fields were saved. Dokploy also
+removes manual `ContainerSpec.Hosts` entries: the image entrypoint writes the
+Telegram address, and the effective container mapping must be checked after rollout.
+
+The pinned harness handles its first polling request inside the existing
+poll-error loop and preserves unacknowledged updates. The old unguarded
+`offset=-1` startup probe both discarded pending updates and terminated the worker
+on a connect timeout. Readiness now requires the marketplace probe and is revoked
+if the polling worker terminates; process liveness remains separate.
 
 ## Search and rendering contract
 
@@ -39,6 +52,7 @@ Collection, selector or pre-search conversation-provider failure is unavailable,
 | `SESSION_DB_PATH` | `/data/tapalakbot-sessions.db` |
 | `MONITOR_DB_PATH` | `/data/tapalakbot-monitor.db` |
 | `PORT` | Plain HTTP container port; default 8080 |
+| `JAVA_TOOL_OPTIONS` | `-Djava.net.preferIPv4Stack=true` for the production Telegram network |
 | `WEBHOOK_URL`, `TELEGRAM_WEBHOOK_SECRET` | Both required to switch to an authenticated webhook |
 | `MONITOR_ADMIN_TOKEN` | Required before exposing the monitor administration API |
 
@@ -69,9 +83,9 @@ With working credentials, exercise the real agent, Lalafo and JEV together: walk
 
 Do not publish code or restart production merely because deterministic tests pass while model verification is blocked.
 
-## Observed verification — 2026-10-23
+## Observed verification
 
-- Bot/server namespaces compiled; 103 deterministic tests / 426 assertions passed.
+- Bot/server namespaces compiled; 105 deterministic tests / 433 assertions passed after the readiness correction. The shared-harness startup regression also passed within its 17-test / 55-assertion suite.
 - Real one-shot CLI: compact electric walking treadmill under 15,000 KGS, 61 JEV candidates, 15 confirmed plus 38 uncertain matches, 8 rejected; first 20 cards stayed within budget and the process exited normally.
 - Real same-session phone → one-som follow-up → different-router search succeeded through the hosted gateway with actual content deltas. The follow-up retained iPhone context, returned a valid empty pool and a bounded two-sentence reply; the new product did not leak phone cards. Accepted source fields remained unchanged.
 - Focused real JEV checks excluded an unidentified “Брали за 18000” offer and a current ruble/KGS conflict, retained explicitly under-desk controls, kept unsupported form factors uncertain, recognized an explicit device defect and rejected an exchange-only offer.
