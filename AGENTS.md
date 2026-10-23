@@ -114,7 +114,7 @@ clojure -M:test
 
 ### Deployment (Dokploy)
 
-- **Telegram networking** — retain `api.telegram.org:149.154.167.220` and runtime `JAVA_TOOL_OPTIONS=-Djava.net.preferIPv4Stack=true`. Hosts alone did not make the Java client connect reliably. Dokploy removes manual Swarm host entries on redeploy; the entrypoint also writes the mapping, and release verification must inspect the effective container hosts.
+- **Telegram/gateway networking** — retain `api.telegram.org:149.154.167.220` and runtime `JAVA_TOOL_OPTIONS=-Djava.net.preferIPv4Stack=true -Djdk.tls.client.protocols=TLSv1.2`. Inside this VPS container, the gateway's HTTP/1.1 handshake timed out with default TLS but succeeded with TLS 1.2; the actual harness SSE client then returned `OK`. Certificate verification stays enabled. Dokploy removes manual Swarm host entries; the entrypoint also writes the mapping, and release verification must inspect effective container hosts.
 - **Persistent data** — mount `/data`; `SESSION_DB_PATH` defaults to `/data/tapalakbot-sessions.db` and `MONITOR_DB_PATH` to `/data/tapalakbot-monitor.db`.
 - **Webhook trust boundary** — set `TELEGRAM_WEBHOOK_SECRET`; unauthenticated POSTs to `/webhook` are rejected.
 - **Container build must fail closed** — the Dockerfile compilation step must not use `|| true`; build failures must stop deployment.

@@ -9,7 +9,7 @@ Verified on 2026-10-23:
 - Docker Swarm service: `tapalakbot-production-densux`, one replica. Do not launch a standalone replacement container or a second Telegram poller.
 - Source: `https://github.com/snqb/tapalakbot-v2.git`; Dokploy uses the root Dockerfile and root build context.
 - Persistent volume: `tapalakbot-production-data` mounted at `/data`.
-- Required effective host mapping: `149.154.167.220 api.telegram.org`, plus `JAVA_TOOL_OPTIONS=-Djava.net.preferIPv4Stack=true`.
+- Required effective host mapping: `149.154.167.220 api.telegram.org`, plus `JAVA_TOOL_OPTIONS=-Djava.net.preferIPv4Stack=true -Djdk.tls.client.protocols=TLSv1.2`.
 - Current Telegram transport is polling: `getWebhookInfo` returned an empty URL. The bot is `@tapalakin_bot`.
 
 Updates and rollbacks must both use stop-first ordering. Process health alone does not establish that model credentials or the external gateway work.
@@ -26,6 +26,12 @@ poll-error loop and preserves unacknowledged updates. The old unguarded
 `offset=-1` startup probe both discarded pending updates and terminated the worker
 on a connect timeout. Readiness now requires the marketplace probe and is revoked
 if the polling worker terminates; process liveness remains separate.
+
+Production-container transport diagnostics found gateway HTTP/1.1 connections
+timing out with default TLS, while HTTP/2 and HTTP/1.1 with TLS 1.2 returned 200.
+The runtime TLS 1.2 setting was then verified through the pinned harness's actual
+SSE client, which received `OK`. This changes negotiation, not certificate or
+hostname verification; no insecure TLS option or extra proxy is used.
 
 ## Search and rendering contract
 
@@ -52,7 +58,7 @@ Collection, selector or pre-search conversation-provider failure is unavailable,
 | `SESSION_DB_PATH` | `/data/tapalakbot-sessions.db` |
 | `MONITOR_DB_PATH` | `/data/tapalakbot-monitor.db` |
 | `PORT` | Plain HTTP container port; default 8080 |
-| `JAVA_TOOL_OPTIONS` | `-Djava.net.preferIPv4Stack=true` for the production Telegram network |
+| `JAVA_TOOL_OPTIONS` | `-Djava.net.preferIPv4Stack=true -Djdk.tls.client.protocols=TLSv1.2` for the production network |
 | `WEBHOOK_URL`, `TELEGRAM_WEBHOOK_SECRET` | Both required to switch to an authenticated webhook |
 | `MONITOR_ADMIN_TOKEN` | Required before exposing the monitor administration API |
 
