@@ -10,6 +10,7 @@
             [tapalakbot.render-advice :as render-advice]
             [tapalakbot.result-order :as order]
             [tapalakbot.result-store :as store]
+            [tapalakbot.search :as search]
             [tapalakbot.advice-grounding :as grounding]))
 
 (def source {:title "Repair guide" :url "https://example.org/repair" :text "Check the belt."})
@@ -176,3 +177,19 @@
             result (purchase/recommend session [card] {"recommendations" [item]})]
         (is (= :invalid (:status result)))
         (is (not (contains? result :cards)))))))
+
+(deftest advisor-preview-prefers-semantic-fit-without-changing-price-view
+  (let [cheap (assoc card :id "cheap-defective" :price 1000 :rank-score 30
+                    :decision {:fit :possible :condition :damaged :risk :missing})
+        suitable (assoc card :id "suitable" :price 20000 :rank-score 68
+                       :decision {:fit :possible :condition :used :risk :none})
+        result (assoc search-result :cards [cheap suitable] :evaluated-ids ["cheap-defective" "suitable"])
+        captured (atom nil)]
+    (binding [core/*current-session* (atom {}) core/*captured-search* captured]
+      (with-redefs [search/search (fn [& _] result)]
+        (let [preview (execute "search" {"user_want" "качественная дорожка для ходьбы"
+                                         "queries" ["беговая дорожка"] "new_request" true})]
+          (is (= ["suitable" "cheap-defective"] (mapv :id (:accepted preview))))
+          (is (= ["cheap-defective" "suitable"] (mapv :id (:cards @captured))))
+          (is (not-any? #(or (contains? % :price) (contains? % :url))
+                        (:accepted preview))))))))

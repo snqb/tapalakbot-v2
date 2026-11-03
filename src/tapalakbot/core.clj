@@ -1,6 +1,7 @@
 (ns tapalakbot.core
   "TapalakBot: conversation agent → full Lalafo search → source-bound JEV decisions."
   (:require [clj-harness.core :as h]
+            [clj-harness.infra :as infra]
             [clj-harness.session.sqlite :as sess]
             [tapalakbot.purchase-advice :as advice]
             [tapalakbot.purchase-tools :as purchase]
@@ -66,6 +67,7 @@ user_want содержит только требования пользоват�
  В inspect_listings.focus проси прочитать надписи и увидеть детали, не оценивать надёжность, оригинальность или техническое состояние.
  Если inspect_listings вернул seller facts, это дословные данные продавца для конкретных ID; не превращай их в подтверждённые характеристики.
  После сравнения вызови recommend_results для 1–3 принятых объявлений с причиной и проверками. Не выбирай автоматически самое дешёвое.
+Для обычного использования не выбирай объявление с явно сломанной необходимой функцией как лучший готовый вариант. Проект ремонта или товар на запчасти допустим, только если пользователь этого просит; обычные следы использования сами по себе не запрещают покупку.
  Если recommend_results вернул unsupported с issues, не повторяй тот же вызов: получи новое свидетельство (inspect_listings для видимой детали или research для внешнего источника), либо честно оставь утверждение неизвестным. unavailable также не означает принятую рекомендацию.
 После unsupported исправляй конкретные отвергнутые утверждения, а не пересказывай их синонимами. Достаточно одной принятой карточки с полезным основанием: можно опереться на явно приписанные продавцу факты source-context и назвать неизвестное. Не добавляй «оригинальный», «стабильно работает», «нет блокировок» по фото или названию. Советы о линейке не доказывают свойства другого поколения/экземпляра.
 Хорошее основание: «Продавец заявляет X; это стоит проверить для вашей задачи Y, но Z неизвестно». X бери из source-context этой карточки; не копируй шаблон вместо фактов. Общий исследовательский вывод можно оставить в стратегии, он не обязан входить в каждую причину.
@@ -128,8 +130,10 @@ reason — осторожная гипотеза «стоит проверить
           :visual-evidence (some-> (:visual-evidence card) purchase/visual-context)}
          (conversation/seller-facts card)))
 
+(def ^:private candidate-preview-limit 40)
+
 (defn- candidate-context
-  "The agent can compare the full owned pool, never listing money/action URLs.
+  "Bounded semantic-rank preview; the full source pool remains owned server-side.
    Seller facts are included only for IDs explicitly inspected in this turn."
   [{:keys [cards candidates search-status error inspected]}]
   (if (= :unavailable search-status)
@@ -139,13 +143,19 @@ reason — осторожная гипотеза «стоит проверить
                     {:id (str (:id card))
                      :title (conversation/discussion-title (:title card))
                      :fit (get-in card [:decision :fit])
-                     :condition (get-in card [:decision :condition])})]
+                     :condition (get-in card [:decision :condition])
+                     :rank-score (:rank-score card)
+                     :risk (get-in card [:decision :risk])})]
       (json/generate-string
        (cond-> {:notice (str "Карточки покажутся отдельно. Сравни модели и признаки, не пересказывай каталог. "
+                            "Здесь показан ограниченный semantic-preview; полный принятый пул сохранён для выдачи и сортировки. "
                             "Можно inspect_listings для 1–4 исходных ID и recommend_results для 1–3 принятых ID. "
+                            "Кандидаты для анализа упорядочены по уже выполненному JEV, не по дешевизне; score — соответствие источника, не гарантия качества. "
                             "Фото-кандидаты ещё НЕ приняты; не называй их подходящими до повторного JEV. "
                             "Пустая принятая выборка не означает пустой рынок; не повторяй search автоматически.")
-                :accepted (mapv compact cards)
+                :accepted-total (count cards)
+                :accepted (mapv compact (take candidate-preview-limit
+                                              (result-order/order-cards cards :relevance)))
                 :photo_candidates (->> candidates
                                        (remove #(contains? accepted (str (:id %))))
                                        (filter :image) (take 24) (mapv compact))}
@@ -340,7 +350,7 @@ reason — осторожная гипотеза «стоит проверить
     (h/create-bot
      {:name "tapalakbot" :prompt system-prompt :tools tools
       :model :gemini-3.5-flash :provider :openrouter
-      :max-turns 8
+      :max-turns (infra/cfg :agent :max-turns)
       :nudges {:max-step-blocks 2 :recover-tool-errors? true}
       :pre-hook pre-hook
       :persistence (let [path (or (System/getenv "SESSION_DB_PATH")

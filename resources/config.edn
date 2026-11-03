@@ -20,7 +20,7 @@
        :batch-size 20
        :concurrency 3
        :timeout-ms 30000}
- :agent {:max-turns 8
+ :agent {:max-turns 9
          :max-tool-output 30000
          :compact-threshold 40000
          :keep-recent 8}}
