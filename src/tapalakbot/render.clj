@@ -210,7 +210,7 @@
 (defn- condition-indication
   [{:keys [condition decision]}]
   (let [label (or (when (= "damaged" (condition-token (:condition decision)))
-                    "⚠️ Есть неисправность")
+                    "⚠️ Повреждение или неисправность")
                   (decision-condition-label condition)
                   (decision-condition-label (:condition decision))
                   "Состояние не указано")]
