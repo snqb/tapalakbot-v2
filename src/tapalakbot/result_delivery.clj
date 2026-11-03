@@ -1,21 +1,20 @@
 (ns tapalakbot.result-delivery
   "Owned result controls and lossless native Rich Message delivery."
-   (:require [clj-harness.telegram :as tg]
-             [clojure.string :as str]
-             [clojure.tools.logging :as log]
-             [tapalakbot.bot-state :as state]
-             [tapalakbot.render :as render]
-             [tapalakbot.result-order :as result-order]
-             [tapalakbot.result-store :as result-store]
-             [tapalakbot.search :as search]))
+   (:require
+    [clj-harness.telegram :as tg]
+    [clojure.string :as str]
+    [clojure.tools.logging :as log]
+    [tapalakbot.bot-state :as state]
+    [tapalakbot.render :as render]
+    [tapalakbot.result-order :as result-order]
+    [tapalakbot.search :as search]))
 
-(defn- refinement-budget [direction cards]
+(defn- refinement-budgets [cards]
   (let [prices (->> cards (keep search/card-price-kgs) (filter pos?) sort vec)]
     (when (seq prices)
       (let [median (double (nth prices (quot (count prices) 2)))]
-        (long (if (= direction :cheaper)
-                (Math/floor (* 0.9 median))
-                (Math/ceil (* 1.1 median))))))))
+        {:cheaper (long (Math/floor (* 0.9 median)))
+         :dearer (long (Math/ceil (* 1.1 median)))}))))
 
 (defn- sort-control-label [mode active?]
   (str (when active? "✓ ") (result-order/mode-label mode)))
@@ -25,30 +24,33 @@
    [query cursor-id has-more owner-id context]
    (let [context (assoc context :query query)
          active-mode (or (:sort-mode context) result-order/default-mode)
+         budgets (refinement-budgets (:cards context))
          sort-row (when cursor-id
                     (mapv (fn [mode]
                             {"text" (sort-control-label mode (= mode active-mode))
                              "callback_data" (str "sort:" (name mode) ":" cursor-id)})
-                          [:price-asc :price-desc :relevance]))
+                          (cond-> [:price-asc :price-desc :relevance]
+                            (some :recommendation (:cards context)) (conj :recommended))))
          rows (cond-> []
                 (and has-more cursor-id)
-                (conj [{"text" (str "🔄 Ещё " result-store/page-size " вариантов")
+                (conj [{"text" "Следующая страница"
                         "callback_data" (str "page:" cursor-id)}])
                 sort-row
                 (conj sort-row)
-                (some? (refinement-budget :cheaper (:cards context)))
-                (conj (mapv (fn [[direction label]]
-                              {"text" label
+                (seq budgets)
+                (conj (mapv (fn [[direction bound]]
+                              {"text" (str "Найти " bound " "
+                                           (render/format-price (get budgets direction)) " сом")
                                "callback_data" (str (name direction) ":"
                                                     (state/cache-refinement! owner-id context))})
-                            [[:cheaper "⬇️ Дешевле"] [:dearer "⬆️ Дороже"]])))]
+                            [[:cheaper "до"] [:dearer "от"]])))]
      (when (seq rows) {"inline_keyboard" rows})))
 
 (defn refinement-message
   "Consume only an owned callback and return an authoritative replacement budget."
   [owner-id direction callback-token]
   (when-let [{:keys [query cards]} (state/take-refinement! owner-id callback-token)]
-    (when-let [budget (refinement-budget direction cards)]
+    (when-let [budget (get (refinement-budgets cards) direction)]
       (merge {:text (str query "\nПокажи варианты "
                          (if (= direction :cheaper) "дешевле: до " "дороже: от ")
                          budget " сом.")}

@@ -78,6 +78,7 @@ Collection, selector or pre-search conversation-provider failure is unavailable,
 | `OPENROUTER_API_KEY` | Dedicated credential from `pass openrouter/lalabot-token`; do not overwrite or reuse the old global entry |
 | `OPENROUTER_BASE_URL` | `https://tapalak-gateway-edge.vercel.app/api/v1/chat/completions` |
 | `JEV_BASE_URL` | `https://tapalak-gateway-edge.vercel.app/api/v1/systemone` |
+| `EXA_API_KEY` | Buying research; existing credential from `pass api/exa`, runtime only |
 | `TELEGRAM_PROXY_URL` | `https://tapalak-gateway-edge.vercel.app/telegram`; current bot token authenticates in a bearer header |
 | `SESSION_DB_PATH` | `/data/tapalakbot-sessions.db` |
 | `MONITOR_DB_PATH` | `/data/tapalakbot-monitor.db` |
@@ -129,3 +130,11 @@ Do not publish code or restart production merely because deterministic tests pas
 - Historical native desktop captures show raw source cards, not production JEV selections. Record actual production Rich cards, pagination, refinements and topic isolation in the consumer receipts; do not reuse that baseline as selector proof.
 
 Gateway release identity, exact Dokploy rollout identity and post-release consumer evidence are kept in the sanitized deployment/verification receipts. Historical invalid-key and missing-gateway failures are retained as outage baselines, not current blockers.
+
+## Advisor release verification
+
+The advisor adds Exa research and image evidence on the existing conversation path; it must not start a separate agent, poller or selector. Prepare `EXA_API_KEY` in Dokploy runtime before the auto-deployed push. Preserve all other variables, persisted volumes, webhook registration and stop-first policies.
+
+Before migrating retained monitor data, create private consistent SQLite snapshots (for example, JDBC `VACUUM INTO` inside the running container), not a bare copy of a live WAL database. The provenance migration is additive and transactional: old mixed seen rows become unknown; only a subsequent filter edit reopens those unknown rows.
+
+Release evidence is recorded in the existing search/tracking V2 execution journal. Native MTProto/Rich proof is not an Android/iOS layout screenshot. Never call a corrected replay a new autonomous conversation.

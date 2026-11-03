@@ -10,7 +10,7 @@
 (def ^:private result-pool-ttl-ms (* 30 60 1000))
 
 (def ad-cache
-  "User ID to a timestamped numeric card index for drill-down callbacks."
+  "Owner-scoped drill-down and search state with independent expiries."
   (atom {}))
 
 (def result-pools
@@ -26,21 +26,49 @@
                                         [(inc index)
                                          (assoc card :result-index (inc index))])
                                       cards))]
-       (swap! ad-cache assoc owner-id
-              {:created-at (System/currentTimeMillis)
-               :cards indexed})
+       (swap! ad-cache update owner-id assoc
+              :created-at (System/currentTimeMillis) :cards indexed)
        (log/info :ad-cache-update :owner owner-id :count (count indexed))
        {:start 1 :count (count indexed)})))
 
- (defn get-ad
-   "Return a cached card by user ID and numeric index, evicting stale state."
-   [user-id index]
-   (when-let [{:keys [created-at cards]} (get @ad-cache user-id)]
-     (if (<= (- (System/currentTimeMillis) created-at) ad-cache-ttl-ms)
-       (get cards index)
-       (do
-         (swap! ad-cache dissoc user-id)
-         nil))))
+(defn get-ad
+  "Return a cached card by user ID and numeric index, evicting stale drill-down state."
+  [user-id index]
+  (when-let [{:keys [created-at cards]} (get @ad-cache user-id)]
+    (cond
+      (nil? created-at) nil
+      (<= (- (System/currentTimeMillis) created-at) ad-cache-ttl-ms)
+      (get cards index)
+      :else
+      (do
+        (swap! ad-cache
+               (fn [cache]
+                 (if-let [state (get cache user-id)]
+                   (let [remaining (dissoc state :created-at :cards)]
+                     (if (seq remaining)
+                       (assoc cache user-id remaining)
+                       (dissoc cache user-id)))
+                   cache)))
+        nil))))
+
+(defn cache-search!
+  "Retain the owned source candidates for photo follow-ups, not just admitted cards."
+  [owner-id task-id result]
+  (when owner-id
+    (swap! ad-cache update owner-id
+           (fn [state]
+             (cond-> (assoc state :search-task-id task-id :search-result result
+                            :search-created-at (or (:cache-created-at result)
+                                                   (System/currentTimeMillis)))
+               (empty? (:cards result)) (assoc :cards {}))))))
+
+(defn cached-search
+  "Return only this task's unexpired search; re-analysis cannot renew its lifetime."
+  [owner-id task-id]
+  (let [{:keys [search-task-id search-result search-created-at]} (get @ad-cache owner-id)]
+    (when (and task-id (= task-id search-task-id) search-created-at
+               (<= (- (System/currentTimeMillis) search-created-at) result-pool-ttl-ms))
+      (assoc search-result :cache-created-at search-created-at))))
 
  (defn- fresh-cursor-id []
    (subs (str/replace (str (random-uuid)) "-" "") 0 10))
@@ -76,7 +104,7 @@
                      :offset page-end
                      :context context
                      :sort-mode (:sort-mode context)
-                     :created-at now}]
+                     :created-at (or (:cache-created-at context) now)}]
           (swap! result-pools
                  (fn [pools]
                    (assoc (purge-expired (owner-pools pools user-id) now)
@@ -127,7 +155,7 @@
               (recur))))))))
 
  (defn next-result-page!
-   "Atomically advance an unexpired cursor and return its owner's next page."
+   "Advance an owned cursor: :page, :exhausted with total, or :stale without data."
    [user-id cursor-id requested-page-size]
    (loop []
      (let [pools @result-pools
@@ -138,17 +166,18 @@
            complete? (and state
                           (>= (:offset state) (count (:cards state))))]
        (cond
-         (nil? state) nil
+         (nil? state) {:status :stale}
          expired?
          (do
            (swap! result-pools dissoc cursor-id)
-           nil)
-         complete? nil
-         (not= user-id (:user-id state)) nil
+           {:status :stale})
+         (not= user-id (:user-id state)) {:status :stale}
+         complete? {:status :exhausted :total (count (:cards state))}
          :else
          (let [start (:offset state)
                end (min (count (:cards state)) (+ start requested-page-size))
-               page {:cards (subvec (:cards state) start end)
+               page {:status :page
+                     :cards (subvec (:cards state) start end)
                      :query (:query state)
                      :context (:context state)
                      :sort-mode (:sort-mode state)

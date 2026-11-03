@@ -1,5 +1,7 @@
 # TapalakBot — GOAL.md
 
+> Historical roadmap. Search/tracking V2 scope and acceptance are maintained in [the execution journal](plans/2026-11-02-search-and-tracking-v2.md). Its real-model/Lalafo/Telegram verification supersedes the mocked-response and cross-platform acceptance assumptions below.
+
 > Vision: [VISION.md](VISION.md) — marketplace intelligence agent that doesn't just search, it *understands the market*.
 
 ---

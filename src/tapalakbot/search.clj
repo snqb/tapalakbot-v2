@@ -78,7 +78,7 @@
    :query remains the complete user intent used by the semantic selector."
   ([user-query] (search user-query {}))
   ([user-query {:keys [queries price-min price-max city-id category-id status-cb
-                      budget-override?]}]
+                      budget-override? excluded-ids]}]
    (let [parsed (qb/parse user-query)
          minimum (if budget-override? price-min (or (:price-min parsed) price-min))
          maximum (if budget-override? price-max (or (:price-max parsed) price-max))
@@ -91,7 +91,8 @@
                            user-query)
          terms (search-terms (:query parsed) queries)
          base {:query effective-query :platforms [:lalafo]
-               :qb-result (assoc parsed :price-min minimum :price-max maximum)}]
+               :qb-result (assoc parsed :price-min minimum :price-max maximum)}
+         excluded (set (map str excluded-ids))]
      (try
        (when status-cb (status-cb "Собираю объявления с Lalafo…"))
        (let [raw (lalafo/search {"queries" terms "price_min" minimum "price_max" maximum
@@ -104,7 +105,8 @@
              candidates (->> (get data "items" [])
                              (mapv lalafo-item->card)
                              dedup-cards
-                             (filterv #(within-budget? % minimum maximum)))
+                             (filterv #(and (within-budget? % minimum maximum)
+                                            (not (contains? excluded (str (:id %)))))))
              selected (jev/select-cards effective-query candidates
                                         {:status-cb status-cb
                                          :price-min minimum :price-max maximum})
@@ -112,6 +114,8 @@
          (log/info :search-selected :query user-query :candidates (count candidates)
                    :accepted (count cards) :model (get-in selected [:selection :model]))
          (merge base {:cards cards :stats (compute-stats cards)
+                      :evaluated-ids (mapv :id candidates)
+                      :candidates candidates
                       :selection (:selection selected)
                       :collection (into {} (map (fn [[k v]] [(keyword k) v])) collection)
                       :search-status :ok}))
@@ -119,3 +123,21 @@
          (log/error e :search-unavailable :query user-query :type (:type (ex-data e)))
          (merge base {:cards [] :stats {:count 0} :search-status :unavailable
                       :error "Не удалось проверить объявления. Это не означает, что подходящих вариантов нет. Попробуйте повторить поиск позже."}))))))
+
+(defn reselect-cards
+  "Reconcile inspected owned candidates without changing their source facts."
+  [result inspected]
+  (let [selected (jev/select-cards (:query result) inspected
+                                   (select-keys (:qb-result result) [:price-min :price-max]))
+        ids (set (map (comp str :id) inspected))
+        accepted (vec (concat (remove #(contains? ids (str (:id %))) (:cards result))
+                              (:cards selected)))
+        updates (into {} (map (juxt (comp str :id) identity)) inspected)
+        counts (frequencies (map #(get-in % [:decision :fit]) accepted))]
+    (-> result
+        (assoc :cards accepted :stats (compute-stats accepted))
+        (update :candidates #(mapv (fn [card] (get updates (str (:id card)) card)) %))
+        (update :selection merge
+                {:accepted-count (get counts :direct 0)
+                 :uncertain-count (get counts :possible 0)
+                 :rejected-count (- (count (:evaluated-ids result)) (count accepted))}))))

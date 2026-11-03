@@ -347,47 +347,6 @@
                                 matches)))
       (str "No categories found for '" search-term "'."))))
 
-;; ══════════════════════════ EXA RESEARCH ══════════════════════════
-
-(defn exa-research
-  "Search the web via Exa API. Returns JSON string with results.
-   Gets API key from env EXA_API_KEY or pass."
-  [query]
-  (let [api-key (or (System/getenv "EXA_API_KEY")
-                    (try
-                      (let [proc (.exec (Runtime/getRuntime)
-                                        (into-array String ["pass" "show" "api/exa"]))
-                            out (slurp (.getInputStream proc))]
-                        (.waitFor proc)
-                        (str/trim out))
-                      (catch Exception _ nil)))]
-    (if (str/blank? api-key)
-      (json/generate-string {:error "No Exa API key configured"})
-      (let [client (build-client)
-            req (-> (HttpRequest/newBuilder)
-                    (.uri (URI/create "https://api.exa.ai/search"))
-                    (.header "x-api-key" api-key)
-                    (.header "Content-Type" "application/json")
-                    (.POST (java.net.http.HttpRequest$BodyPublishers/ofString
-                            (json/generate-string {:query query
-                                                   :type "auto"
-                                                   :numResults 5
-                                                   :contents {:text {:maxCharacters 300}}})))
-                    (.timeout (Duration/ofSeconds 15))
-                    (.build))
-            resp (.send client req (HttpResponse$BodyHandlers/ofString))]
-        (if (= 200 (.statusCode resp))
-          (let [body (.body resp)
-                data (json/parse-string body)
-                results (mapv (fn [r]
-                                {:title (get r "title" "")
-                                 :url (get r "url" "")
-                                 :snippet (-> (get r "text" (get r "snippet" ""))
-                                              (subs 0 (min 300 (count (or (get r "text") "")))))
-                                 :score (get r "score")})
-                              (get data "results" []))]
-            (json/generate-string {:results results} {:pretty true}))
-          (json/generate-string {:error (str "Exa API returned " (.statusCode resp))}))))))
 
 (comment
   ;; REPL testing
@@ -408,9 +367,6 @@
 
   ;; Search categories
   (println (l/search-categories "наушники"))
-
-  ;; Exa research
-  (println (l/exa-research "iPad Air M1 specs 2025"))
 
   ;; Smoke test
   (l/smoke-test))

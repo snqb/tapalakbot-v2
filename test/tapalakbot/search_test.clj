@@ -92,3 +92,17 @@
         (is (nil? (get-in result [:qb-result :price-min])))
         (is (= 50000 (get-in result [:qb-result :price-max])))
         (is (not (re-find #"10000|20000" @seen-query)))))))
+
+(deftest explicit-rejected-ids-never-reenter-semantic-selection
+  (let [seen (atom nil)]
+    (with-redefs [lalafo/search
+                  (fn [_] {"items" [{"id" 101 "title" "Отвергнутый" "price" 1000 "currency" "KGS"}
+                                    {"id" 102 "title" "Другой" "price" 2000 "currency" "KGS"}]})
+                  jev/select-cards
+                  (fn [_ cards _]
+                    (reset! seen cards)
+                    {:cards cards :selection {}})]
+      (let [result (search/search "товар" {:excluded-ids ["101"]})]
+        (is (= [102] (mapv :id @seen)))
+        (is (= [102] (mapv :id (:cards result))))
+        (is (= 2000 (:price (first (:cards result)))))))))

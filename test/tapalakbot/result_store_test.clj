@@ -8,11 +8,13 @@
         cursor-id (result-store/cache-result-pool! "tg-42" "camry" cards 20)
         second-page (result-store/next-result-page! "tg-42" cursor-id 20)
         third-page (result-store/next-result-page! "tg-42" cursor-id 20)]
+    (is (= :page (:status second-page) (:status third-page)))
     (is (= (vec (range 20 40)) (mapv :id (:cards second-page))))
     (is (true? (:has-more second-page)))
     (is (= (vec (range 40 45)) (mapv :id (:cards third-page))))
     (is (false? (:has-more third-page)))
-    (is (nil? (result-store/next-result-page! "tg-42" cursor-id 20)))
+    (is (= {:status :exhausted :total 45}
+           (result-store/next-result-page! "tg-42" cursor-id 20)))
     (is (= 45 (count (set (concat (range 20)
                                   (map :id (:cards second-page))
                                   (map :id (:cards third-page)))))))))
@@ -37,7 +39,8 @@
          sorted (result-store/sort-result-pool! "tg-sort" cursor :price-asc 2)]
      (is (= [:b :c] (mapv :id (:cards sorted))))
      (is (= [1 2] (mapv :result-index (:cards sorted))))
-     (is (nil? (result-store/next-result-page! "tg-sort" cursor 2)))
+     (is (= {:status :stale}
+            (result-store/next-result-page! "tg-sort" cursor 2)))
      (is (= [:a] (mapv :id (:cards
                             (result-store/next-result-page!
                              "tg-sort" (:cursor-id sorted) 2)))))))
@@ -49,11 +52,40 @@
    (is (= :second (:id (result-store/get-ad "tg-drill" 1))))
    (is (= 1 (:result-index (result-store/get-ad "tg-drill" 1)))))
 
+(deftest search-and-drilldown-lifetimes-are-independent
+  (reset! result-store/ad-cache {})
+  (let [search-only-owner "search-only"
+        owner "independent"
+        task-id "task-1"
+        search-result {:query "camry" :cards [{:id :source}]
+                       :candidates [{:id :source}]}]
+    (result-store/cache-search! search-only-owner task-id search-result)
+    (is (nil? (result-store/get-ad search-only-owner 1)))
+    (is (= "camry"
+           (:query (result-store/cached-search search-only-owner task-id))))
+    (result-store/cache-ads! owner [{:id :drilldown}])
+    (result-store/cache-search! owner task-id search-result)
+    (swap! result-store/ad-cache assoc-in [owner :created-at] 0)
+    (is (nil? (result-store/get-ad owner 1)))
+    (is (nil? (get-in @result-store/ad-cache [owner :created-at])))
+    (is (nil? (get-in @result-store/ad-cache [owner :cards])))
+    (is (= "camry"
+           (:query (result-store/cached-search owner task-id))))
+    (is (= search-result
+           (get-in @result-store/ad-cache [owner :search-result])))))
+
 (deftest cursor-rejects-another-user
   (reset! result-store/result-pools {})
   (let [cursor-id (result-store/cache-result-pool!
                    "tg-owner" "camry" [{:id 1} {:id 2}] 1)]
-    (is (nil? (result-store/next-result-page! "tg-other" cursor-id 1)))))
+    (is (= {:status :stale}
+           (result-store/next-result-page! "tg-other" cursor-id 1)))
+    (is (= [2] (mapv :id (:cards
+                          (result-store/next-result-page! "tg-owner" cursor-id 1)))))
+    (is (= {:status :stale}
+           (result-store/next-result-page! "tg-other" cursor-id 1)))
+    (is (= {:status :exhausted :total 2}
+           (result-store/next-result-page! "tg-owner" cursor-id 1)))))
 
 (deftest stale-state-is-removed-on-access
   (reset! result-store/ad-cache
@@ -68,7 +100,8 @@
                            :cards [{:id 1}]
                            :offset 0
                            :created-at 0}})
-  (is (nil? (result-store/next-result-page! "tg-42" "stale-cursor" 20)))
+  (is (= {:status :stale}
+         (result-store/next-result-page! "tg-42" "stale-cursor" 20)))
   (is (empty? @result-store/result-pools)))
 
 (deftest sorted-pages-keep-the-current-view-context
@@ -91,7 +124,7 @@
     (is (nil? (result-store/sort-result-pool! "other" cursor :price-desc 20)))
     (is (nil? (result-store/sort-result-pool! "owner" cursor :invalid 20)))
     (is (= [1] (mapv :id (:cards
-                         (result-store/sort-result-pool! "owner" cursor :price-desc 20)))))))
+                          (result-store/sort-result-pool! "owner" cursor :price-desc 20)))))))
 
 (deftest expired-sort-never-restores-stale-source-results
   (reset! result-store/result-pools

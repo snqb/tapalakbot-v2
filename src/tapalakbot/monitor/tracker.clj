@@ -1,45 +1,26 @@
 (ns tapalakbot.monitor.tracker
-  "Background tracker: checks user tracking filters against Lalafo,
-   sends Telegram notifications for new items.
-   
-   Architecture (lalafo-client-first):
-   - At creation: LLM matches user query → category_id via search-categories
-   - At check time: use category_id + user's original query (no LLM for search)
-   - Typed JEV selection over full source descriptions"
+  "Background tracker for durable Lalafo subscriptions.
+
+   A subscription stores the resolved request, its query variants and its
+   Telegram delivery target.  Collection and typed JEV selection are reused
+   from the interactive search path; no tracker-specific semantic filters are
+   applied."
   (:require [tapalakbot.monitor.store :as store]
-            [tapalakbot.lalafo :as lalafo]
             [tapalakbot.search :as search]
-            [tapalakbot.jev :as jev]
             [tapalakbot.render :as render]
             [clj-harness.telegram :as tg]
-            [clj-harness.llm :as llm]
-            [cheshire.core :as json]
             [clojure.string :as str]
             [clojure.tools.logging :as log])
-  (:import [java.time LocalDateTime]
+  (:import [java.time LocalDateTime ZoneOffset]
            [java.time.format DateTimeFormatter]))
 
-;; ══════════════════════ CONFIG ══════════════════════
-
-(def ^:private check-interval-ms
-  "Check every 2 hours."
-  (* 2 60 60 1000))
-
-(def ^:private max-notifications-per-check
-  "Max new items to notify per filter per check cycle."
-  5)
-
-(def ^:private max-pages-per-query 1)
-
-(def ^:private per-page 40)
-
-(def ^:private sqlite-time
-  (DateTimeFormatter/ofPattern "yyyy-MM-dd HH:mm:ss"))
+(def ^:private due-check-interval-ms (* 60 1000))
+(def ^:private sqlite-time (DateTimeFormatter/ofPattern "yyyy-MM-dd HH:mm:ss"))
+(def ^:private notification-batch-size 20)
 
 (defn track-due?
-  "True when a subscription has never run or its own notification interval
-   has elapsed."
-  ([track] (track-due? track (LocalDateTime/now)))
+  "True when a subscription has never run or its own interval elapsed."
+  ([track] (track-due? track (LocalDateTime/now ZoneOffset/UTC)))
   ([{:keys [last_checked_at notify_interval]} now]
    (if-not last_checked_at
      true
@@ -51,189 +32,195 @@
          (log/warn :track-invalid-last-checked :value last_checked_at)
          true)))))
 
-;; ══════════════════════ CATEGORY MATCHING (called once at track creation) ══════════════════════
 
-(defn match-category
-  "Match user query to Lalafo category_id. Called ONCE at track creation.
-   Uses search-categories to find candidates, then LLM picks the best one."
-  [track-title]
-  (try
-    ;; Step 1: Get matching categories from Lalafo
-    (let [categories-str (lalafo/search-categories track-title)
-          prompt (str "Match this search to a Lalafo.kg category.\n\n"
-                      "User wants: " track-title "\n\n"
-                      "Matching categories:\n" categories-str "\n\n"
-                      "Rules:\n"
-                      "1. Pick the MOST SPECIFIC (deepest) category\n"
-                      "2. For phones/electronics → pick the brand-specific category\n"
-                      "3. For real estate → pick the specific property type\n"
-                      "4. If no good match, return {\"category_id\": null}\n\n"
-                      "Return JSON: {\"category_id\": number|null, \"category_name\": \"string\"}")
-          messages [{:role "user" :content prompt}]
-          resp (llm/llm :gemini-3.5-flash messages [] :provider :openrouter :max-tokens 100)
-          content (get-in resp ["choices" 0 "message" "content"])
-          json-str (or (re-find #"(?s)\{.*\}" content) "{}")
-          parsed (try (json/parse-string json-str true)
-                      (catch Exception _ {}))]
-      {:category-id (:category_id parsed)
-       :category-name (:category_name parsed)
-       :text-query track-title})
-    (catch Exception e
-      (log/warn :category-match-failed :track-title track-title :error (.getMessage e))
-      {:category-id nil :category-name nil :text-query track-title})))
+(defn- parse-queries
+  [queries title]
+  (let [value (cond
+                (sequential? queries) queries
+                (string? queries) (store/parse-track-queries queries)
+                :else [])
+        values (->> value
+                    (filter string?)
+                    (map str/trim)
+                    (remove str/blank?)
+                    distinct
+                    (take 3)
+                    vec)]
+    (if (seq values) values [title])))
 
-;; ══════════════════════ SOURCE-BOUND JEV SELECTION ══════════════════════
-
-(defn filter-relevant
-  "Use the same full-description JEV selector as interactive search.
-   Failure defers the subscription check; it never retires unseen candidates."
-  [track-title items]
-  (try
-    (let [by-id (into {} (map (fn [item] [(str (get item "id")) item])) items)
-          result (jev/select-cards track-title (mapv search/lalafo-item->card items) {})]
-      (mapv #(get by-id (str (:id %))) (:cards result)))
-    (catch Exception e
-      (log/warn :track-relevance-failed :error (.getMessage e))
-      nil)))
-
-;; ══════════════════════ SEARCH (lalafo-client-first) ══════════════════════
+(defn- prior-excluded-ids
+  [track]
+  (->> (concat (store/seen-item-ids (:id track))
+               (store/parse-track-excluded-ids (:excluded_ids track)))
+       (map str)
+       distinct
+       vec))
 
 (defn search-track
-  "Collect full source listings. Provider failure defers the check."
-  [{:keys [price_min price_max city_id category_id]} text-query]
-  (let [[found items pages] (#'lalafo/search-all-pages
-                            (#'lalafo/build-client) text-query
-                            :category-id category_id :city-id city_id
-                            :price-min price_min :price-max price_max
-                            :max-pages max-pages-per-query :per-page per-page)]
-    (log/info :track-search :query text-query :category-id category_id
-              :found found :items (count items) :pages pages)
-    (vec items)))
+  "Collect and select using the saved resolved request."
+  [track text-query]
+  (search/search text-query
+                 {:queries (parse-queries (:queries track) text-query)
+                  :price-min (:price_min track)
+                  :price-max (:price_max track)
+                  :city-id (:city_id track)
+                  :category-id (:category_id track)
+                  :excluded-ids (prior-excluded-ids track)
+                  :budget-override? true}))
 
-;; ══════════════════════ NOTIFICATION ══════════════════════
+(defn- item-id [item]
+  (:id item))
+
+(defn- collection-available? [result]
+  (and (= :ok (:search-status result))
+       (zero? (long (or (get-in result [:collection :failed-queries]) 0)))
+       (not (:error result))))
 
 (defn- format-notification
-  "Format a notification message for relevant items using render module."
+  "Render an escaped alert heading plus source-owned native Rich HTML."
   [track-title items]
-  (let [cards (mapv search/lalafo-item->card items)
-        reply {:mode :shortlist
-               :intro (str "🔔 <b>«" (render/escape-html track-title) "»</b> — " (count items) " новых")
-               :cards cards
-               :cta nil
-               :assumptions []}]
-    (render/render-reply reply)))
+  (str "🔔 <b>«" (render/escape-html track-title) "»</b> — "
+       (count items) " новых\n\n"
+       (render/render-results-rich items {:include-images? true})))
 
-(defn- extract-user-id-from-track
-  "Extract numeric Telegram user ID from track user-id (format: 'tg-123456')."
-  [user-id]
-  (when (str/starts-with? user-id "tg-")
-    (subs user-id 3)))
 
-;; ══════════════════════ CHECK LOGIC ══════════════════════
+(defn- delivery-target
+  "New rows use their persisted chat/topic. Legacy tg-N rows keep private chat."
+  [{:keys [chat_id thread_id user_id]}]
+  (if (some? chat_id)
+    {:chat-id chat_id :thread-id thread_id}
+    (when (and (string? user_id) (re-matches #"^tg-\d+$" user_id))
+      {:chat-id (subs user_id 3) :thread-id nil})))
+
+(defn- send-confirmed? [response]
+  (and (map? response)
+       (some? (or (get response "message_id")
+                  (:message_id response)
+                  (get-in response ["result" "message_id"])
+                  (get-in response [:result :message_id])))
+       (not (or (= false (get response "ok"))
+                (= false (:ok response))))))
+
+(defn- send-notification! [{:keys [chat-id thread-id]} message]
+  (tg/send-rich-message chat-id :html message :preview false :thread-id thread-id))
+
+
+(def ^:private filter-keys
+  [:title :queries :price_min :price_max :city_id :category_id :excluded_ids :notify_interval])
+
+(defn- still-current? [track]
+  (let [current (store/get-track (:id track))]
+    (and (= 1 (:enabled current))
+         (every? #(= (get track %) (get current %)) filter-keys))))
 
 (defn check-track
-  "Check one subscription. Relevant items become seen only after Telegram
-   confirms delivery; failed notifications remain retryable."
-  [{:keys [id user_id title price_min price_max] :as track}]
+  "Check one subscription. Positive items become seen only after send success.
+   Collection failures defer the check; completed JEV decisions can retire
+   rejected noise through :evaluated-ids."
+  [{:keys [id title] :as track}]
   (try
-    (let [items (search-track track title)
-          new-items (filterv #(not (store/seen-item? id (get % "id"))) items)
-          in-budget (if (or price_min price_max)
-                      (filterv (fn [item]
-                                 (when-let [p (search/card-price-kgs
-                                               (search/lalafo-item->card item))]
-                                   (and (or (nil? price_min) (>= p price_min))
-                                        (or (nil? price_max) (<= p price_max)))))
-                               new-items)
-                      new-items)
-          clean-items in-budget
-          candidates (vec (take (* 3 max-notifications-per-check) clean-items))]
-      (log/info :track-check-detail :track-id id :total-items (count items)
-                :new-items (count new-items) :in-budget (count in-budget))
-      (if (empty? candidates)
-        (do
-          (store/mark-track-checked! id)
-          {:new-items 0 :notified? false})
-        (let [relevant (filter-relevant title candidates)]
-          (if (nil? relevant)
-            (do
-              (log/warn :track-classification-deferred :track-id id)
-              {:new-items (count clean-items) :notified? false})
-            (let [relevant-ids (set (map #(get % "id") relevant))
-                  irrelevant (remove #(contains? relevant-ids (get % "id")) candidates)
-                  to-send (vec (take max-notifications-per-check relevant))]
-              ;; A successful relevance decision lets us retire known noise.
-              (doseq [item irrelevant]
-                (store/mark-item-seen! id (get item "id")))
-              (if (empty? to-send)
+    (when-not (still-current? track)
+      (throw (ex-info "Subscription is no longer active with this filter" {:deferred? true})))
+    (let [result (search-track track title)]
+      (when-not (and (map? result) (collection-available? result))
+        (log/warn :track-collection-deferred :track-id id)
+        (throw (ex-info "Track collection unavailable" {:deferred? true})))
+      ;; A pause, stop or filter edit during the HTTP/JEV call invalidates this result.
+      (when-not (still-current? track)
+        (throw (ex-info "Subscription changed during selection" {:deferred? true})))
+      (let [cards (vec (:cards result))
+            accepted-ids (set (keep #(some-> (item-id %) str) cards))
+            evaluated-ids (set (keep #(some-> % str) (:evaluated-ids result)))
+            rejected-ids (remove accepted-ids evaluated-ids)
+            batch (vec (take notification-batch-size cards))]
+        ;; JEV has made a completed decision about these IDs. They are not
+        ;; positive listings and therefore do not depend on Telegram delivery.
+        (doseq [item-id rejected-ids]
+          (store/mark-item-rejected! id item-id))
+        (log/info :track-check-detail :track-id id
+                  :evaluated-items (count evaluated-ids)
+                  :new-items (count cards))
+        (if (empty? cards)
+          (do
+            (store/mark-track-checked! id)
+            {:new-items 0 :notified? false})
+          (if-let [target (delivery-target track)]
+            (let [sent (try
+                         (send-notification! target (format-notification title batch))
+                         (catch Exception e
+                           (log/warn :track-notify-error :track-id id
+                                     :error (.getMessage e))
+                           nil))]
+              (if (send-confirmed? sent)
                 (do
+                  (doseq [card batch]
+                    (store/mark-item-seen! id (item-id card)))
+                  (store/increment-notify-count! id)
                   (store/mark-track-checked! id)
-                  {:new-items (count clean-items) :notified? false})
-                (if-let [tg-user-id (extract-user-id-from-track user_id)]
-                  (let [msg (format-notification title to-send)
-                        sent (tg/send-message tg-user-id msg :parse-mode "HTML")]
-                    (if sent
-                      (do
-                        (doseq [item to-send]
-                          (store/mark-item-seen! id (get item "id")))
-                        (store/increment-notify-count! id)
-                        (store/mark-track-checked! id)
-                        (log/info :track-notified :track-id id :user user_id
-                                  :items (count to-send))
-                        {:new-items (count clean-items) :notified? true})
-                      (do
-                        (log/warn :track-notify-deferred :track-id id :user user_id)
-                        {:new-items (count clean-items) :notified? false})))
-                  (do
-                    (log/warn :track-invalid-user-id :track-id id :user-id user_id)
-                    (store/mark-track-checked! id)
-                    {:new-items (count clean-items) :notified? false}))))))))
+                  (log/info :track-notified :track-id id :items (count batch))
+                  {:new-items (count cards) :notified? true})
+                (do
+                  (log/warn :track-notify-deferred :track-id id)
+                  {:new-items (count cards) :notified? false})))
+            (do
+              (log/warn :track-invalid-delivery-target :track-id id)
+              {:new-items (count cards) :notified? false})))))
+    (catch clojure.lang.ExceptionInfo e
+      (if (:deferred? (ex-data e))
+        {:new-items 0 :notified? false}
+        (do
+          (log/error e :track-check-error :track-id id)
+          {:new-items 0 :notified? false})))
     (catch Exception e
-      (log/error e :track-check-error :track-id (:id track))
+      (log/error e :track-check-error :track-id id)
       {:new-items 0 :notified? false})))
-
-;; ══════════════════════ BACKGROUND LOOP ══════════════════════
 
 (defonce ^:private tracker-thread (atom nil))
 
 (defn run-check-cycle!
-  "Check all active tracks. Returns summary."
+  "Check due active tracks. The short tick only performs due checks."
   []
   (let [all-tracks (store/get-all-active-tracks)
         due-tracks (filterv track-due? all-tracks)]
     (if (empty? due-tracks)
-      (do (log/info :track-check :no-due-tracks)
-          {:tracks 0 :new-items 0 :notified 0})
-      (let [results (mapv check-track due-tracks)
-            total-new (reduce + (map :new-items results))
-            total-notified (count (filter :notified? results))]
-        (log/info :track-check-complete :tracks (count due-tracks) :new-items total-new :notified total-notified)
-        {:tracks (count due-tracks) :new-items total-new :notified total-notified}))))
+      {:tracks 0 :new-items 0 :notified 0}
+      (let [results (mapv check-track due-tracks)]
+        {:tracks (count due-tracks)
+         :new-items (reduce + (map :new-items results))
+         :notified (count (filter :notified? results))}))))
+
+(defn- run-tracker-loop!
+  [sleep-fn]
+  (sleep-fn (* 5 60 1000))
+  (loop []
+    (try
+      (run-check-cycle!)
+      (catch InterruptedException e
+        (throw e))
+      (catch Exception e
+        (log/error e :tracker-loop-error (.getMessage e))))
+    (sleep-fn due-check-interval-ms)
+    (recur)))
 
 (defn start-tracker!
-  "Start background tracking thread."
+  "Start the daemon tracker without blocking server startup."
   []
   (when @tracker-thread
     (log/warn :tracker-already-running))
   (let [t (Thread.
-           (fn []
-             ;; Initial delay — let scanner finish first scan
-             (Thread/sleep (* 5 60 1000))
-             (loop []
-               (try
-                 (run-check-cycle!)
-                 (catch Exception e
-                   (log/error :tracker-loop-error (.getMessage e))))
-               (Thread/sleep check-interval-ms)
-               (recur)))
+           #(try
+              (run-tracker-loop! (fn [millis] (Thread/sleep millis)))
+              (catch InterruptedException _)
+              (catch Exception e
+                (log/error :tracker-loop-error (.getMessage e))))
            "monitor-tracker")]
     (.setDaemon t true)
     (.start t)
     (reset! tracker-thread t)
-    (log/info :tracker-started :interval-ms check-interval-ms)))
+    (log/info :tracker-started :interval-ms due-check-interval-ms)))
 
 (defn stop-tracker!
-  "Stop background tracking thread."
+  "Stop the daemon tracker thread."
   []
   (when-let [t @tracker-thread]
     (.interrupt t)
@@ -241,6 +228,6 @@
     (log/info :tracker-stopped)))
 
 (defn tracker-running?
-  "Check if tracker thread is alive."
+  "Return whether the tracker daemon is alive."
   []
   (boolean (and @tracker-thread (.isAlive ^Thread @tracker-thread))))

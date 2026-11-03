@@ -1,5 +1,7 @@
 (ns tapalakbot.core-test
   (:require [clj-harness.core :as harness]
+            [cheshire.core :as json]
+            [tapalakbot.conversation :as conversation]
             [clojure.string :as str]
             [clojure.test :refer [deftest is]]
             [tapalakbot.core :as core]
@@ -16,7 +18,8 @@
       (binding [core/*captured-cards* (atom [])
                 core/*captured-query* (atom nil)
                 core/*captured-search* (atom nil)]
-        (let [context ((:execute (second core/tools)) {"user_want" "дорожка"})]
+        (let [context ((:execute (some #(when (= "search" (:name %)) %) core/tools))
+                       {"user_want" "дорожка"})]
           (is (not (str/includes? context "12345")))
           (is (not (str/includes? context (:url card))))
           (is (= [card] @core/*captured-cards*)))))))
@@ -32,16 +35,14 @@
       (is (= :unavailable (:search-status result)))
       (is (empty? (:cards result))))))
 
-(deftest new-product-clears-prior-marketplace-context
-  (let [session (atom {"messages" [{"role" "user" "content" "ноутбук"}
-                                   {"role" "assistant" "content" "старые объявления"}
-                                   {"role" "user" "content" "роутер"}]
-                       "data" {"heap" {"old" "старый ноутбук"}
-                                "last-search" "ноутбук"}})]
-    (core/pre-hook "test" "роутер" session)
-    (is (= [{"role" "user" "content" "роутер"}] (get @session "messages")))
-    (is (nil? (get-in @session ["data" "heap"])))
-    (is (nil? (get-in @session ["data" "last-search"])))))
+(deftest freeform-feedback-keeps-the-conversation-for-the-agent
+  (let [state {"messages" [{"role" "user" "content" "компактная дорожка"}
+                            {"role" "assistant" "content" "Показаны варианты"}
+                            {"role" "user" "content" "эти не подходят — взрослому тесно"}]
+               "data" {"last-search" "компактная дорожка"}}
+        session (atom state)]
+    (core/pre-hook "test" "эти не подходят — взрослому тесно" session)
+    (is (= state @session))))
 
 (deftest price-only-followup-keeps-the-product-context
   (let [messages [{"role" "user" "content" "дорожка для ходьбы"}
@@ -57,3 +58,20 @@
       (is (= :unavailable (:search-status result)))
       (is (nil? (:selection result)))
       (is (= [] (:cards result))))))
+
+(deftest old-feedback-cannot-reject-the-newly-displayed-page
+  (let [session (atom {})
+        reject (:execute (some #(when (= "reject_results" (:name %)) %) core/tools))]
+    (conversation/remember-search! session {:user-want "дорожка"}
+                                   {:cards [{:id "current" :title "Вариант"}]
+                                    :search-status :ok})
+    (binding [core/*current-session* session
+              core/*current-message* "Первый вариант не подходит: нужен складной."]
+      (is (= "invalid" (get (json/parse-string
+                             (reject {"quote" "Первый и второй не подходят" "numbers" [1]}))
+                            "status")))
+      (is (empty? (:excluded-ids (conversation/current session))))
+      (is (= "recorded" (get (json/parse-string
+                              (reject {"quote" "Первый вариант не подходит: нужен складной."
+                                       "numbers" [1]})) "status")))
+      (is (= ["current"] (:excluded-ids (conversation/current session)))))))

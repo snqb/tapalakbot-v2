@@ -105,10 +105,8 @@
                        :tier :good})
                     (range 1 10))
         html (r/render-results-rich cards)]
-    (is (str/includes? html "<h2>Варианты</h2>"))
     (is (not (str/includes? html "<table")))
     (is (= 6 (count (re-seq #"<h3>" html))))
-    (is (str/includes? html "<details><summary>Ещё 3 варианта</summary>"))
     (is (str/includes? html
                        "<a href=\"https://lalafo.kg/ad/9\">Открыть объявление →</a>"))
     (is (not (str/includes? html "━━━━━━━━━━━━━━━")))))
@@ -160,8 +158,7 @@
     (is (< (count html) 32768))
     (is (= 20 (count (re-seq #"<a href=" html))))
     (is (= 6 (count (re-seq #"<h3>" html))))
-    (is (= 6 (count (re-seq #"<img src=" html))))
-    (is (str/includes? html "<details><summary>Ещё 14 вариантов</summary>"))))
+    (is (= 6 (count (re-seq #"<img src=" html))))))
 
 (deftest missing-currency-is-not-labelled-as-kgs
   (let [html (r/render-results-rich [{:title "Товар" :price 1000 :currency nil}])]

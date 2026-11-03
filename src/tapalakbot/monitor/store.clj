@@ -10,16 +10,11 @@
             [next.jdbc.result-set :as rs]
             [clojure.string :as str]
             [clojure.tools.logging :as log]))
-
 ;; ════════════════════════════ DB ════════════════════════════
-
 (def ^:private db-path (or (System/getenv "MONITOR_DB_PATH")
                            "data/tapalakbot-monitor.db"))
-
 (defonce ^:private ds (atom nil))
-
 (declare init-db!)
-
 (defn- get-ds []
   (or @ds (init-db!)))
 
@@ -28,7 +23,6 @@
   []
   (get-ds))
 
-;; next.jdbc returns qualified keywords by default (:table/col).
 ;; We use unqualified maps throughout for simpler access.
 (defn- q! [sql-params]
   (jdbc/execute! (get-ds) sql-params {:builder-fn rs/as-unqualified-maps}))
@@ -87,23 +81,40 @@
         created_at TEXT DEFAULT (datetime('now')),
         last_checked_at TEXT,
         notify_count INTEGER DEFAULT 0,
-        notify_interval INTEGER DEFAULT 24
+        notify_interval INTEGER DEFAULT 24,
+        chat_id TEXT,
+        thread_id INTEGER,
+        excluded_ids TEXT DEFAULT '[]',
+        category_id INTEGER
       )"])
-    ;; Migration: add notify_interval if missing.
-    ;; Throws "duplicate column" on every restart after the first — benign,
-    ;; SQLite has no ADD COLUMN IF NOT EXISTS. Intentionally swallowed.
-    (try (jdbc/execute! d ["ALTER TABLE user_tracks ADD COLUMN notify_interval INTEGER DEFAULT 24"])
-         (catch Exception _))
-    ;; Migration: add category_id if missing (same idempotency note as above).
-    (try (jdbc/execute! d ["ALTER TABLE user_tracks ADD COLUMN category_id INTEGER"])
-         (catch Exception _))
+    (doseq [[column definition] [["notify_interval" "notify_interval INTEGER DEFAULT 24"]
+                                 ["category_id" "category_id INTEGER"]
+                                 ["chat_id" "chat_id TEXT"]
+                                 ["thread_id" "thread_id INTEGER"]
+                                 ["excluded_ids" "excluded_ids TEXT DEFAULT '[]'"]]]
+      (let [columns (jdbc/execute! d ["PRAGMA table_info(user_tracks)"]
+                                    {:builder-fn rs/as-unqualified-maps})]
+        (when-not (some #(= column (:name %)) columns)
+          (jdbc/execute! d [(str "ALTER TABLE user_tracks ADD COLUMN " definition)]))))
     (jdbc/execute! d ["CREATE TABLE IF NOT EXISTS track_seen_items (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         track_id INTEGER NOT NULL REFERENCES user_tracks(id) ON DELETE CASCADE,
         item_id INTEGER NOT NULL,
+        rejected INTEGER NOT NULL DEFAULT 0,
         notified_at TEXT DEFAULT (datetime('now')),
         UNIQUE(track_id, item_id)
       )"])
+    ;; Rows from the pre-rejected schema have unknown provenance.  Add a
+    ;; positive default for future rows, then classify only existing rows
+    ;; with the unknown sentinel.
+    (jdbc/with-transaction [tx d]
+      (let [columns (jdbc/execute! tx ["PRAGMA table_info(track_seen_items)"]
+                                    {:builder-fn rs/as-unqualified-maps})]
+        (when-not (some #(= "rejected" (:name %)) columns)
+          (jdbc/execute! tx
+                         ["ALTER TABLE track_seen_items
+                           ADD COLUMN rejected INTEGER NOT NULL DEFAULT 0"])
+          (jdbc/execute! tx ["UPDATE track_seen_items SET rejected = -1"]))))
     (jdbc/execute! d ["CREATE INDEX IF NOT EXISTS idx_tracks_user ON user_tracks(user_id)"])
     (jdbc/execute! d ["CREATE INDEX IF NOT EXISTS idx_seen_track ON track_seen_items(track_id)"])
     (log/info :monitor-db-init :path db-path)
@@ -371,11 +382,22 @@
     (boolean r)))
 
 (defn mark-item-seen!
-  "Record that an item was notified for a track."
+  "Record that an item was delivered for a track."
   [track-id item-id]
-  (q! ["INSERT OR IGNORE INTO track_seen_items (track_id, item_id) VALUES (?, ?)"
-       track-id item-id]))
+  (q! ["INSERT OR IGNORE INTO track_seen_items (track_id, item_id, rejected)
+       VALUES (?, ?, 0)" track-id item-id])
+  (q! ["UPDATE track_seen_items SET rejected = 0
+       WHERE track_id = ? AND item_id = ?" track-id item-id]))
 
+(defn mark-item-rejected!
+  "Record an evaluated item rejected by JEV without overwriting delivery state."
+  [track-id item-id]
+  (q! ["INSERT OR IGNORE INTO track_seen_items (track_id, item_id, rejected)
+       VALUES (?, ?, 1)" track-id item-id])
+  ;; Legacy rows are unknown, not delivered; classify one when a completed
+  ;; evaluation explicitly rejects it.
+  (q! ["UPDATE track_seen_items SET rejected = 1
+       WHERE track_id = ? AND item_id = ? AND rejected = -1" track-id item-id]))
 (defn get-all-active-tracks
   "Get all enabled tracks across all users (for background checker)."
   []
@@ -386,3 +408,20 @@
   [q]
   (try (clojure.edn/read-string q)
        (catch Exception _ [q])))
+(defn parse-track-excluded-ids
+  "Parse persisted explicit rejection IDs without evaluating arbitrary data."
+  [value]
+  (cond
+    (sequential? value) (vec value)
+    (string? value) (try
+                      (let [parsed (clojure.edn/read-string value)]
+                        (if (sequential? parsed) (vec parsed) []))
+                      (catch Exception _ []))
+    :else []))
+
+
+(defn seen-item-ids
+  "Return persisted source IDs already seen for a track."
+  [track-id]
+  (mapv :item_id (q! ["SELECT item_id FROM track_seen_items WHERE track_id = ? ORDER BY id"
+                      track-id])))

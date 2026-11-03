@@ -1,5 +1,7 @@
 # Tracking Feature — Plan
 
+> Historical implementation plan. Current conversational tracking, ownership, typed JEV selection, cache semantics and verified behavior are recorded in [the V2 execution journal](plans/2026-11-02-search-and-tracking-v2.md); the old commands-only, Bishkek-default and LLM-free assumptions below are not the current contract.
+
 ## What
 
 Users create **tracking filters** — saved searches that run periodically and send Telegram notifications when new matching items appear on Lalafo.kg.

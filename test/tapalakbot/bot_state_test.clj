@@ -18,8 +18,8 @@
   (is (not (contains? @state/conversation-state "stale")))
 
   (reset! state/pending-track-queries
-          {"stale" {:user-id 1 :query "old" :created-at 0}})
-  (state/cache-track-query! 1 "fresh")
+          {"stale" {:owner-id "tg-1:1:17" :request {:title "old"} :created-at 0}})
+  (state/cache-track-query! "tg-1:1:17" {:title "fresh"})
   (is (not (contains? @state/pending-track-queries "stale"))))
 
 (deftest pending-update-is-consumed-once
@@ -28,9 +28,10 @@
   (is (= {:text "latest"} (state/take-pending! "tg-42")))
   (is (nil? (state/take-pending! "tg-42"))))
 
-(deftest tracking-query-enforces-owner-and-single-use
+(deftest tracking-query-enforces-conversation-and-single-use
   (reset! state/pending-track-queries {})
-  (let [callback-id (state/cache-track-query! 42 "iphone 13")]
-    (is (nil? (state/take-track-query! 7 callback-id)))
-    (is (= "iphone 13" (state/take-track-query! 42 callback-id)))
-    (is (nil? (state/take-track-query! 42 callback-id)))))
+  (let [request {:title "iPhone 13" :price-max 20000}
+        callback-id (state/cache-track-query! "tg-42:-100:17" request)]
+    (is (nil? (state/take-track-query! "tg-42:-100:18" callback-id)))
+    (is (= request (state/take-track-query! "tg-42:-100:17" callback-id)))
+    (is (nil? (state/take-track-query! "tg-42:-100:17" callback-id)))))

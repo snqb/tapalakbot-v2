@@ -3,13 +3,14 @@
   (:require [tapalakbot.search :as search]))
 
 (def default-mode :price-asc)
-(def supported-modes #{:price-asc :price-desc :relevance})
+(def supported-modes #{:price-asc :price-desc :relevance :recommended})
 
 (defn mode-label
   "Short Russian label used by result sort controls."
   [mode]
   (case mode
     :price-desc "Цена ↓"
+    :recommended "По рекомендации"
     :relevance "По соответствию"
     "Цена ↑"))
 
@@ -35,8 +36,12 @@
                           known? (if (number? p) 0 1)
                           rank (or (:rank-score card) 0)
                           mode-key (case mode
+                                     :recommended [(get-in card [:recommendation :position] Long/MAX_VALUE)
+                                                   (fit-rank card) (- rank)]
                                      :relevance [(- rank) known?]
                                      :price-desc [known? (- price-key)]
                                      [known? price-key])]
-                      (into [(fit-rank card)] (conj mode-key index)))))
+                      (if (= mode :recommended)
+                        (conj mode-key index)
+                        (into [(fit-rank card)] (conj mode-key index))))))
          (mapv second))))

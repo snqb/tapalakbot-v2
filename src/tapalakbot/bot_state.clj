@@ -47,11 +47,12 @@
       state)))
 
 (defn conversation-id
-  "Return the stable harness session key, isolating forum topics."
+  "Return a stable chat/user/topic key, retaining the legacy private-root key."
   [{:keys [chat-id user-id thread-id]}]
-  (if thread-id
-    (str "tg-" user-id ":" chat-id ":" thread-id)
-    (str "tg-" user-id)))
+  (cond
+    thread-id (str "tg-" user-id ":" chat-id ":" thread-id)
+    (= chat-id user-id) (str "tg-" user-id)
+    :else (str "tg-" user-id ":" chat-id)))
 
 (defn- get-conversation-state
   [id]
@@ -96,8 +97,8 @@
           (recur))))))
 
 (defn cache-track-query!
-  "Cache a user-owned tracking query and return its opaque callback ID."
-  [user-id query]
+  "Cache a canonical search request owned by one immutable conversation."
+  [owner-id request]
   (let [now (System/currentTimeMillis)
         callback-id (str (random-uuid))]
     (swap! pending-track-queries
@@ -106,23 +107,23 @@
                        (remove (fn [[_ {:keys [created-at]}]]
                                  (expired? now created-at track-query-ttl-ms)))
                        queries)
-                 (assoc callback-id {:user-id user-id
-                                     :query query
+                 (assoc callback-id {:owner-id owner-id
+                                     :request request
                                      :created-at now}))))
     callback-id))
 
 (defn take-track-query!
-  "Consume a fresh callback only when it belongs to the requesting user."
-  [user-id callback-id]
-  (let [{owner :user-id query :query created-at :created-at :as entry}
+  "Consume a fresh request only in its originating conversation."
+  [owner-id callback-id]
+  (let [{owner :owner-id request :request created-at :created-at :as entry}
         (get @pending-track-queries callback-id)
         fresh? (and created-at
                     (not (expired? (System/currentTimeMillis)
                                    created-at
                                    track-query-ttl-ms)))]
-    (when (and entry (= owner user-id) fresh?)
+    (when (and entry (= owner owner-id) fresh?)
       (swap! pending-track-queries dissoc callback-id)
-      query)))
+      request)))
 
 (defn cache-refinement!
   "Cache a conversation-owned refinement context and return its callback ID."

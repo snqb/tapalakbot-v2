@@ -4,6 +4,7 @@
    LLM never touches this."
   (:require [clojure.string :as str]
             [clj-harness.telegram.format :as hfmt]
+            [tapalakbot.render-advice :as advice]
             [tapalakbot.result-order :as result-order]))
 
 ;; ════════════════════ TIER ASSIGNMENT ════════════════════
@@ -279,6 +280,7 @@
            (str "<br/>" (str/join " · " (remove nil? [detail condition]))))
          "</p>"
          (decision-block card)
+         (advice/card-notes card)
          (when link (str "<p>" link "</p>")))))
 
 (defn- render-visible-results
@@ -305,6 +307,7 @@
            (str "<br/>" (str/join " · " (remove nil? [detail condition]))))
          (when-let [warnings (decision-block card)]
            warnings)
+         (advice/card-notes card)
          (when link (str "<br/>" link))
          "</li>")))
 
@@ -350,15 +353,6 @@
              (str/join ", " (map :index images)) "</figcaption>"
              "</tg-slideshow>")))))
 
-(defn- russian-variant-word
-  [n]
-  (let [mod-100 (mod n 100)
-        mod-10 (mod n 10)]
-    (cond
-      (<= 11 mod-100 14) "вариантов"
-      (= mod-10 1) "вариант"
-      (<= 2 mod-10 4) "варианта"
-      :else "вариантов")))
 
 (defn- render-source-footer
   [cards]
@@ -430,9 +424,9 @@
             (render-image-slideshow cards include-images?)
             (render-visible-results visible)
             (when (seq hidden)
-              (let [hidden-count (count hidden)]
-                (str "<details><summary>Ещё " hidden-count " "
-                     (russian-variant-word hidden-count) "</summary>"
+              (let [start (or (:result-index (first hidden)) (inc visible-result-limit))
+                    end (or (:result-index (peek hidden)) (count cards))]
+                (str "<details><summary>На этой странице: " start "–" end "</summary>"
                      (render-hidden-results hidden visible-result-limit)
                      "</details>")))
             (selection-details opts)

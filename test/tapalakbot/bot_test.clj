@@ -1,16 +1,16 @@
 (ns tapalakbot.bot-test
   "Unit tests for bot formatting, text processing, and message handling.
    Tests the private function: parse-update-extended. No LLM calls — pure function tests."
-  (:require [clj-harness.core :as harness]
-            [clj-harness.telegram :as tg]
+  (:require [clj-harness.telegram :as tg]
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
             [tapalakbot.bot :as bot]
             [tapalakbot.bot-state :as state]
             [tapalakbot.core :as t]
+            [tapalakbot.telegram-conversation :as conversation]
+            [tapalakbot.tracking :as tracking]
             [tapalakbot.result-delivery :as delivery]
             [tapalakbot.monitor.client :as monitor]
-            [tapalakbot.monitor.store :as store]
             [tapalakbot.result-store :as result-store]))
 
 ;; Production polling and webhooks share the parent parser.
@@ -76,6 +76,22 @@
   (is (not= (state/conversation-id {:chat-id -100123 :user-id 42 :thread-id 17})
             (state/conversation-id {:chat-id -100123 :user-id 42 :thread-id 18}))))
 
+(deftest no-topic-chats-have-independent-conversation-state
+  (let [private (state/conversation-id {:chat-id 42 :user-id 42})
+        first-group (state/conversation-id {:chat-id -100 :user-id 42})
+        second-group (state/conversation-id {:chat-id -200 :user-id 42})]
+    (is (= 3 (count (set [private first-group second-group]))))))
+
+(deftest city-controls-select-and-clear-the-preference
+  (with-redefs [state/user-state (atom {})
+                tg/answer-callback-query (fn [& _])]
+    (let [message {:callback-id "city" :chat-id 42 :user-id 42}
+          handle @#'bot/handle-callback]
+      (handle (assoc message :data "city:103185"))
+      (is (= 103185 @(:city-id (state/get-user-state "tg-42"))))
+      (handle (assoc message :data "city:nil"))
+      (is (nil? @(:city-id (state/get-user-state "tg-42")))))))
+
 (deftest result-cards-are-rendered-from-structured-data
   (let [sent (atom [])
         send-reply delivery/send-reply!
@@ -108,23 +124,6 @@
       (is (str/includes? html
                          "<a href=\"https://lalafo.kg/iphone-13\">Открыть на Lalafo.kg →</a>")))))
 
-(deftest tracking-buttons-keep-their-own-query
-  (let [make-button @#'bot/track-context-button
-        take-query state/take-track-query!
-        first-kb (make-button 42 "iphone 13")
-        second-kb (make-button 42 "macbook air")
-        callback-id (fn [kb]
-                      (-> kb
-                          (get "inline_keyboard")
-                          first first
-                          (get "callback_data")
-                          (str/split #":" 2)
-                          second))]
-    (is (some? take-query))
-    (when take-query
-      (is (= "iphone 13" (take-query 42 (callback-id first-kb))))
-      (is (= "macbook air" (take-query 42 (callback-id second-kb))))
-      (is (nil? (take-query 99 (callback-id second-kb)))))))
 
 (deftest busy-conversation-coalesces-to-latest-update
   (let [dispatch @#'bot/dispatch-conversation!
@@ -150,26 +149,7 @@
         (is (= true (deref finished 2000 :timeout)))))
     (is (= ["first" "third"] @processed))))
 
-(deftest reset-command-clears-session-and-responds
-  (let [handle-reset @#'bot/handle-reset
-        replies (atom [])]
-    (with-redefs-fn {#'harness/reset-session! (fn [& _])
-                     #'state/store-pending! (fn [& _])
-                     #'bot/send-menu! (fn [chat-id text & options]
-                                        (swap! replies conj {:chat-id chat-id
-                                                             :text text
-                                                             :options options}))}
-      #(handle-reset {:chat-id 42 :user-id 42}))
-    (is (= 42 (:chat-id (first @replies))))
-    (is (str/includes? (:text (first @replies)) "Контекст очищен"))))
 
-(deftest fallback-search-only-runs-for-an-empty-agent-result
-  (let [needs-fallback? @#'bot/needs-fallback-search?]
-    (is (true? (needs-fallback? {:text "" :cards []} "пылесос")))
-    (is (false? (needs-fallback? {:text "Ничего не найдено" :cards []} "пылесос")))
-    (is (false? (needs-fallback? {:text "" :cards [] :search-status :unavailable} "пылесос")))
-    (is (false? (needs-fallback? {:text "" :cards [] :search-status :ok} "пылесос")))
-    (is (false? (needs-fallback? {:text "" :cards [{:title "Пылесос"}]} "пылесос")))))
 
 
 (deftest page-callback-delivers-each-cached-result-once
@@ -214,9 +194,30 @@
         (is (= [:high :mid :low] (mapv :id (:cards (first @sent)))))
         (is (= :price-desc (:sort-mode (first @sent))))))))
 
+(deftest recommended-sort-callback-routes-through-bot
+  (let [handle-callback @#'bot/handle-callback
+        sent (atom [])
+        cards [{:id :late :price 10 :currency "KGS"
+                :recommendation {:position 2}}
+               {:id :top :price 999 :currency "KGS"
+                :recommendation {:position 1}}]]
+    (with-redefs [result-store/result-pools (atom {})
+                  result-store/ad-cache (atom {})
+                  tg/answer-callback-query (fn [& _] {"ok" true})
+                  delivery/send-reply! (fn [_ reply _] (swap! sent conj reply))
+                  t/remember-view! (fn [& _])]
+      (let [cursor (result-store/cache-result-pool!
+                    "tg-42:-100:17" "query" cards 2
+                    {:cards cards :sort-mode :price-asc})]
+        (handle-callback {:data (str "sort:recommended:" cursor)
+                          :callback-id "recommended-cb"
+                          :user-id 42 :chat-id -100 :thread-id 17})
+        (is (= [:top :late] (mapv :id (:cards (first @sent)))))
+        (is (= :recommended (:sort-mode (first @sent))))))))
+
 
 (deftest concurrent-forum-topics-rename-their-own-thread
-  (let [handle-orchestrated @#'bot/handle-orchestrated
+  (let [handle-orchestrated conversation/handle-message!
         first-started (promise)
         second-started (promise)
         release-first (promise)
@@ -233,7 +234,7 @@
 
                        (str/ends-with? session-id ":22")
                        (deliver second-started true))
-                     {:text "Готово" :cards [] :pool [] :query text})
+                     {:text "Готово" :cards [] :pool [] :query text :search-status :ok})
         fake-send (fn [& _]
                     {"message_id" (swap! next-message-id inc)})]
     (with-redefs-fn {#'t/ask-stream fake-agent
@@ -279,9 +280,11 @@
        :url "https://lalafo.kg/ad/1" :platform :lalafo}])
     (with-redefs-fn {#'tg/send-message (capture :message)
                      #'tg/send-md (capture :markdown)
+                     #'tg/send-rich-message (fn [chat-id _format text & options]
+                                             (apply (capture :rich) chat-id text options))
                      #'tg/answer-callback-query (fn [& _])
                      #'monitor/fetch-categories (constantly {:categories []})
-                     #'store/get-user-tracks (constantly [])}
+                     #'tracking/manage! (constantly {:status :ok :tracks []})}
       (fn []
         (handle-update (assoc base :text "📍 Город"))
         (handle-update (assoc base :text "/help"))
